@@ -107,6 +107,33 @@ TensorRTEdgeClassifier::TensorRTEdgeClassifier(
              << " GB");
 
   m_count.emplace(m_contexts.size());
+
+  if (m_engine->getNbOptimizationProfiles() > 1) {
+    ACTS_WARNING("Cannot handle more then one optimization profile for now");
+  }
+
+  m_maxNodes =
+      m_engine->getProfileShape("x", 0, nvinfer1::OptProfileSelector::kMAX)
+          .d[0];
+  ACTS_INFO("Maximum number of nodes: " << m_maxNodes);
+
+  auto maxEdgesA =
+      m_engine
+          ->getProfileShape("edge_index", 0, nvinfer1::OptProfileSelector::kMAX)
+          .d[1];
+  auto maxEdgesB =
+      m_engine
+          ->getProfileShape("edge_attr", 0, nvinfer1::OptProfileSelector::kMAX)
+          .d[0];
+
+  if (maxEdgesA != maxEdgesB) {
+    throw std::invalid_argument(
+        "Inconsistent max edges definition in engine for 'edge_index' and "
+        "'edge_attr'");
+  }
+
+  m_maxEdges = maxEdgesA;
+  ACTS_INFO("Maximum number of edges: " << m_maxEdges);
 }
 
 TensorRTEdgeClassifier::~TensorRTEdgeClassifier() {}
@@ -118,10 +145,31 @@ PipelineTensors TensorRTEdgeClassifier::operator()(
   decltype(std::chrono::high_resolution_clock::now()) t0, t1, t2, t3, t4;
   t0 = std::chrono::high_resolution_clock::now();
 
+  // Curing this would require more complicated handling, and should happen
+  // almost never
+  if (auto nNodes = tensors.nodeFeatures.shape().at(0); nNodes > m_maxNodes) {
+    ACTS_WARNING("Number of nodes ("
+                 << nNodes << ") exceeds configured maximum, return 0 edges");
+    throw NoEdgesError{};
+  }
+
+  if (auto nEdges = tensors.edgeIndex.shape().at(1); nEdges > m_maxEdges) {
+    ACTS_WARNING("Number of edges ("
+                 << nEdges << ") exceeds maximum, shrink edge tensor to "
+                 << m_maxEdges);
+
+    auto [newEdgeIndex, newEdgeFeatures] =
+        applyEdgeLimit(tensors.edgeIndex, tensors.edgeFeatures, m_maxEdges,
+                       execContext.stream);
+    tensors.edgeIndex = std::move(newEdgeIndex);
+    tensors.edgeFeatures = std::move(newEdgeFeatures);
+  }
+
   // get a context from the list of contexts
   std::unique_ptr<nvinfer1::IExecutionContext> context;
-  
-  // Try to decrement the count before getting a context. By this it should be garantueed that a context is available
+
+  // Try to decrement the count before getting a context. By this it should be
+  // garantueed that a context is available
   m_count->acquire();
   assert(!m_contexts.empty());
 
