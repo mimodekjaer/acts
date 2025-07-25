@@ -106,6 +106,10 @@ ActsExamples::ProcessCode TrackTruthMatcher::execute(
         if (!state.typeFlags().test(Acts::TrackStateFlag::MeasurementFlag)) {
           continue;
         }
+        // remove outliers from matching
+        if (state.typeFlags().test(Acts::TrackStateFlag::OutlierFlag)) {
+          continue;
+        }
         // register all particles that generated this hit
         IndexSourceLink sl =
             state.getUncalibratedSourceLink().template get<IndexSourceLink>();
