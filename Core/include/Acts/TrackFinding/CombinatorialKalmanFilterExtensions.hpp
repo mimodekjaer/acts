@@ -92,7 +92,10 @@ struct CombinatorialKalmanFilterExtensions {
   /// Default branch stopper which will never stop
   /// @return false
   static BranchStopperResult voidBranchStopper(
-      const TrackProxy& /*track*/, const TrackStateProxy& /*trackState*/) {
+      const TrackProxy& track, const TrackStateProxy& trackState) {
+    if (track.nMeasurements() >= track.maxMeasurements()) {
+      return BranchStopperResult::StopAndKeep;
+    }
     return BranchStopperResult::Continue;
   }
 };
