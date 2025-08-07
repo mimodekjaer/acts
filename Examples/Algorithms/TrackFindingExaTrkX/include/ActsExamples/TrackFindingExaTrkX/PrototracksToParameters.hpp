@@ -47,7 +47,7 @@ class PrototracksToParameters final : public IAlgorithm {
 
     /// Whether to make tight seeds (closest 3 hits to beampipe) or large
     /// seeds (evenly spread across the prototrack)
-    bool buildTightSeeds = false;
+    std::string seedBuilding = "long";
 
     /// The tracking geometry
     std::shared_ptr<const Acts::TrackingGeometry> geometry;
