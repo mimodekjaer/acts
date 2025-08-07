@@ -160,10 +160,21 @@ ProcessCode PrototracksToParameters::execute(
     const auto z_vertex = -t / m;
     const auto s = tmpSps.size();
 
-    SimSeed seed =
-        m_cfg.buildTightSeeds
-            ? SimSeed(*tmpSps.at(0), *tmpSps.at(1), *tmpSps.at(2))
-            : SimSeed(*tmpSps.at(0), *tmpSps.at(s / 2), *tmpSps.at(s - 1));
+    SimSeed seed = SimSeed(*tmpSps.at(0), *tmpSps.at(1), *tmpSps.at(2));
+
+    if ( m_cfg.seedBuilding == "tight" || s == 3) {
+      seed = SimSeed(*tmpSps.at(0), *tmpSps.at(1), *tmpSps.at(2));
+    }
+    else if ( m_cfg.seedBuilding == "long" ) {
+      seed = SimSeed(*tmpSps.at(0), *tmpSps.at(s / 2), *tmpSps.at(s - 1));
+    }
+    else if ( m_cfg.seedBuilding == "semilong" ) {
+      seed = SimSeed(*tmpSps.at(0), *tmpSps.at(std::min(s / 2, 3ul)), *tmpSps.at(std::min(s - 1, 6ul)));
+    }
+    else {
+      ACTS_ERROR("Unknown seed building method: " << m_cfg.seedBuilding);
+      return ProcessCode::ABORT;
+    }
     seed.setVertexZ(z_vertex);
 
     // Compute parameters
