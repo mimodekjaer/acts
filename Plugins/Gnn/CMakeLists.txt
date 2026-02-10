@@ -55,6 +55,12 @@ if(ACTS_GNN_ENABLE_TENSORRT)
     target_compile_definitions(ActsPluginGnn PUBLIC ACTS_GNN_WITH_TENSORRT)
 endif()
 
+if(ACTS_GNN_ENABLE_SOFIE)
+    target_sources(ActsPluginGnn PRIVATE src/SofieEdgeClassifier.cpp)
+    target_link_libraries(ActsPluginGnn PRIVATE sofie_gnn)
+    target_compile_definitions(ActsPluginGnn PUBLIC ACTS_GNN_SOFIE_BACKEND)
+endif()
+
 target_include_directories(
     ActsPluginGnn
     PUBLIC

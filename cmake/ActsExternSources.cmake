@@ -89,3 +89,10 @@ set(ACTS_MODULEMAPGRAPH_SOURCE
     "Source to take ModuleMapGraph from"
 )
 mark_as_advanced(ACTS_MODULEMAPGRAPH_SOURCE)
+
+set(ACTS_SOFIEGNN_SOURCE
+    "GIT_REPOSITORY;https://github.com/sanjibansg/sofie-atlas-tracking;GIT_TAG;18144e38a2003282e46ea33e6120c6d18d3d1b4c"
+    CACHE STRING
+    "Source to take SofieGnn from"
+)
+mark_as_advanced(ACTS_SOFIEGNN_SOURCE)
