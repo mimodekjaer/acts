@@ -12,6 +12,7 @@
 #include "ActsPlugins/Gnn/BoostTrackBuilding.hpp"
 #include "ActsPlugins/Gnn/CudaTrackBuilding.hpp"
 #include "ActsPlugins/Gnn/GnnPipeline.hpp"
+#include "ActsPlugins/Gnn/ModuleMapCpu.hpp"
 #include "ActsPlugins/Gnn/ModuleMapCuda.hpp"
 #include "ActsPlugins/Gnn/OnnxEdgeClassifier.hpp"
 #include "ActsPlugins/Gnn/TensorRTEdgeClassifier.hpp"
@@ -97,6 +98,12 @@ PYBIND11_MODULE(ActsExamplesPythonBindingsGnn, gnn) {
 #endif
 
 #ifdef ACTS_GNN_WITH_MODULEMAP
+  ACTS_PYTHON_DECLARE_GNN_STAGE(ModuleMapCpu, GraphConstructionBase, gnn,
+                                moduleMapPath, rScale, phiScale, zScale,
+                                etaScale, epsilon);
+#endif
+
+#if defined(ACTS_GNN_WITH_MODULEMAP) && defined(ACTS_GNN_WITH_CUDA)
   ACTS_PYTHON_DECLARE_GNN_STAGE(
       ModuleMapCuda, GraphConstructionBase, gnn, moduleMapPath, rScale,
       phiScale, zScale, etaScale, moreParallel, gpuDevice, gpuBlocks, epsilon);

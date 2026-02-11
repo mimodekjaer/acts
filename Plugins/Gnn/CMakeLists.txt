@@ -22,13 +22,14 @@ endif()
 
 if(ACTS_GNN_ENABLE_MODULEMAP)
     target_compile_definitions(ActsPluginGnn PUBLIC ACTS_GNN_WITH_MODULEMAP)
+    target_link_libraries(ActsPluginGnn PRIVATE ModuleMapGraph::CPU)
+    target_sources(ActsPluginGnn PRIVATE src/ModuleMapCpu.cpp)
 
-    target_link_libraries(
-        ActsPluginGnn
-        PRIVATE ModuleMapGraph::CPU ModuleMapGraph::GPU
-    )
-    # EdgeLayerConnector.cu is included in ModuleMapGraph.cu because of ODR violations in ModuleMapGraph
-    target_sources(ActsPluginGnn PRIVATE src/ModuleMapCuda.cu)
+    if(ACTS_GNN_ENABLE_CUDA)
+        target_link_libraries(ActsPluginGnn PRIVATE ModuleMapGraph::GPU)
+        # EdgeLayerConnector.cu is included in ModuleMapGraph.cu because of ODR violations in ModuleMapGraph
+        target_sources(ActsPluginGnn PRIVATE src/ModuleMapCuda.cu)
+    endif()
 endif()
 
 if(ACTS_GNN_ENABLE_ONNX)
