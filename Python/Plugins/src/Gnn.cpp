@@ -8,10 +8,12 @@
 
 #include "ActsPlugins/Gnn/BoostTrackBuilding.hpp"
 #include "ActsPlugins/Gnn/CudaTrackBuilding.hpp"
+#include "ActsPlugins/Gnn/EdgeLayerConnector.hpp"
 #include "ActsPlugins/Gnn/GnnPipeline.hpp"
 #include "ActsPlugins/Gnn/ModuleMapCpu.hpp"
 #include "ActsPlugins/Gnn/ModuleMapCuda.hpp"
 #include "ActsPlugins/Gnn/OnnxEdgeClassifier.hpp"
+#include "ActsPlugins/Gnn/SofieEdgeClassifier.hpp"
 #include "ActsPlugins/Gnn/TensorRTEdgeClassifier.hpp"
 #include "ActsPlugins/Gnn/TorchEdgeClassifier.hpp"
 #include "ActsPlugins/Gnn/TorchMetricLearning.hpp"
@@ -93,6 +95,11 @@ PYBIND11_MODULE(ActsPluginsPythonBindingsGnn, gnn) {
                                 modelPath, cut, device);
 #endif
 
+#ifdef ACTS_GNN_SOFIE_BACKEND
+  ACTS_PYTHON_DECLARE_GNN_STAGE(SofieEdgeClassifier, EdgeClassificationBase,
+                                gnn, modelPath, cut, maxEdges, maxNodes);
+#endif
+
 #ifdef ACTS_GNN_WITH_MODULEMAP
   ACTS_PYTHON_DECLARE_GNN_STAGE(ModuleMapCpu, GraphConstructionBase, gnn,
                                 moduleMapPath, rScale, phiScale, zScale,
@@ -103,6 +110,9 @@ PYBIND11_MODULE(ActsPluginsPythonBindingsGnn, gnn) {
   ACTS_PYTHON_DECLARE_GNN_STAGE(
       ModuleMapCuda, GraphConstructionBase, gnn, moduleMapPath, rScale,
       phiScale, zScale, etaScale, moreParallel, gpuDevice, gpuBlocks, epsilon);
+
+  ACTS_PYTHON_DECLARE_GNN_STAGE(EdgeLayerConnector, TrackBuildingBase, gnn,
+                                nBlocks, maxHitsPerTrack, minHits, weightsCut);
 #endif
 
   {
