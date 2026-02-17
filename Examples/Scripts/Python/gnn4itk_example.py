@@ -18,10 +18,17 @@ import acts.examples
 from acts.examples.reconstruction import addGnn
 from acts.examples.simulation import ParticleSelectorConfig, addDigiParticleSelection
 from acts.gnn import (
+    ModuleMapCpu,
     ModuleMapCuda,
+    BoostTrackBuilding,
     CudaTrackBuilding,
+    EdgeLayerConnector,
 )
 from acts.examples.gnn import NodeFeature
+from acts.examples.root import (
+    RootAthenaDumpReader,
+    RootTrackFinderPerformanceWriter,
+)
 
 u = acts.UnitConstants
 
@@ -32,6 +39,9 @@ def runGNN4ITk(
     gnnModel: Path,
     outputDir: Path = Path.cwd(),
     events: int = 1,
+    useEdgeLayerConnector: bool = False,
+    useCpuOnly: bool = False,
+    bufferEvents: int | None = None,
     logLevel=acts.logging.INFO,
 ):
     """
@@ -44,9 +54,12 @@ def runGNN4ITk(
         inputRootDump: Path to input ROOT file (ATLAS Athena dump format)
         moduleMapPath: Path prefix for module map files
                       (will load .doublets.root and .triplets.root)
-        gnnModel: Path to trained model (.pt, .onnx, or .engine)
+        gnnModel: Path to trained model (.pt, .onnx, .engine, or .dat)
         outputDir: Output directory for performance files
         events: Number of events to process
+        useEdgeLayerConnector: Use EdgeLayerConnector instead of CudaTrackBuilding (default False)
+        useCpuOnly: Use CPU-only path (ModuleMapCpu + BoostTrackBuilding, default False)
+        bufferEvents: Number of events to buffer (None for no buffering)
         logLevel: Logging level
     """
     # Validate inputs
@@ -58,6 +71,9 @@ def runGNN4ITk(
         moduleMapPath + ".triplets.root"
     ).exists(), f"Module map not found: {moduleMapPath}.triplets.root"
     assert gnnModel.exists(), f"Model file not found: {gnnModel}"
+    assert not (
+        useCpuOnly and useEdgeLayerConnector
+    ), "EdgeLayerConnector requires GPU, cannot be used with --cpuOnly"
 
     s = acts.examples.Sequencer(
         events=events,
@@ -65,22 +81,32 @@ def runGNN4ITk(
     )
 
     # Read ATLAS Athena ROOT dump
-    s.addReader(
-        acts.examples.root.RootAthenaDumpReader(
-            level=logLevel,
-            treename="GNN4ITk",
-            inputfiles=[str(inputRootDump)],
-            outputSpacePoints="spacepoints",
-            outputClusters="clusters",
-            outputMeasurements="measurements",
-            outputMeasurementParticlesMap="measurement_particles_map",
-            outputParticleMeasurementsMap="particle_measurements_map",
-            outputParticles="particles",
-            skipOverlapSPsPhi=True,
-            skipOverlapSPsEta=False,
-            absBoundaryTolerance=0.01 * u.mm,
-        )
+
+    reader = RootAthenaDumpReader(
+        level=logLevel,
+        treename="GNN4ITk",
+        inputfiles=[str(inputRootDump)],
+        outputSpacePoints="spacepoints",
+        outputClusters="clusters",
+        outputMeasurements="measurements",
+        outputMeasurementParticlesMap="measurement_particles_map",
+        outputParticleMeasurementsMap="particle_measurements_map",
+        outputParticles="particles",
+        skipOverlapSPsPhi=True,
+        skipOverlapSPsEta=False,
+        absBoundaryTolerance=0.01 * u.mm,
     )
+
+    if bufferEvents is not None:
+        s.addReader(
+            acts.examples.BufferedReader(
+                level=logLevel,
+                upstreamReader=reader,
+                bufferSize=min(bufferEvents, events),
+            )
+        )
+    else:
+        s.addReader(reader)
 
     # Select primary particles with minimum 7 hits and 1 GeV pT for efficiency evaluation
     s.addWhiteboardAlias("particles_simulated_selected", "particles")
@@ -102,11 +128,17 @@ def runGNN4ITk(
         "phiScale": 3.141592654,
         "zScale": 1000.0,
         "etaScale": 1.0,
-        "gpuDevice": 0,
-        "gpuBlocks": 512,
-        "moreParallel": True,
     }
-    graphConstructor = ModuleMapCuda(**moduleMapConfig)
+
+    if useCpuOnly:
+        graphConstructor = ModuleMapCpu(**moduleMapConfig)
+    else:
+        moduleMapConfig.update({
+            "gpuDevice": 0,
+            "gpuBlocks": 512,
+            "moreParallel": True,
+        })
+        graphConstructor = ModuleMapCuda(**moduleMapConfig)
 
     # Stage 2: Single-stage edge classification (auto-detect backend)
     gnnModel = Path(gnnModel)
@@ -115,7 +147,6 @@ def runGNN4ITk(
         "modelPath": str(gnnModel),
         "cut": 0.5,
     }
-
     if gnnModel.suffix == ".pt":
         edgeClassifierConfig["useEdgeFeatures"] = True
         from acts.gnn import TorchEdgeClassifier
@@ -124,21 +155,41 @@ def runGNN4ITk(
     elif gnnModel.suffix == ".onnx":
         from acts.gnn import OnnxEdgeClassifier
 
+        edgeClassifierConfig["useCuda"] = not useCpuOnly
         edgeClassifiers = [OnnxEdgeClassifier(**edgeClassifierConfig)]
     elif gnnModel.suffix == ".engine":
         from acts.gnn import TensorRTEdgeClassifier
 
         edgeClassifiers = [TensorRTEdgeClassifier(**edgeClassifierConfig)]
+    elif gnnModel.suffix == ".dat":
+        from acts.examples.gnn import SofieEdgeClassifier
+
+        edgeClassifierConfig["maxEdges"] = 2000000
+        edgeClassifierConfig["maxNodes"] = 1000000
+        edgeClassifiers = [SofieEdgeClassifier(**edgeClassifierConfig)]
     else:
         raise ValueError(f"Unsupported model format: {gnnModel.suffix}")
 
-    # Stage 3: GPU track building
-    trackBuilderConfig = {
-        "level": logLevel,
-        "useOneBlockImplementation": False,
-        "doJunctionRemoval": True,
-    }
-    trackBuilder = CudaTrackBuilding(**trackBuilderConfig)
+    # Stage 3: Track building
+    if useCpuOnly:
+        trackBuilder = BoostTrackBuilding(level=logLevel)
+    else:
+        if useEdgeLayerConnector:
+            trackBuilderConfig = {
+                "level": logLevel,
+                "nBlocks": 512,
+                "maxHitsPerTrack": 30,
+                "minHits": 3,
+                "weightsCut": 0.01,
+            }
+            trackBuilder = EdgeLayerConnector(**trackBuilderConfig)
+        else:
+            trackBuilderConfig = {
+                "level": logLevel,
+                "useOneBlockImplementation": False,
+                "doJunctionRemoval": True,
+            }
+            trackBuilder = CudaTrackBuilding(**trackBuilderConfig)
 
     # Node features: ITk 12-feature configuration (space point + 2 clusters)
     e = NodeFeature
@@ -168,8 +219,31 @@ def runGNN4ITk(
         featureScales=featureScales,
         inputSpacePoints="spacepoints",
         inputClusters="clusters",
+        useCuda=False if useCpuOnly else True,
         outputDirRoot=str(outputDir),
         logLevel=logLevel,
+    )
+
+    # Select primary particles with minimum 7 hits and 1 GeV pT for efficiency evaluation
+    s.addWhiteboardAlias("particles_simulated_selected", "particles")
+    particleSelectorConfig = ParticleSelectorConfig(
+        pt=(1.0 * u.GeV, None),
+        hits=(7, None),
+        removeSecondaries=True,
+    )
+    addDigiParticleSelection(s, particleSelectorConfig, logLevel=logLevel)
+
+    # Add track finding performance writer
+    s.addWriter(
+        RootTrackFinderPerformanceWriter(
+            level=logLevel,
+            inputTracks="tracks",
+            inputParticles="particles_selected",
+            inputTrackParticleMatching="track_particle_matching",
+            inputParticleTrackMatching="particle_track_matching",
+            inputParticleMeasurementsMap="particle_measurements_map",
+            filePath=str(outputDir / "performance_finding_gnn.root"),
+        )
     )
 
     s.run()
@@ -197,7 +271,7 @@ if __name__ == "__main__":
         "--gnnModel",
         type=Path,
         required=True,
-        help="Path to the GNN model file (.pt, .onnx, or .engine)",
+        help="Path to the GNN model file (.pt, .onnx, .engine, or .dat)",
     )
     argparser.add_argument(
         "--outputDir",
@@ -211,6 +285,23 @@ if __name__ == "__main__":
         default=1,
         help="Number of events to process",
     )
+    argparser.add_argument(
+        "--useEdgeLayerConnector",
+        action="store_true",
+        help="Use EdgeLayerConnector track builder instead of CudaTrackBuilding",
+    )
+    argparser.add_argument(
+        "--cpuOnly",
+        action="store_true",
+        help="Use CPU-only path (ModuleMapCpu + BoostTrackBuilding)",
+    )
+    argparser.add_argument(
+        "--bufferEvents",
+        type=int,
+        default=None,
+        help="Number of events to buffer (improves I/O performance)",
+    )
+    argparser.add_argument("--debug", action="store_true")
 
     args = argparser.parse_args()
 
@@ -220,4 +311,8 @@ if __name__ == "__main__":
         gnnModel=args.gnnModel,
         outputDir=args.outputDir,
         events=args.events,
+        useEdgeLayerConnector=args.useEdgeLayerConnector,
+        useCpuOnly=args.cpuOnly,
+        bufferEvents=args.bufferEvents,
+        logLevel=acts.logging.DEBUG if args.debug else acts.logging.INFO,
     )
