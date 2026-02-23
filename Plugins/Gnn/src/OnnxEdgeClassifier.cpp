@@ -68,8 +68,7 @@ OnnxEdgeClassifier::OnnxEdgeClassifier(const Config &cfg,
       throw std::runtime_error("Invalid log level");
   }
 
-  //m_env = std::make_unique<Ort::Env>(onnxLevel, "Gnn - edge classifier");
-  m_env = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_VERBOSE, "Gnn - edge classifier");
+  m_env = std::make_unique<Ort::Env>(onnxLevel, "Gnn - edge classifier");
 
   Ort::SessionOptions sessionOptions;
   sessionOptions.SetIntraOpNumThreads(1);

@@ -20,6 +20,9 @@ FetchContent_Declare(
     SYSTEM
     ${ACTS_MODULEMAPGRAPH_SOURCE}
     OVERRIDE_FIND_PACKAGE
+    PATCH_COMMAND
+        git apply --ignore-whitespace
+        "${CMAKE_CURRENT_SOURCE_DIR}/remove_unused_members.patch" || true
 )
 
 set(MMG_USE_MPI OFF)
