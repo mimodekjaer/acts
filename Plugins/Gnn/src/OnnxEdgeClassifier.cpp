@@ -68,8 +68,7 @@ OnnxEdgeClassifier::OnnxEdgeClassifier(const Config &cfg,
       throw std::runtime_error("Invalid log level");
   }
 
-  //m_env = std::make_unique<Ort::Env>(onnxLevel, "Gnn - edge classifier");
-  m_env = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_VERBOSE, "Gnn - edge classifier");
+  m_env = std::make_unique<Ort::Env>(onnxLevel, "Gnn - edge classifier");
 
   Ort::SessionOptions sessionOptions;
   sessionOptions.SetIntraOpNumThreads(1);
@@ -113,9 +112,11 @@ OnnxEdgeClassifier::~OnnxEdgeClassifier() {}
 
 PipelineTensors OnnxEdgeClassifier::operator()(
     PipelineTensors tensors, const ExecutionContext &execContext) {
-  auto memoryInfo = tensors.nodeFeatures.device().isCpu()
-                        ? Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault)
-                        : Ort::MemoryInfo("Cuda", OrtArenaAllocator, execContext.device.index, OrtMemTypeDefault);
+  auto memoryInfo =
+      tensors.nodeFeatures.device().isCpu()
+          ? Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault)
+          : Ort::MemoryInfo("Cuda", OrtArenaAllocator, execContext.device.index,
+                            OrtMemTypeDefault);
 
   bc::static_vector<Ort::Value, 3> inputTensors;
   bc::static_vector<const char *, 3> inputNames;
@@ -124,25 +125,28 @@ PipelineTensors OnnxEdgeClassifier::operator()(
   inputTensors.push_back(toOnnx(memoryInfo, tensors.nodeFeatures));
   inputNames.push_back(m_inputNames.at(0).c_str());
   ACTS_DEBUG("Node features shape: (" << tensors.nodeFeatures.shape()[0] << ", "
-             << tensors.nodeFeatures.shape()[1] << ")");
+                                      << tensors.nodeFeatures.shape()[1]
+                                      << ")");
 
   // Edge tensor
   inputTensors.push_back(toOnnx(memoryInfo, tensors.edgeIndex));
   inputNames.push_back(m_inputNames.at(1).c_str());
   ACTS_DEBUG("Edge index shape: (" << tensors.edgeIndex.shape()[0] << ", "
-             << tensors.edgeIndex.shape()[1] << ")");
+                                   << tensors.edgeIndex.shape()[1] << ")");
 
   // If the model has three inputs, we require edge features, otherwise throw
   if (m_inputNames.size() == 3 && !tensors.edgeFeatures.has_value()) {
     throw std::invalid_argument(
-        "ONNX edge classifier model has three inputs, but no edge features provided!");
+        "ONNX edge classifier model has three inputs, but no edge features "
+        "provided!");
   }
 
   // Edge feature tensor
   if (m_inputNames.size() == 3 && tensors.edgeFeatures.has_value()) {
     inputTensors.push_back(toOnnx(memoryInfo, *tensors.edgeFeatures));
     inputNames.push_back(m_inputNames.at(2).c_str());
-    ACTS_DEBUG("Edge features shape: (" << tensors.edgeFeatures->shape()[0] << ", "
+    ACTS_DEBUG("Edge features shape: ("
+               << tensors.edgeFeatures->shape()[0] << ", "
                << tensors.edgeFeatures->shape()[1] << ")");
   }
 

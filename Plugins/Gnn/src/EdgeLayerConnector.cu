@@ -36,11 +36,15 @@ std::vector<std::vector<int>> EdgeLayerConnector::operator()(
       Tensor<int>::Create({1, static_cast<std::size_t>(numEdges)}, execContext);
   auto edgeTgt =
       Tensor<int>::Create({1, static_cast<std::size_t>(numEdges)}, execContext);
+  ACTS_CUDA_CHECK(cudaDeviceSynchronize());
+  ACTS_CUDA_CHECK(cudaGetLastError());
 
   thrust::copy(thrust::cuda::par.on(stream), srcInt64Ptr,
                srcInt64Ptr + numEdges, edgeSrc.data());
   thrust::copy(thrust::cuda::par.on(stream), tgtInt64Ptr,
                tgtInt64Ptr + numEdges, edgeTgt.data());
+  ACTS_CUDA_CHECK(cudaDeviceSynchronize());
+  ACTS_CUDA_CHECK(cudaGetLastError());
 
   // Copy spacepoint IDs to GPU
   auto spacepointIDsTensor =
@@ -102,8 +106,8 @@ std::vector<std::vector<int>> EdgeLayerConnector::operator()(
   std::size_t avgTrackSize = 0;
 
   for (int trackIdx = 0; trackIdx < nbTracks; ++trackIdx) {
-    const auto* trackBegin = flatHits.data() + trackIdx * maxHitsPerTrack;
-    const auto* trackEnd = trackBegin + nbHits[trackIdx];
+    const int* trackBegin = flatHits.data() + trackIdx * maxHitsPerTrack;
+    const int* trackEnd = trackBegin + nbHits[trackIdx];
     trackCandidates.emplace_back(trackBegin, trackEnd);
 
     // Debug print the first 10 tracks
