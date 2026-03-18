@@ -150,7 +150,7 @@ PipelineTensors OnnxEdgeClassifier::operator()(
   ACTS_DEBUG("Create score tensor");
   auto scores =
       Tensor<float>::Create({tensors.edgeIndex.shape()[1], 1ul}, execContext);
-
+  //ACTS_INFO("Number of edges before edge classification: " << tensors.edgeIndex.shape()[1]);
   std::vector<Ort::Value> outputTensors;
   auto outputRank = m_model->GetOutputTypeInfo(0)
                         .GetTensorTypeAndShapeInfo()
@@ -165,12 +165,23 @@ PipelineTensors OnnxEdgeClassifier::operator()(
                outputNames.size());
 
   sigmoid(scores, execContext.stream);
+
+
+ // {
+ //   ExecutionContext cpuCtx{Device::Cpu(), execContext.stream};
+ //   auto scoresCpu = scores.clone(cpuCtx);
+ //   auto edgeIndexCpu = tensors.edgeIndex.clone(cpuCtx);
+ //   for (std::size_t i = 0; i < edgeIndexCpu.shape()[1]; i++) {
+ //     ACTS_INFO("Score[" << i << "]: " << scoresCpu.data()[i]);
+ //     ACTS_INFO("Edge index[" << i << "]: " << edgeIndexCpu.data()[i] << " " << edgeIndexCpu.data()[i + edgeIndexCpu.shape()[1]]);
+ //     ACTS_INFO("--------------------------------");
+ //   }
+ // }
   auto [newScores, newEdgeIndex] =
       applyScoreCut(scores, tensors.edgeIndex, m_cfg.cut, execContext.stream);
 
-  ACTS_DEBUG("Finished edge classification, after cut: "
-             << newEdgeIndex.shape()[1] << " edges.");
-
+  //ACTS_INFO("Finished edge classification, after cut: "
+  //           << newEdgeIndex.shape()[1] << " edges.");
   if (newEdgeIndex.shape()[1] == 0) {
     throw NoEdgesError{};
   }

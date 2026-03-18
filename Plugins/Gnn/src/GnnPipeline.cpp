@@ -69,12 +69,14 @@ std::vector<std::vector<int>> GnnPipeline::run(
     auto tensors =
         (*m_graphConstructor)(features, spacepointIDs.size(), moduleIds, ctx);
     auto t1 = std::chrono::high_resolution_clock::now();
+    
 
     if (timing != nullptr) {
       timing->graphBuildingTime = t1 - t0;
     }
-
+    ACTS_INFO("Number of edges after graph construction: " << tensors.edgeIndex.shape()[0] << " " << tensors.edgeIndex.shape()[1]);
     hook(tensors, ctx);
+    
 
     if (timing != nullptr) {
       timing->classifierTimes.clear();
@@ -91,7 +93,7 @@ std::vector<std::vector<int>> GnnPipeline::run(
 
       hook(tensors, ctx);
     }
-
+    // Use ACTS_INFO to show the number of edges left in the GNN pipeline
     t0 = std::chrono::high_resolution_clock::now();
     auto res = (*m_trackBuilder)(std::move(tensors), spacepointIDs, ctx);
     t1 = std::chrono::high_resolution_clock::now();

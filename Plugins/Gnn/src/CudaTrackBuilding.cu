@@ -66,8 +66,8 @@ std::vector<std::vector<int>> CudaTrackBuilding::operator()(
       return {};
     }
 
-    ACTS_DEBUG("Removed " << numEdges - numEdgesOut
-                          << " edges in junction removal");
+    //ACTS_INFO("Removed " << numEdges - numEdgesOut
+    //                      << " edges in junction removal");
     ACTS_DEBUG("Junction removal took " << ms(t0, t1) << " ms");
     numEdges = numEdgesOut;
   }
@@ -106,6 +106,7 @@ std::vector<std::vector<int>> CudaTrackBuilding::operator()(
 
   for (const auto [label, id] : zip(trackLabels, spacepointIDs)) {
     trackCandidates[label].push_back(id);
+    //ACTS_INFO("Spacepoint " << id << " label: " << label);
   }
 
   return trackCandidates;
