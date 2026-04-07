@@ -8,13 +8,14 @@
 
 #include "ActsPlugins/Gnn/ModuleMapCpu.hpp"
 
-#include <TTree_hits>
+#include <MMG/TTree_hits>
+#include <MMG/geometric_cuts>
+#include <MMG/hit>
+#include <MMG/module_map_triplet>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <geometric_cuts>
-#include <hit>
-#include <module_map_triplet>
 #include <numbers>
 #include <set>
 #include <vector>
