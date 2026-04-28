@@ -10,11 +10,63 @@
 #include "ActsPlugins/Gnn/detail/CudaUtils.hpp"
 
 #include <MMG/CUDA_edge_layer_connector>
-
 #include <thrust/copy.h>
 #include <thrust/execution_policy.h>
 
 using namespace Acts;
+
+namespace {
+
+struct MmgResult {
+  int maxHitsPerTrack{};
+  std::vector<int> nbHits;
+  std::vector<int> flatHits;
+};
+
+MmgResult buildTracksWithMmg(int numSpacepoints, int* spacepointIDs,
+                             int numEdges, int* edgeSrc, int* edgeTgt,
+                             float* edgeScores,
+                             const ActsPlugins::EdgeLayerConnector::Config& cfg,
+                             cudaStream_t stream) {
+  CUDA_edges<float> edges(numEdges, edgeSrc, edgeTgt, edgeScores, true);
+  CUDA_graph<float> graph(numSpacepoints, spacepointIDs, &edges);
+  ACTS_CUDA_CHECK(cudaDeviceSynchronize());
+  ACTS_CUDA_CHECK(cudaGetLastError());
+
+  CUDA_edge_layer_connector<float> connector(
+      &graph, cfg.weightsCut, static_cast<int>(cfg.minHits),
+      static_cast<int>(cfg.nBlocks), static_cast<int>(cfg.maxHitsPerTrack));
+  ACTS_CUDA_CHECK(cudaDeviceSynchronize());
+  ACTS_CUDA_CHECK(cudaGetLastError());
+
+  connector.build_tracks();
+  ACTS_CUDA_CHECK(cudaDeviceSynchronize());
+  ACTS_CUDA_CHECK(cudaGetLastError());
+
+  const int maxHitsPerTrack = connector.cuda_tracks()->max_hits_per_track();
+  const int tracksSize = connector.cuda_tracks()->size();
+  const int nbTracks = connector.cuda_tracks()->nb_tracks();
+  ACTS_CUDA_CHECK(cudaDeviceSynchronize());
+  ACTS_CUDA_CHECK(cudaGetLastError());
+
+  std::vector<int> nbHits(nbTracks);
+  ACTS_CUDA_CHECK(
+      cudaMemcpyAsync(nbHits.data(), connector.cuda_tracks()->nb_hits(),
+                      nbTracks * sizeof(int), cudaMemcpyDeviceToHost, stream));
+
+  std::vector<int> flatHits(tracksSize);
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(
+      flatHits.data(), connector.cuda_tracks()->hits(),
+      tracksSize * sizeof(int), cudaMemcpyDeviceToHost, stream));
+
+  ACTS_CUDA_CHECK(cudaDeviceSynchronize());
+  ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
+  ACTS_CUDA_CHECK(cudaGetLastError());
+
+  return {maxHitsPerTrack, std::move(nbHits), std::move(flatHits)};
+}
+
+}  // namespace
 
 namespace ActsPlugins {
 
@@ -54,58 +106,25 @@ std::vector<std::vector<int>> EdgeLayerConnector::operator()(
       spacepointIDs.size() * sizeof(int), cudaMemcpyHostToDevice, stream));
   ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
 
-  ACTS_DEBUG("Setup graph...");
-  // Create CUDA_edges using the ACTS constructor (takes GPU pointers directly)
-  CUDA_edges<float> edges(numEdges, edgeSrc.data(), edgeTgt.data(),
-                          tensors.edgeScores->data(), true);
-  // Use GPU constructor that takes CUDA_edges pointer
-  CUDA_graph<float> graph(numSpacepoints, spacepointIDsTensor.data(), &edges);
-  ACTS_CUDA_CHECK(cudaDeviceSynchronize());
-  ACTS_CUDA_CHECK(cudaGetLastError());
+  ACTS_DEBUG("Build tracks with MMG...");
+  auto [maxHitsPerTrack, nbHits, flatHits] = buildTracksWithMmg(
+      numSpacepoints, spacepointIDsTensor.data(), numEdges, edgeSrc.data(),
+      edgeTgt.data(), tensors.edgeScores->data(), m_cfg, stream);
 
-  ACTS_DEBUG("Setup EdgeLayerConnector...");
-  CUDA_edge_layer_connector<float> connector(
-      &graph, m_cfg.weightsCut, static_cast<int>(m_cfg.minHits),
-      static_cast<int>(m_cfg.nBlocks), static_cast<int>(m_cfg.maxHitsPerTrack));
-  ACTS_CUDA_CHECK(cudaDeviceSynchronize());
-  ACTS_CUDA_CHECK(cudaGetLastError());
-
-  ACTS_DEBUG("Build tracks...");
-  connector.build_tracks();
-  ACTS_CUDA_CHECK(cudaDeviceSynchronize());
-  ACTS_CUDA_CHECK(cudaGetLastError());
-
-  const int maxHitsPerTrack = connector.cuda_tracks()->max_hits_per_track();
-  const int tracksSize = connector.cuda_tracks()->size();
-  const int nbTracks = connector.cuda_tracks()->nb_tracks();
-  ACTS_CUDA_CHECK(cudaDeviceSynchronize());
-  ACTS_CUDA_CHECK(cudaGetLastError());
-
-  ACTS_DEBUG("maxHitsPerTrack: " << maxHitsPerTrack << ", tracksSize: "
-                                 << tracksSize << ", nbTracks: " << nbTracks);
-
-  std::vector<int> nbHits(nbTracks);
-  ACTS_CUDA_CHECK(
-      cudaMemcpyAsync(nbHits.data(), connector.cuda_tracks()->nb_hits(),
-                      nbTracks * sizeof(int), cudaMemcpyDeviceToHost, stream));
-
-  std::vector<int> flatHits(tracksSize);
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(
-      flatHits.data(), connector.cuda_tracks()->hits(),
-      tracksSize * sizeof(int), cudaMemcpyDeviceToHost, stream));
-
-  ACTS_CUDA_CHECK(cudaDeviceSynchronize());
   ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
-  ACTS_CUDA_CHECK(cudaGetLastError());
+
+  ACTS_DEBUG("maxHitsPerTrack: " << maxHitsPerTrack
+                                 << ", tracksSize: " << flatHits.size()
+                                 << ", nbTracks: " << nbHits.size());
 
   std::vector<std::vector<int>> trackCandidates;
-  trackCandidates.reserve(nbTracks);
+  trackCandidates.reserve(nbHits.size());
 
   std::size_t minTrackSize = std::numeric_limits<std::size_t>::max();
   std::size_t maxTrackSize = 0;
   std::size_t avgTrackSize = 0;
 
-  for (int trackIdx = 0; trackIdx < nbTracks; ++trackIdx) {
+  for (std::size_t trackIdx = 0; trackIdx < nbHits.size(); ++trackIdx) {
     const int* trackBegin = flatHits.data() + trackIdx * maxHitsPerTrack;
     const int* trackEnd = trackBegin + nbHits[trackIdx];
     trackCandidates.emplace_back(trackBegin, trackEnd);
@@ -127,7 +146,7 @@ std::vector<std::vector<int>> EdgeLayerConnector::operator()(
     avgTrackSize += trackSize;
   }
 
-  avgTrackSize /= nbTracks;
+  avgTrackSize /= nbHits.size();
   ACTS_DEBUG("Min/Avg/Max track size: " << minTrackSize << "/" << avgTrackSize
                                         << "/" << maxTrackSize);
 
