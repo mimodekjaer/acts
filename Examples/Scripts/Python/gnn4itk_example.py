@@ -227,15 +227,6 @@ def runGNN4ITk(
         logLevel=logLevel,
     )
 
-    # Select primary particles with minimum 7 hits and 1 GeV pT for efficiency evaluation
-    s.addWhiteboardAlias("particles_simulated_selected", "particles")
-    particleSelectorConfig = ParticleSelectorConfig(
-        pt=(1.0 * u.GeV, None),
-        hits=(7, None),
-        removeSecondaries=True,
-    )
-    addDigiParticleSelection(s, particleSelectorConfig, logLevel=logLevel)
-
     # Add track finding performance writer
     s.addWriter(
         RootTrackFinderPerformanceWriter(
