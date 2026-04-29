@@ -29,6 +29,9 @@ MmgResult buildTracksWithMmg(int numSpacepoints, int* spacepointIDs,
                              const ActsPlugins::EdgeLayerConnector::Config& cfg,
                              cudaStream_t stream) {
   CUDA_edges<float> edges(numEdges, edgeSrc, edgeTgt, edgeScores, true);
+  ACTS_CUDA_CHECK(cudaDeviceSynchronize());
+  ACTS_CUDA_CHECK(cudaGetLastError());
+
   CUDA_graph<float> graph(numSpacepoints, spacepointIDs, &edges);
   ACTS_CUDA_CHECK(cudaDeviceSynchronize());
   ACTS_CUDA_CHECK(cudaGetLastError());
@@ -88,19 +91,20 @@ std::vector<std::vector<int>> EdgeLayerConnector::operator()(
       Tensor<int>::Create({1, static_cast<std::size_t>(numEdges)}, execContext);
   auto edgeTgt =
       Tensor<int>::Create({1, static_cast<std::size_t>(numEdges)}, execContext);
-  ACTS_CUDA_CHECK(cudaDeviceSynchronize());
   ACTS_CUDA_CHECK(cudaGetLastError());
+  ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
 
   thrust::copy(thrust::cuda::par.on(stream), srcInt64Ptr,
                srcInt64Ptr + numEdges, edgeSrc.data());
   thrust::copy(thrust::cuda::par.on(stream), tgtInt64Ptr,
                tgtInt64Ptr + numEdges, edgeTgt.data());
-  ACTS_CUDA_CHECK(cudaDeviceSynchronize());
   ACTS_CUDA_CHECK(cudaGetLastError());
+  ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
 
   // Copy spacepoint IDs to GPU
   auto spacepointIDsTensor =
       Tensor<int>::Create({1, spacepointIDs.size()}, execContext);
+  ACTS_CUDA_CHECK(cudaGetLastError());
   ACTS_CUDA_CHECK(cudaMemcpyAsync(
       spacepointIDsTensor.data(), spacepointIDs.data(),
       spacepointIDs.size() * sizeof(int), cudaMemcpyHostToDevice, stream));
