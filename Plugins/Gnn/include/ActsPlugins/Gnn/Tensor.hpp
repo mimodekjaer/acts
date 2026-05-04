@@ -237,5 +237,16 @@ template <Acts::Concepts::arithmetic T>
 Tensor<T> selectCols(const Tensor<T> &tensor, const Tensor<bool> &mask,
                      const ExecutionContext &execContext);
 
+/// Take the first n columns of a 2D tensor, returning a new tensor with shape
+/// [rows, n]. Useful to select a subset of features, e.g. the first n node
+/// features from a tensor of shape [nNodes, nFeatures].
+/// @param tensor The input tensor with shape [rows, cols]
+/// @param n Number of columns to keep (must be <= cols)
+/// @param stream The CUDA stream to use for CUDA tensors
+/// @return New tensor of shape [rows, n] with only the first n columns copied
+Tensor<float> takeFirstNColumns(const Tensor<float> &tensor, std::size_t n,
+                                std::optional<cudaStream_t> stream = {});
+
 /// @}
 }  // namespace ActsPlugins
+

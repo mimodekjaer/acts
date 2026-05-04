@@ -226,7 +226,7 @@ PipelineTensors TensorRTEdgeClassifier::operator()(
 
   sigmoid(scores, execContext.stream);
 
-  ACTS_VERBOSE("Size after classifier: " << scores.shape()[0]);
+  ACTS_DEBUG("Size after classifier: " << scores.shape()[0]);
   printCudaMemInfo(logger());
 
   auto mask = scoreMask(scores, m_cfg.cut, execContext.stream);

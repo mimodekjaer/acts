@@ -9,6 +9,7 @@
 #include "ActsPlugins/Gnn/GnnPipeline.hpp"
 
 #include "Acts/Utilities/Helpers.hpp"
+#include "ActsPlugins/Gnn/Tensor.hpp"
 #include "ActsPlugins/Gnn/detail/NvtxUtils.hpp"
 
 #ifdef ACTS_GNN_WITH_CUDA
@@ -53,7 +54,8 @@ GnnPipeline::GnnPipeline(
 
 std::vector<std::vector<int>> GnnPipeline::run(
     std::vector<float> &features, const std::vector<std::uint64_t> &moduleIds,
-    std::vector<int> &spacePointIds, Device device, const GnnHook &hook,
+    std::vector<int> &spacePointIds, Device device,
+    std::optional<std::size_t> maxNodeFeatures, const GnnHook &hook,
     GnnTiming *timing) const {
   ExecutionContext ctx;
   ctx.device = device;
@@ -76,8 +78,14 @@ std::vector<std::vector<int>> GnnPipeline::run(
     if (timing != nullptr) {
       timing->graphBuildingTime = t1 - t0;
     }
+    ACTS_DEBUG("Number of edges after graph construction: " << tensors.edgeIndex.shape()[0] << " " << tensors.edgeIndex.shape()[1]);
 
     hook(tensors, ctx);
+
+    if (maxNodeFeatures.has_value()) {
+      tensors.nodeFeatures =
+          takeFirstNColumns(tensors.nodeFeatures, *maxNodeFeatures, ctx.stream);
+    }
 
     if (timing != nullptr) {
       timing->classifierTimes.clear();
@@ -96,6 +104,7 @@ std::vector<std::vector<int>> GnnPipeline::run(
 
       hook(tensors, ctx);
     }
+    
 
     t0 = std::chrono::high_resolution_clock::now();
     ACTS_NVTX_START(track_building);
@@ -120,3 +129,4 @@ std::vector<std::vector<int>> GnnPipeline::run(
 }
 
 }  // namespace ActsPlugins
+

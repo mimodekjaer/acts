@@ -13,6 +13,7 @@
 
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include <boost/container/small_vector.hpp>
@@ -64,11 +65,15 @@ class GnnPipeline {
   /// @param device Device to run on (CPU/GPU)
   /// @param hook Optional callback hook for pipeline execution
   /// @param timing Optional timing output
+  /// @param maxNodeFeatures If set, node features are sliced to the first n
+  ///        columns after graph construction and before edge classification
   /// @return Vector of track candidates (each track is a vector of space point IDs)
   std::vector<std::vector<int>> run(std::vector<float> &features,
                                     const std::vector<std::uint64_t> &moduleIds,
                                     std::vector<int> &spacePointIDs,
-                                    Device device, const GnnHook &hook = {},
+                                    Device device,
+                                    std::optional<std::size_t> maxNodeFeatures = {},
+                                    const GnnHook &hook = {},
                                     GnnTiming *timing = nullptr) const;
 
  private:
@@ -83,3 +88,4 @@ class GnnPipeline {
 
 /// @}
 }  // namespace ActsPlugins
+

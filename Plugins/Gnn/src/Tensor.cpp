@@ -277,4 +277,41 @@ template Tensor<std::int64_t> selectCols(const Tensor<std::int64_t> &,
                                          const Tensor<bool> &,
                                          const ExecutionContext &);
 
+Tensor<float> takeFirstNColumns(const Tensor<float> &tensor, std::size_t n,
+                                std::optional<cudaStream_t> stream) {
+  const auto nRows = tensor.shape()[0];
+  const auto nCols = tensor.shape()[1];
+
+  if (n > nCols) {
+    throw std::invalid_argument(
+        "takeFirstNColumns: n (" + std::to_string(n) +
+        ") exceeds number of columns (" + std::to_string(nCols) + ")");
+  }
+
+  ExecutionContext execContext{tensor.device(), stream};
+  auto output = Tensor<float>::Create({nRows, n}, execContext);
+
+  if (tensor.device().isCpu()) {
+    for (std::size_t row = 0; row < nRows; ++row) {
+      std::memcpy(output.data() + row * n, tensor.data() + row * nCols,
+                  n * sizeof(float));
+    }
+  } else {
+#ifdef ACTS_GNN_WITH_CUDA
+    assert(stream.has_value());
+    ACTS_CUDA_CHECK(cudaMemcpy2DAsync(
+        output.data(), n * sizeof(float), tensor.data(), nCols * sizeof(float),
+        n * sizeof(float), nRows, cudaMemcpyDeviceToDevice, stream.value()));
+#else
+    throw std::runtime_error(
+        "Cannot take columns of CUDA tensor, library was not compiled with "
+        "CUDA");
+#endif
+  }
+
+  return output;
+}
+
+
 }  // namespace ActsPlugins
+
