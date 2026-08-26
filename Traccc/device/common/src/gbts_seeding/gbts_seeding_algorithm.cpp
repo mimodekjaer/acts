@@ -438,8 +438,7 @@ auto gbts_seeding_algorithm::extract_seeds(
        seed_ambiguity_buf, path_store_buf, output_graph, reducedSP,
        output_seeds, hit_bids_buf, cfg.gbts_convert_seeds_params});
 
-  const unsigned int outputSeeds = copy().get_size(output_seeds);
-  TRACCC_DEBUG("GBTS found " << outputSeeds << " seeds");
+  // No synchronisation here: the caller reads the seed count.
   return output_seeds;
 }
 
