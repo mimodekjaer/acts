@@ -174,6 +174,11 @@ int throughput_st(std::string_view description, int argc, char* argv[],
         [&](const edm::silicon_cell_collection::host& cells) -> std::size_t {
       return (*alg)(cells).size();
     };
+  } else if (throughput_opts.reco_stage ==
+             opts::throughput::stage::seeding_only) {
+    throw std::invalid_argument(
+        "The \"seeding-only\" stage is only available in the multi-threaded "
+        "throughput example");
   } else {
     throw std::invalid_argument("Unknown reconstruction stage");
   }
