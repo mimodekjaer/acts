@@ -107,7 +107,18 @@ struct gbts_find_minmax_radius {
   ALPAKA_FN_ACC void operator()(
       TAcc const& acc,
       const device::gbts_find_minmax_radius_payload payload) const {
-    device::gbts_find_minmax_radius(details::thread_id1{acc}, payload);
+    auto& shared_min = ::alpaka::declareSharedVar<
+        float[device::gbts_find_minmax_radius_block_size], __COUNTER__>(acc);
+    auto& shared_max = ::alpaka::declareSharedVar<
+        float[device::gbts_find_minmax_radius_block_size], __COUNTER__>(acc);
+    const alpaka::barrier<TAcc> barrier(&acc);
+
+    device::gbts_find_minmax_radius(
+        details::thread_id1{acc}, barrier, payload,
+        {vecmem::data::vector_view<float>(
+             device::gbts_find_minmax_radius_block_size, &shared_min[0]),
+         vecmem::data::vector_view<float>(
+             device::gbts_find_minmax_radius_block_size, &shared_max[0])});
   }
 };
 
@@ -346,8 +357,9 @@ void gbts_seeding_algorithm::gbts_sort_nodes_kernel(
 
 void gbts_seeding_algorithm::gbts_find_minmax_radius_kernel(
     const device::gbts_find_minmax_radius_payload& payload) const {
-  const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nEtaBins - 1) / n_threads;
+  // One block per eta bin.
+  const unsigned int n_threads = device::gbts_find_minmax_radius_block_size;
+  const unsigned int n_blocks = payload.nEtaBins;
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),
                       kernels::gbts_find_minmax_radius{}, payload);
