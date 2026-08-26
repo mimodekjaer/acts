@@ -64,14 +64,27 @@ TRACCC_HOST_DEVICE inline bool gbts_bin_one_spacepoint(
     const unsigned int surface_index =
         static_cast<unsigned int>(geo_id.index());
 
-    for (unsigned int surface =
-             static_cast<unsigned int>(-1 * (begin_or_bin + 1));
-         surface < payload.surfaceMapSize; surface++) {
+    // The volume's block: a header (count) then the surfaces sorted by
+    // surface index -> binary search.
+    const unsigned int block =
+        static_cast<unsigned int>(-1 * (begin_or_bin + 1));
+    unsigned int lo = block + 1u;
+    unsigned int hi = lo + surfaceToLayerMap[block].first;
+    if (hi > payload.surfaceMapSize) {
+      hi = static_cast<unsigned int>(payload.surfaceMapSize);
+    }
+    while (lo < hi) {
+      const unsigned int mid = lo + (hi - lo) / 2u;
       const std::pair<unsigned int, unsigned int> surfaceBinPair =
-          surfaceToLayerMap[surface];
+          surfaceToLayerMap[mid];
       if (surfaceBinPair.first == surface_index) {
         layerIdx = surfaceBinPair.second;
         break;
+      }
+      if (surfaceBinPair.first < surface_index) {
+        lo = mid + 1u;
+      } else {
+        hi = mid;
       }
     }
   } else {

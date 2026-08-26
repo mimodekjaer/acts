@@ -258,6 +258,9 @@ struct gbts_seedfinder_config {
   unsigned int nLayers = 0;
 
   std::vector<int16_t> volumeToLayerMap{};
+  // Per volume that spans several layers: a block [(surface count, 0),
+  // (surface index, layer)... sorted by surface index]; volumeToLayerMap
+  // holds -(block start + 1) for such volumes.
   std::vector<std::pair<unsigned int, unsigned int>> surfaceToLayerMap{};
 
   // Per kernel structs

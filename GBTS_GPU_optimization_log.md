@@ -181,3 +181,11 @@ blob (16-byte aligned sections) and uploaded with ONE H2D copy per event
 one zeroed `unsigned int` buffer (one memset instead of three). No kernel
 change: the gain is purely fewer GPU operations (each memcpy/memset costs
 ~2-3 us of launch gap on the timeline). Seeds identical.
+
+### 6. Binary search in the surface-to-layer map  -> bin_spacepoints 70 -> 62 us
+`setLinkingScheme` writes the surfaces of a multi-layer volume as a block
+[(count, 0), (surface index, layer)... sorted]; `gbts_bin_spacepoints`
+binary-searches the block instead of scanning linearly (previously up to the
+end of the whole 1140-entry map). Seeds identical; throughput 0.874 ->
+0.873 ms/event (the kernel is otherwise a latency-bound chain of dependent
+loads: spacepoint -> measurement -> surface link -> volume map -> layer).

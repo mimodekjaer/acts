@@ -72,7 +72,13 @@ bool gbts_seedfinder_config::setLinkingScheme(
         split_volumes++;
         bin = -1 * static_cast<short>(
                        surfaceToLayerMap.size() +
-                       1);  // start of this volume's surfaces in the map + 1
+                       1);  // start of this volume's block in the map + 1
+        // Block layout: a header (number of surfaces, unused) followed by the
+        // (surface index, layer) pairs sorted by surface index, so the device
+        // can binary-search a volume's surfaces.
+        std::ranges::sort(surfacesInVolume);
+        surfaceToLayerMap.push_back(std::make_pair(
+            static_cast<unsigned int>(surfacesInVolume.size()), 0u));
         for (std::pair<unsigned int, unsigned int> pair : surfacesInVolume)
           surfaceToLayerMap.push_back(pair);
       }
