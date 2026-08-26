@@ -115,6 +115,14 @@ class gbts_seeding_algorithm
   virtual void gbts_sort_nodes_kernel(
       const gbts_sort_nodes_payload& payload) const = 0;
 
+  /// Node key sorting launcher: sorts (sort_keys, sort_values) of the
+  /// payload in place (a library sort, no kernel of our own)
+  ///
+  /// @param payload The payload for the kernel
+  ///
+  virtual void gbts_sort_node_keys_kernel(
+      const gbts_sort_nodes_payload& payload) const = 0;
+
   /// Edge work-list building kernel launcher (single block)
   ///
   /// @param payload The payload for the kernel

@@ -11,6 +11,7 @@
 #include "traccc/definitions/qualifiers.hpp"
 #include "traccc/device/concepts/barrier.hpp"
 #include "traccc/device/concepts/thread_id.hpp"
+#include "traccc/gbts_seeding/device/gbts_bin_spacepoints.hpp"
 #include "traccc/gbts_seeding/gbts_types.hpp"
 
 // VecMem include(s).
@@ -31,8 +32,8 @@ struct gbts_build_edge_work_list_payload {
   unsigned int nBinPairs;
   /// Chunk size of the inner bin of a graph-making work item
   unsigned int chunkSize;
-  /// Per eta bin: node count (from gbts_bin_spacepoints)
-  vecmem::data::vector_view<const unsigned int> eta_node_counter;
+  /// The sorted node keys (rejected keys last), nKeys entries
+  vecmem::data::vector_view<const gbts_sort_key_t> sort_keys;
   /// Per bin pair: (bin1, bin2)
   vecmem::data::vector_view<const uint2> bin_pairs;
   /// Output: per eta bin (begin, end) node range, flat
@@ -59,8 +60,9 @@ struct gbts_build_edge_work_list_shared_payload {
 /// @brief Turn the per-eta-bin node counts into node ranges and lay out the
 /// graph-making work items, entirely on the device (single block).
 ///
-/// Replaces the host-side prefix sums (and their synchronisation) of the
-/// node counts and of the per-pair chunk counts. A work item is one
+/// The node ranges come from binary searches of the sorted keys (no node
+/// counting is needed); the work item offsets from a block scan of the
+/// per-pair chunk counts. A work item is one
 /// (bin pair, chunkSize-sized chunk of the pair's inner bin); pairs with an
 /// empty bin get no work items.
 ///

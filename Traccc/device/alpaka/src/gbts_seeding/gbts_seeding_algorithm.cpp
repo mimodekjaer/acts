@@ -277,14 +277,17 @@ void gbts_seeding_algorithm::gbts_bin_spacepoints_kernel(
                       kernels::gbts_bin_spacepoints{}, payload);
 }
 
-void gbts_seeding_algorithm::gbts_sort_nodes_kernel(
+void gbts_seeding_algorithm::gbts_sort_node_keys_kernel(
     const device::gbts_sort_nodes_payload& payload) const {
   // Order the nodes by their (eta bin, phi, spacepoint index bits) keys,
   // carrying the full spacepoint index along as the value.
   details::sort_by_key(
       details::get_queue(queue()), mr(), payload.sort_keys.ptr(),
       payload.sort_keys.ptr() + payload.nKeys, payload.sort_values.ptr());
+}
 
+void gbts_seeding_algorithm::gbts_sort_nodes_kernel(
+    const device::gbts_sort_nodes_payload& payload) const {
   const unsigned int n_threads = 256;
   const unsigned int n_blocks = 1 + (payload.nKeys - 1) / n_threads;
   ::alpaka::exec<Acc>(details::get_queue(queue()),

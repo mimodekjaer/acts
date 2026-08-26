@@ -99,7 +99,6 @@ class gbts_count_terminus_edges;
 /// Class identifying the kernel running @c traccc::device::gbts_fill_path_store
 class gbts_fill_path_store;
 
-
 /// Class identifying the kernel running @c
 /// traccc::device::gbts_bid_seeds_for_edges
 class gbts_bid_seeds_for_edges;
@@ -168,7 +167,7 @@ void gbts_seeding_algorithm::gbts_build_edge_work_list_kernel(
   });
 }
 
-void gbts_seeding_algorithm::gbts_sort_nodes_kernel(
+void gbts_seeding_algorithm::gbts_sort_node_keys_kernel(
     const device::gbts_sort_nodes_payload& payload) const {
   ::sycl::queue& squeue = details::get_queue(queue());
   squeue.throw_asynchronous();
@@ -178,6 +177,12 @@ void gbts_seeding_algorithm::gbts_sort_nodes_kernel(
   oneapi::dpl::sort_by_key(
       oneapi::dpl::execution::device_policy{squeue}, payload.sort_keys.ptr(),
       payload.sort_keys.ptr() + payload.nKeys, payload.sort_values.ptr());
+}
+
+void gbts_seeding_algorithm::gbts_sort_nodes_kernel(
+    const device::gbts_sort_nodes_payload& payload) const {
+  ::sycl::queue& squeue = details::get_queue(queue());
+  squeue.throw_asynchronous();
 
   const unsigned int n_threads = 256;
   squeue.submit([&](::sycl::handler& h) {
@@ -382,7 +387,6 @@ void gbts_seeding_algorithm::gbts_fill_path_store_kernel(
         });
   });
 }
-
 
 void gbts_seeding_algorithm::gbts_bid_seeds_for_edges_kernel(
     const device::gbts_bid_seeds_for_edges_payload& payload) const {

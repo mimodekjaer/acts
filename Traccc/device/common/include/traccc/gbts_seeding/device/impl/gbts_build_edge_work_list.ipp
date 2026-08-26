@@ -35,6 +35,27 @@ TRACCC_HOST_DEVICE inline unsigned int gbts_block_inclusive_scan(
   return scratch[threadIndex];
 }
 
+/// First index in [begin, end) of the sorted keys with key >= value
+template <typename vector_t>
+TRACCC_HOST_DEVICE inline unsigned int gbts_key_lower_bound(
+    const vector_t& keys, unsigned int begin, unsigned int end,
+    const gbts_sort_key_t value) {
+  while (begin < end) {
+    const unsigned int mid = begin + (end - begin) / 2u;
+    if (keys[mid] < value) {
+      begin = mid + 1u;
+    } else {
+      end = mid;
+    }
+  }
+  return begin;
+}
+template <typename vector_t>
+TRACCC_HOST_DEVICE inline unsigned int gbts_key_lower_bound(
+    const vector_t& keys, unsigned int end, const gbts_sort_key_t value) {
+  return gbts_key_lower_bound(keys, 0u, end, value);
+}
+
 }  // namespace detail
 
 template <concepts::thread_id1 thread_id_t, concepts::barrier barrier_t>
@@ -42,8 +63,8 @@ TRACCC_HOST_DEVICE inline void gbts_build_edge_work_list(
     const thread_id_t& thread_id, const barrier_t& barrier,
     const gbts_build_edge_work_list_payload& payload,
     const gbts_build_edge_work_list_shared_payload& shared_payload) {
-  const vecmem::device_vector<const unsigned int> d_eta_node_counter(
-      payload.eta_node_counter);
+  const vecmem::device_vector<const gbts_sort_key_t> d_sort_keys(
+      payload.sort_keys);
   const vecmem::device_vector<const uint2> d_bin_pairs(payload.bin_pairs);
   vecmem::device_vector<unsigned int> d_eta_bin_views(payload.eta_bin_views);
   vecmem::device_vector<unsigned int> d_pair_work_begin(
@@ -58,27 +79,24 @@ TRACCC_HOST_DEVICE inline void gbts_build_edge_work_list(
   // sequentially, and one block scan of the strip totals gives the offsets:
   // one block scan per phase instead of one per blockSize elements.
 
-  // 1. Node ranges of the eta bins.
+  // 1. Node ranges of the eta bins: the keys are sorted by (eta bin, phi)
+  //    with the rejected keys last, so every bin's range is a binary search.
   {
-    const unsigned int strip = (payload.nEtaBins + blockSize - 1u) / blockSize;
-    const unsigned int begin = threadIndex * strip;
-    const unsigned int end =
-        (begin + strip < payload.nEtaBins) ? begin + strip : payload.nEtaBins;
-    unsigned int total = 0u;
-    for (unsigned int bin = begin; bin < end; bin++) {
-      total += d_eta_node_counter[bin];
-    }
-    const unsigned int inclusive = detail::gbts_block_inclusive_scan(
-        barrier, scratch, threadIndex, blockSize, total);
-    unsigned int running = inclusive - total;
-    for (unsigned int bin = begin; bin < end; bin++) {
-      const unsigned int count = d_eta_node_counter[bin];
-      d_eta_bin_views[2u * bin] = running;
-      running += count;
-      d_eta_bin_views[2u * bin + 1u] = running;
+    const unsigned int nKeys = d_sort_keys.size();
+    for (unsigned int bin = threadIndex; bin < payload.nEtaBins;
+         bin += blockSize) {
+      const gbts_sort_key_t first = bin << gbts_sort_key_eta_shift;
+      const gbts_sort_key_t next = (bin + 1u) << gbts_sort_key_eta_shift;
+      const unsigned int begin =
+          detail::gbts_key_lower_bound(d_sort_keys, nKeys, first);
+      const unsigned int end =
+          detail::gbts_key_lower_bound(d_sort_keys, begin, nKeys, next);
+      d_eta_bin_views[2u * bin] = begin;
+      d_eta_bin_views[2u * bin + 1u] = end;
     }
     if (threadIndex == 0u) {
-      *payload.nNodes = scratch[blockSize - 1u];
+      *payload.nNodes = detail::gbts_key_lower_bound(
+          d_sort_keys, nKeys, payload.nEtaBins << gbts_sort_key_eta_shift);
     }
   }
   // The eta bin views are read by every thread below, and scratch is
@@ -87,12 +105,10 @@ TRACCC_HOST_DEVICE inline void gbts_build_edge_work_list(
 
   // 2. Work items of the bin pairs.
   {
-    const unsigned int strip =
-        (payload.nBinPairs + blockSize - 1u) / blockSize;
+    const unsigned int strip = (payload.nBinPairs + blockSize - 1u) / blockSize;
     const unsigned int begin = threadIndex * strip;
-    const unsigned int end = (begin + strip < payload.nBinPairs)
-                                 ? begin + strip
-                                 : payload.nBinPairs;
+    const unsigned int end =
+        (begin + strip < payload.nBinPairs) ? begin + strip : payload.nBinPairs;
     unsigned int total = 0u;
     for (unsigned int pair = begin; pair < end; pair++) {
       const uint2 bins = d_bin_pairs[pair];

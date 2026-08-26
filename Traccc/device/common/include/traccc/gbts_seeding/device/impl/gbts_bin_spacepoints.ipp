@@ -43,9 +43,8 @@ TRACCC_HOST_DEVICE inline bool gbts_bin_one_spacepoint(
     const vecmem::device_vector<const std::pair<unsigned int, unsigned int>>&
         d_layer_info,
     const vecmem::device_vector<const std::pair<float, float>>& d_layer_geo,
-    vecmem::device_vector<float4>& reducedSP,
-    vecmem::device_vector<unsigned int>& d_eta_node_counter,
-    const unsigned int globalIndex, gbts_sort_key_t& key) {
+    vecmem::device_vector<float4>& reducedSP, const unsigned int globalIndex,
+    gbts_sort_key_t& key) {
   // --- Stage 1: layer assignment -----------
   const auto spacepoint = spacepoints.at(globalIndex);
   const auto measurement = measurements.at(spacepoint.measurement_index_1());
@@ -127,8 +126,6 @@ TRACCC_HOST_DEVICE inline bool gbts_bin_one_spacepoint(
                                   static_cast<float>(num_eta_bins - 1u))));
     eta_index = bin0 + binIdx;
   }
-  vecmem::device_atomic_ref<unsigned int>(d_eta_node_counter[eta_index])
-      .fetch_add(1u);
 
   // --- Stage 3: node_sort_key -----------
   // Concatenate the eta bin, order-preserving phi bits, and the spacepoint
@@ -158,8 +155,6 @@ TRACCC_HOST_DEVICE inline void gbts_bin_spacepoints(
       payload.layer_geo);
 
   vecmem::device_vector<float4> reducedSP(payload.reducedSP);
-  vecmem::device_vector<unsigned int> d_eta_node_counter(
-      payload.eta_node_counter);
   vecmem::device_vector<gbts_sort_key_t> d_sort_keys(payload.sort_keys);
   vecmem::device_vector<unsigned int> d_sort_values(payload.sort_values);
 
@@ -174,10 +169,10 @@ TRACCC_HOST_DEVICE inline void gbts_bin_spacepoints(
     gbts_sort_key_t key = gbts_sort_key_rejected;
     if (globalIndex < nSp) {
       gbts_sort_key_t node_key = 0u;
-      if (detail::gbts_bin_one_spacepoint(
-              payload, spacepoints, measurements, volumeToLayerMap,
-              surfaceToLayerMap, layerType, d_layer_info, d_layer_geo,
-              reducedSP, d_eta_node_counter, globalIndex, node_key)) {
+      if (detail::gbts_bin_one_spacepoint(payload, spacepoints, measurements,
+                                          volumeToLayerMap, surfaceToLayerMap,
+                                          layerType, d_layer_info, d_layer_geo,
+                                          reducedSP, globalIndex, node_key)) {
         key = node_key;
       }
     }

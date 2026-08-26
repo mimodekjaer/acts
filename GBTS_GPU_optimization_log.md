@@ -246,3 +246,14 @@ SLOWER than the uncached fused kernel (70 us); dropped.
   on the chain kept in registers (bit-identical operations). Removes the
   fit_segments kernel: 0.848 -> ~0.842 ms/event (fill+fit 24.6 us vs 21 + 9).
 Seeds identical (1 953 000) in every step.
+
+### 8. No atomics in gbts_bin_spacepoints  -> 0.800 ms/event (-5%)
+The per-eta-bin node counters (one atomic add per spacepoint) were the
+entire cost of `gbts_bin_spacepoints`: consecutive spacepoints belong to the
+same eta bin, so whole warps serialised on one address. They are gone: the
+kernel only writes the reduced parameters and the sort key; the per-eta-bin
+node ranges are found by binary searches of the *sorted* keys in the
+work-list kernel (the sort launcher is split into `gbts_sort_node_keys_kernel`
++ `gbts_sort_nodes_kernel`, the work-list kernel runs in between).
+bin_spacepoints 62 -> 8.5 us, work-list kernel 20 -> 36 us (two searches
+per bin, see entry 9), zero buffer without the eta section. Seeds identical.

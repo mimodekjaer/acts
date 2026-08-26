@@ -49,10 +49,8 @@ auto gbts_seeding_algorithm::make_nodes(
   // Every per-node buffer is sized for the capacity of the spacepoint
   // collection; the actual counts are only ever read on the device.
   const unsigned int nSp = spacepoints.capacity();
-  // Layout of the zeroed buffer: [counters | eta node counters | edge CSR]
+  // Layout of the zeroed buffer: [counters | edge CSR]
   unsigned int* d_counters = zero_buf.ptr();
-  const vecmem::data::vector_view<unsigned int> eta_node_counter_buf(
-      cfg.n_eta_bins, zero_buf.ptr() + gbts_counter::nCounters);
 
   // Check that the number of eta bins is compatible with the node sort key
   // field width.
@@ -100,9 +98,32 @@ auto gbts_seeding_algorithm::make_nodes(
   gbts_bin_spacepoints_kernel(
       {nSp, cfg.n_eta_bins, spacepoints, measurements, volumeToLayerMap_buf,
        surfaceToLayerMap_buf, layerType_buf, layer_info_buf, layer_geo_buf,
-       reducedSP_buf, eta_node_counter_buf, sort_keys_buf, sort_values_buf,
+       reducedSP_buf, sort_keys_buf, sort_values_buf,
        cfg.volumeToLayerMap.size(), cfg.surfaceToLayerMap.size(),
        cfg.gbts_count_spacepoints_by_layer_params});
+
+  // Per-node outputs of the gather (node sorting) kernel.
+  vecmem::data::vector_buffer<float4> node_params_buf(nSp, mr().main);
+  copy().setup(node_params_buf)->ignore();
+  vecmem::data::vector_buffer<float> node_phi_buf(nSp, mr().main);
+  copy().setup(node_phi_buf)->ignore();
+  vecmem::data::vector_buffer<unsigned int> node_index_buf(nSp, mr().main);
+  copy().setup(node_index_buf)->ignore();
+
+  // 2. Sort the node keys (rejected keys last), in place.
+  const gbts_sort_nodes_payload sort_nodes_payload{
+      nSp,
+      cfg.n_eta_bins,
+      d_counters + gbts_counter::nNodes,
+      reducedSP_buf,
+      sort_keys_buf,
+      sort_values_buf,
+      node_params_buf,
+      node_phi_buf,
+      node_index_buf,
+      tau_lut_buf,
+      cfg.gbts_sort_nodes_params};
+  gbts_sort_node_keys_kernel(sort_nodes_payload);
 
   // 2. Node ranges of the eta bins and the graph-making work list, on the
   //    device (no synchronisation).
@@ -124,22 +145,12 @@ auto gbts_seeding_algorithm::make_nodes(
 
   gbts_build_edge_work_list_kernel(
       {cfg.n_eta_bins, m_nBinPairs, gbts_consts::node_buffer_length,
-       eta_node_counter_buf, bin_pairs_buf, eta_bin_views_buf,
-       pair_work_begin_buf, work_items_buf, d_counters + gbts_counter::nNodes,
+       sort_keys_buf, bin_pairs_buf, eta_bin_views_buf, pair_work_begin_buf,
+       work_items_buf, d_counters + gbts_counter::nNodes,
        d_counters + gbts_counter::nWork});
 
-  // 3. Sort the nodes and pack their parameters.
-  vecmem::data::vector_buffer<float4> node_params_buf(nSp, mr().main);
-  copy().setup(node_params_buf)->ignore();
-  vecmem::data::vector_buffer<float> node_phi_buf(nSp, mr().main);
-  copy().setup(node_phi_buf)->ignore();
-  vecmem::data::vector_buffer<unsigned int> node_index_buf(nSp, mr().main);
-  copy().setup(node_index_buf)->ignore();
-
-  gbts_sort_nodes_kernel(
-      {nSp, cfg.n_eta_bins, d_counters + gbts_counter::nNodes, reducedSP_buf,
-       sort_keys_buf, sort_values_buf, node_params_buf, node_phi_buf,
-       node_index_buf, tau_lut_buf, cfg.gbts_sort_nodes_params});
+  // 3. Gather the nodes into their sorted slots and pack their parameters.
+  gbts_sort_nodes_kernel(sort_nodes_payload);
 
   vecmem::data::vector_buffer<float> bin_rads_buf(2 * cfg.n_eta_bins,
                                                   mr().main);
@@ -186,7 +197,7 @@ auto gbts_seeding_algorithm::create_edges(
   // The edge CSR ([node] = bucket begin after the scan) is the zeroed tail
   // of the shared buffer.
   const vecmem::data::vector_view<unsigned int> num_incoming_edges_buf(
-      nSp + 1, d_counters + gbts_counter::nCounters + cfg.n_eta_bins);
+      nSp + 1, d_counters + gbts_counter::nCounters);
 
   // 1. Count the edges per inner node, then write them in canonical (inner
   //    node bucket, outer node ascending) order. The work list lives on the
@@ -560,7 +571,7 @@ auto gbts_seeding_algorithm::operator()(
   // One zeroed buffer for the named counters, the eta node counters and the
   // edge CSR: a single memset per event.
   vecmem::data::vector_buffer<unsigned int> zero_buf(
-      gbts_counter::nCounters + m_config.n_eta_bins + nSp + 1, mr().main);
+      gbts_counter::nCounters + nSp + 1, mr().main);
   copy().setup(zero_buf)->ignore();
   copy().memset(zero_buf, 0)->ignore();
   const vecmem::data::vector_view<unsigned int> counters_view(

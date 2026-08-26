@@ -555,7 +555,7 @@ void gbts_seeding_algorithm::gbts_bin_spacepoints_kernel(
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
 }
 
-void gbts_seeding_algorithm::gbts_sort_nodes_kernel(
+void gbts_seeding_algorithm::gbts_sort_node_keys_kernel(
     const device::gbts_sort_nodes_payload& payload) const {
   // Order the nodes by their (eta bin, phi, spacepoint index bits) keys,
   // carrying the full spacepoint index along as the value.
@@ -603,7 +603,10 @@ void gbts_seeding_algorithm::gbts_sort_nodes_kernel(
                         payload.nKeys * sizeof(unsigned int),
                         cudaMemcpyDeviceToDevice, cuda_stream));
   }
+}
 
+void gbts_seeding_algorithm::gbts_sort_nodes_kernel(
+    const device::gbts_sort_nodes_payload& payload) const {
   const unsigned int n_threads = 256;
   const unsigned int n_blocks = 1 + (payload.nKeys - 1) / n_threads;
   kernels::gbts_sort_nodes<<<n_blocks, n_threads, 0,
