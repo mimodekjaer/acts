@@ -256,6 +256,119 @@ __global__ void gbts_run_cca_cached(
   }
 }
 
+/// Fused seed-vs-edge bidding for the common case of one path-store row
+/// per thread (the grid covers all rows): the edge chain of the row's
+/// proposal is walked once and kept in registers across the rounds. Same
+/// per-step semantics as gbts_bid_seeds_for_edges / gbts_rebid_seeds_for_edges
+/// / gbts_reset_edge_bids.
+template <unsigned int MAX_LEN>
+__global__ void gbts_bid_seeds_cached(
+    const device::gbts_seed_bidding_payload payload) {
+  cooperative_groups::grid_group grid = cooperative_groups::this_grid();
+  const vecmem::device_vector<const int2> d_path_store(payload.path_store);
+  vecmem::device_vector<int2> d_seed_proposals(payload.seed_proposals);
+  vecmem::device_vector<char> d_seed_ambiguity(payload.seed_ambiguity);
+  vecmem::device_vector<unsigned long long int> d_edge_bids(payload.edge_bids);
+  const unsigned int n = payload.nConnectedEdges;
+
+  const unsigned int prop_idx = blockIdx.x * blockDim.x + threadIdx.x;
+  const unsigned int nThreads = gridDim.x * blockDim.x;
+  int2 prop = int2{0, -1};
+  if (prop_idx < payload.nRows) {
+    prop = d_seed_proposals[prop_idx];
+  }
+  const bool has_prop = prop.y >= 0;
+
+  // Walk the chain once: edges of the path in bidding order.
+  unsigned int chain[MAX_LEN];
+  unsigned int length = 0u;
+  if (has_prop) {
+    int2 path = int2{0, prop.y};
+    while (path.y >= 0 && length < MAX_LEN) {
+      path = d_path_store[static_cast<unsigned int>(path.y)];
+      chain[length++] = static_cast<unsigned int>(path.x);
+    }
+  }
+  const unsigned long long int seed_bid =
+      (static_cast<unsigned long long int>(prop.x) << 32) |
+      static_cast<unsigned long long int>(prop_idx);
+
+  // Bid for the first @c depth edges of the chain into @c bids.
+  const auto bid = [&](unsigned long long int* bids, const unsigned int depth) {
+    d_seed_proposals[prop_idx] = prop;
+    for (unsigned int k = 0u; k < depth; ++k) {
+      const unsigned long long int competing_offer =
+          atomicMax(bids + chain[k], seed_bid);
+      if (competing_offer > seed_bid) {
+        d_seed_ambiguity[prop_idx] = -1;
+      } else if (competing_offer != 0ull) {
+        d_seed_ambiguity[static_cast<unsigned int>(competing_offer &
+                                                   0xFFFFFFFFull)] = -1;
+      }
+    }
+  };
+
+  // Initial bid: terminus edge only.
+  if (has_prop) {
+    bid(d_edge_bids.data(), (length > 0u) ? 1u : 0u);
+  }
+
+  for (unsigned int round = 0u; round < payload.nRounds; ++round) {
+    const unsigned int half = (round + 1u) % 2u;
+    unsigned long long int* bids = d_edge_bids.data() + half * n;
+    unsigned long long int* bids_next = d_edge_bids.data() + (1u - half) * n;
+    grid.sync();
+
+    // --- rebid ---
+    if (has_prop) {
+      const char ambi = d_seed_ambiguity[prop_idx];
+      bool do_bid = true;
+      if (round == 0u) {
+        if (ambi == 0) {
+          // rebid 'best seed from edge' in later rounds
+          d_seed_ambiguity[prop_idx] = 1;
+        } else {
+          d_seed_ambiguity[prop_idx] = -2;
+          atomicAdd(payload.nRejectedPropsCounter, 1u);
+          do_bid = false;
+        }
+      } else if ((ambi == -2) | (ambi == 0)) {
+        // only rebid for maybes
+        do_bid = false;
+      }
+      if (do_bid) {
+        bid(bids, length);
+      }
+    }
+    grid.sync();
+
+    // --- reset: zero the next round's bids, then re-evaluate the maybes ---
+    for (unsigned int idx = prop_idx; idx < n; idx += nThreads) {
+      bids_next[idx] = 0ull;
+    }
+    if (has_prop) {
+      const char ambi = d_seed_ambiguity[prop_idx];
+      if (!((ambi == -2) | (ambi == 0))) {
+        bool isgood = true;
+        for (unsigned int k = 0u; k < length; ++k) {
+          const unsigned long long int best_bid = bids[chain[k]];
+          if (d_seed_ambiguity[static_cast<unsigned int>(best_bid &
+                                                         0xFFFFFFFFull)] == 0) {
+            isgood = false;
+            break;
+          }
+        }
+        if (isgood) {
+          d_seed_ambiguity[prop_idx] = 1;
+        } else {
+          d_seed_ambiguity[prop_idx] = -2;
+          atomicAdd(payload.nRejectedPropsCounter, 1u);
+        }
+      }
+    }
+  }
+}
+
 /// CUDA kernel running the whole seed-vs-edge bidding sequence in one
 /// cooperative launch, with grid-wide barriers between the steps
 __global__ void gbts_bid_seeds(
@@ -548,6 +661,15 @@ void gbts_seeding_algorithm::gbts_run_cca_kernel(
 
 void gbts_seeding_algorithm::gbts_bid_seeds_kernel(
     const device::gbts_seed_bidding_payload& payload) const {
+  // Fast path: one row per thread with the proposal's edge chain cached in
+  // registers (paths have at most max_cca_iter + 1 edges).
+  if (launch_cooperative(kernels::gbts_bid_seeds_cached<
+                             traccc::device::gbts_consts::max_cca_iter + 1u>,
+                         payload.nRows, 1024u, payload,
+                         details::get_stream(stream()),
+                         /*require_full_grid=*/true)) {
+    return;
+  }
   if (!launch_cooperative(kernels::gbts_bid_seeds, payload.nRows, 1024u,
                           payload, details::get_stream(stream()))) {
     device::gbts_seeding_algorithm::gbts_bid_seeds_kernel(payload);
