@@ -189,3 +189,20 @@ binary-searches the block instead of scanning linearly (previously up to the
 end of the whole 1140-entry map). Seeds identical; throughput 0.874 ->
 0.873 ms/event (the kernel is otherwise a latency-bound chain of dependent
 loads: spacepoint -> measurement -> surface link -> volume map -> layer).
+
+### 7. No re-index "finish" kernel  (neutral, -1 launch)
+The fill pass zeroes the kept flags beyond the edge count (every thread of
+the grid, after the work loop), so the prefix sum over the whole capacity
+ends with the kept-edge count and the host reads it back directly together
+with the counters; the one-thread `gbts_reindex_edges_finish` kernel and its
+launchers are gone. Throughput unchanged within noise (0.863 ms/event).
+Lesson recorded: the first version zeroed inside the work-item loop, which a
+block that grabs no work item never executes -> garbage count in the MT
+example (where block timing differs); the seq example passed by luck
+(fresh, zeroed memory).
+
+### (rejected) min/max radius accumulated in gbts_sort_nodes
+Atomic min/max on the radius bits per eta bin from the node sorting kernel
+(to drop the gbts_find_minmax_radius launch): the nodes are sorted by eta
+bin, so all lanes of a warp hit the same two addresses -> sort_nodes 7 ->
+86 us. Reverted (the separate 8 us block-reduction kernel stays).

@@ -19,28 +19,16 @@ namespace traccc::device {
 /// (Global Event Data) Payload for the @c traccc::device::gbts_reindex_edges
 /// function
 struct gbts_reindex_edges_payload {
-  /// Capacity of the edge buffers (length of the scan)
+  /// Capacity of the edge buffers (length of the scan; the flags beyond the
+  /// edge count are zero, so the last scan entry is the kept-edge count)
   unsigned int nEdgesMax;
-  /// Number of original edges, on the device
-  const unsigned int* nEdges;
   /// Per-edge "kept" flag (0/1)
   vecmem::data::vector_view<const unsigned char> kept;
   /// Output: inclusive prefix sum of the kept flags (written by the kernel
   /// launcher); the compact index of a kept edge e is reIndexer[e] - 1, and
-  /// entry nEdges - 1 is the total.
+  /// the last entry is the total.
   vecmem::data::vector_view<int> reIndexer;
-  /// Output: number of kept edges (reIndexer[nEdges - 1])
-  unsigned int* nConnectedEdges;
 };
-
-/// @brief Store the number of kept edges after the scan (one thread).
-TRACCC_HOST_DEVICE inline void gbts_reindex_edges_finish(
-    const gbts_reindex_edges_payload& payload) {
-  const vecmem::device_vector<const int> d_reIndexer(payload.reIndexer);
-  const unsigned int nEdges = *payload.nEdges;
-  *payload.nConnectedEdges =
-      (nEdges > 0u) ? static_cast<unsigned int>(d_reIndexer[nEdges - 1u]) : 0u;
-}
 
 /// @brief Turn the per-edge "kept" flags into compact indices.
 ///

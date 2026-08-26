@@ -140,12 +140,6 @@ __global__ void gbts_match_graph_edges(
   device::gbts_match_graph_edges(details::thread_id1{}, payload);
 }
 
-/// CUDA kernel for running @c traccc::device::gbts_reindex_edges_finish
-__global__ void gbts_reindex_edges_finish(
-    const device::gbts_reindex_edges_payload payload) {
-  device::gbts_reindex_edges_finish(payload);
-}
-
 /// CUDA kernel for running @c traccc::device::gbts_compress_graph
 __global__ void gbts_compress_graph(
     const device::gbts_compress_graph_payload payload) {
@@ -601,10 +595,6 @@ void gbts_seeding_algorithm::gbts_reindex_edges_kernel(
       thrust::cuda::par_nosync(std::pmr::polymorphic_allocator(&(mr().main)))
           .on(details::get_stream(stream())),
       kept_int, kept_int + payload.nEdgesMax, payload.reIndexer.ptr());
-  kernels::
-      gbts_reindex_edges_finish<<<1, 1, 0, details::get_stream(stream())>>>(
-          payload);
-  TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
 }
 
 void gbts_seeding_algorithm::gbts_compress_graph_kernel(

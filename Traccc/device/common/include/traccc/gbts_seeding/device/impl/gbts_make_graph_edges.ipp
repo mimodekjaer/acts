@@ -466,6 +466,21 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
       }
     }
   }  // work item loop
+
+  if constexpr (fill) {
+    // Zero the kept flags beyond the edge count so that a prefix sum over the
+    // whole capacity ends with the kept-edge count. Every thread of the grid
+    // takes part (also the blocks that grabbed no work item).
+    const unsigned int total =
+        d_num_outgoing_edges[d_num_outgoing_edges.size() - 1u];
+    const unsigned int nEdges =
+        (total < payload.nEdgesMax) ? total : payload.nEdgesMax;
+    const unsigned int stride = blockSize * thread_id.getGridDimX();
+    for (unsigned int i = nEdges + thread_id.getGlobalThreadIdX();
+         i < payload.nEdgesMax; i += stride) {
+      d_reindexer[i] = 0u;
+    }
+  }
 }
 
 }  // namespace traccc::device

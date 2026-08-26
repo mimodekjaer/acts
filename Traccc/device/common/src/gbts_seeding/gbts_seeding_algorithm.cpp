@@ -278,16 +278,19 @@ auto gbts_seeding_algorithm::create_edges(
        num_incoming_edges_buf, num_neighbours_buf, neighbours_buf,
        edge_kept_buf, edge_param_converter});
 
-  gbts_reindex_edges_kernel({nEdgesMax, d_counters + gbts_counter::nEdges,
-                             edge_kept_buf, reIndexer_buf,
-                             d_counters + gbts_counter::nConnectedEdges});
+  gbts_reindex_edges_kernel({nEdgesMax, edge_kept_buf, reIndexer_buf});
 
   // The one synchronisation of the graph making: the number of kept edges
-  // sizes the compacted graph.
-  copy()(counters_view, h_counters)->wait();
+  // (last entry of the scan) sizes the compacted graph.
+  copy()(counters_view, h_counters)->ignore();
+  int h_nConnectedEdges = 0;
+  copy()(vecmem::data::vector_view<const int>(
+             1u, reIndexer_buf.ptr() + nEdgesMax - 1),
+         vecmem::data::vector_view<int>(1u, &h_nConnectedEdges))
+      ->wait();
   const unsigned int nEdges = h_counters[gbts_counter::nEdges];
   const unsigned int nConnectedEdges =
-      h_counters[gbts_counter::nConnectedEdges];
+      static_cast<unsigned int>(h_nConnectedEdges);
   TRACCC_DEBUG("Created " << nEdges << " edges, found " << nConnectedEdges
                           << " connected edges for seed extraction");
   if (h_counters[gbts_counter::nEdgesTotal] > nEdgesMax) {

@@ -162,15 +162,6 @@ struct gbts_match_graph_edges {
   }
 };
 
-/// Alpaka kernel for running @c traccc::device::gbts_reindex_edges_finish
-struct gbts_reindex_edges_finish {
-  template <typename TAcc>
-  ALPAKA_FN_ACC void operator()(
-      TAcc const&, const device::gbts_reindex_edges_payload payload) const {
-    device::gbts_reindex_edges_finish(payload);
-  }
-};
-
 /// Alpaka kernel for running @c traccc::device::gbts_compress_graph
 struct gbts_compress_graph {
   template <typename TAcc>
@@ -379,8 +370,6 @@ void gbts_seeding_algorithm::gbts_reindex_edges_kernel(
   details::inclusive_scan(details::get_queue(queue()), mr(), kept_int,
                           kept_int + payload.nEdgesMax,
                           payload.reIndexer.ptr());
-  ::alpaka::exec<Acc>(details::get_queue(queue()), makeWorkDiv<Acc>(1u, 1u),
-                      kernels::gbts_reindex_edges_finish{}, payload);
 }
 
 void gbts_seeding_algorithm::gbts_compress_graph_kernel(
