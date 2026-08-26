@@ -12,6 +12,7 @@
 #include "traccc/gbts_seeding/device/gbts_bid_seeds_for_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_bid_seeds_for_hits.hpp"
 #include "traccc/gbts_seeding/device/gbts_bin_spacepoints.hpp"
+#include "traccc/gbts_seeding/device/gbts_build_edge_work_list.hpp"
 #include "traccc/gbts_seeding/device/gbts_compress_graph.hpp"
 #include "traccc/gbts_seeding/device/gbts_convert_seeds.hpp"
 #include "traccc/gbts_seeding/device/gbts_count_terminus_edges.hpp"
@@ -112,6 +113,13 @@ class gbts_seeding_algorithm
   ///
   virtual void gbts_sort_nodes_kernel(
       const gbts_sort_nodes_payload& payload) const = 0;
+
+  /// Edge work-list building kernel launcher (single block)
+  ///
+  /// @param payload The payload for the kernel
+  ///
+  virtual void gbts_build_edge_work_list_kernel(
+      const gbts_build_edge_work_list_payload& payload) const = 0;
 
   /// Min/max radius per eta-bin kernel launcher
   ///
@@ -249,11 +257,14 @@ class gbts_seeding_algorithm
     vecmem::data::vector_buffer<float> bin_rads;
     /// Per-eta (begin, end) node ranges, device (used by graph making)
     vecmem::data::vector_buffer<unsigned int> eta_bin_views_buf;
-    /// Per-eta (begin, end) node ranges, host (used for the graph-making
-    /// work list)
-    vecmem::vector<unsigned int> eta_bin_views;
-    /// Number of GBTS nodes (0 == nothing to do)
-    unsigned int nNodes = 0;
+    /// Per bin pair: first graph-making work item (nBinPairs + 1 entries)
+    vecmem::data::vector_buffer<unsigned int> pair_work_begin_buf;
+    /// Per graph-making work item: (bin pair, chunk)
+    vecmem::data::vector_buffer<uint2> work_items_buf;
+    /// Upper bound of the work item count (size of work_items_buf)
+    unsigned int nWorkMax = 0;
+    /// Capacity of the spacepoint collection (upper bound of the node count)
+    unsigned int nSp = 0;
   };
 
   /// Outputs of the graph-making stage that are consumed by seed extraction.
@@ -266,10 +277,12 @@ class gbts_seeding_algorithm
     unsigned int nConnectedEdges = 0;
   };
 
-  /// Stage 1: count, bin, sort and characterise nodes.
+  /// Stage 1: count, bin, sort and characterise nodes. Fully asynchronous:
+  /// the node count and the graph-making work list live on the device.
   node_making_output make_nodes(
       const edm::spacepoint_collection::const_view& spacepoints,
-      const edm::measurement_collection::const_view& measurements) const;
+      const edm::measurement_collection::const_view& measurements,
+      vecmem::data::vector_buffer<unsigned int>& counters_buf) const;
 
   /// Stage 2: build, link, match and compress the edge graph. The per-node
   /// buffers are taken by value so they are released when this stage returns.
@@ -279,8 +292,10 @@ class gbts_seeding_algorithm
       vecmem::data::vector_buffer<unsigned int> node_index,
       const vecmem::data::vector_buffer<float>& bin_rads,
       const vecmem::data::vector_buffer<unsigned int>& eta_bin_views_buf,
-      const vecmem::vector<unsigned int>& eta_bin_views,
-      const unsigned int nNodes) const;
+      const vecmem::data::vector_buffer<unsigned int>& pair_work_begin_buf,
+      const vecmem::data::vector_buffer<uint2>& work_items_buf,
+      const unsigned int nWorkMax, const unsigned int nSp,
+      vecmem::data::vector_buffer<unsigned int>& counters_buf) const;
 
   /// Stage 3: run the CCA, extract paths, fit and disambiguate into seeds.
   edm::seed_collection::buffer extract_seeds(
@@ -298,6 +313,8 @@ class gbts_seeding_algorithm
   gbts_seedfinder_config m_config;
   /// Number of bin pairs in m_config.binTables
   unsigned int m_nBinPairs = 0;
+  /// Largest number of bin pairs sharing one inner bin
+  unsigned int m_maxPairsPerBin1 = 0;
   /// @name Static tables, kept in (pinned) host memory and uploaded
   /// asynchronously per event
   /// @{

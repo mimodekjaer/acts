@@ -132,11 +132,9 @@ TRACCC_HOST_DEVICE inline bool gbts_bin_one_spacepoint(
 
 }  // namespace detail
 
-template <concepts::thread_id1 thread_id_t, concepts::barrier barrier_t>
+template <concepts::thread_id1 thread_id_t>
 TRACCC_HOST_DEVICE inline void gbts_bin_spacepoints(
-    const thread_id_t& thread_id, const barrier_t& barrier,
-    const gbts_bin_spacepoints_payload& payload,
-    const gbts_bin_spacepoints_shared_payload& shared_payload) {
+    const thread_id_t& thread_id, const gbts_bin_spacepoints_payload& payload) {
   const traccc::edm::spacepoint_collection::const_device spacepoints(
       payload.spacepoints);
   const edm::measurement_collection::const_device measurements(
@@ -156,50 +154,27 @@ TRACCC_HOST_DEVICE inline void gbts_bin_spacepoints(
       payload.eta_node_counter);
   vecmem::device_vector<unsigned long long int> d_sort_keys(payload.sort_keys);
   vecmem::device_vector<unsigned int> d_sort_values(payload.sort_values);
-  vecmem::device_vector<unsigned int> scratch(shared_payload.scratch);
 
-  const unsigned int threadIndex = thread_id.getLocalThreadIdX();
-  const unsigned int blockSize = thread_id.getBlockDimX();
-  const unsigned int stride = blockSize * thread_id.getGridDimX();
+  const unsigned int nSp = spacepoints.size();
+  const unsigned int globalIdx = thread_id.getGlobalThreadIdX();
+  const unsigned int stride =
+      thread_id.getBlockDimX() * thread_id.getGridDimX();
 
-  // Block-uniform chunk loop (the barriers below must be reached by every
-  // thread of the block).
-  for (unsigned int chunk = thread_id.getBlockIdX() * blockSize;
-       chunk < payload.nSp; chunk += stride) {
-    const unsigned int globalIndex = chunk + threadIndex;
-    unsigned long long int key = 0ull;
-    bool accepted = false;
-    if (globalIndex < payload.nSp) {
-      accepted = detail::gbts_bin_one_spacepoint(
-          payload, spacepoints, measurements, volumeToLayerMap,
-          surfaceToLayerMap, layerType, d_layer_info, d_layer_geo, reducedSP,
-          d_eta_node_counter, globalIndex, key);
+  // Every key slot of the capacity gets written: the unused tail sorts last.
+  for (unsigned int globalIndex = globalIdx; globalIndex < payload.nSp;
+       globalIndex += stride) {
+    unsigned long long int key = gbts_sort_key_rejected;
+    if (globalIndex < nSp) {
+      unsigned long long int node_key = 0ull;
+      if (detail::gbts_bin_one_spacepoint(
+              payload, spacepoints, measurements, volumeToLayerMap,
+              surfaceToLayerMap, layerType, d_layer_info, d_layer_geo,
+              reducedSP, d_eta_node_counter, globalIndex, node_key)) {
+        key = node_key;
+      }
     }
-
-    // Claim the key slots of the block with a single global atomic.
-    if (threadIndex == 0u) {
-      scratch[0] = 0u;
-    }
-    barrier.blockBarrier();
-    unsigned int local = 0u;
-    if (accepted) {
-      local = vecmem::device_atomic_ref<unsigned int,
-                                        vecmem::device_address_space::local>(
-                  scratch[0])
-                  .fetch_add(1u);
-    }
-    barrier.blockBarrier();
-    if (threadIndex == 0u) {
-      scratch[1] = vecmem::device_atomic_ref<unsigned int>(
-                       d_eta_node_counter[payload.nEtaBins])
-                       .fetch_add(scratch[0]);
-    }
-    barrier.blockBarrier();
-    if (accepted) {
-      const unsigned int slot = scratch[1] + local;
-      d_sort_keys[slot] = key;
-      d_sort_values[slot] = globalIndex;
-    }
+    d_sort_keys[globalIndex] = key;
+    d_sort_values[globalIndex] = globalIndex;
   }
 }
 

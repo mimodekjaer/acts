@@ -58,3 +58,27 @@ fill_path_store 20, compress 18, convert 14, fit 9, ...
   `num_neighbours[e]` entries of a row are ever read).
 Effect: -2 contended atomics per edge/terminus, -1 memset, -2 D2H copies.
 Determinism: identical seed totals (1 953 000 / 500 events).
+
+### 2. Asynchronous node stage  -> 0.995 ms/event (-2%)
+- `gbts_bin_spacepoints` writes every sort key in spacepoint order (rejected
+  spacepoints / unused capacity get a key that sorts last); no more slot
+  atomic. The node count and the per-eta-bin node ranges are produced on the
+  device by the new single-block `gbts_build_edge_work_list` kernel (strip
+  scan, one block scan per phase), which also lays out the graph-making work
+  items `(pair, chunk)`. All node/edge buffers are sized by the spacepoint
+  capacity; `make_graph_edges` grabs work items dynamically (one atomic per
+  block and item, output positions fixed -> deterministic).
+- Removes the `eta_counts` D2H wait, the host work-list loop and 2 H2D copies.
+- Node sort: `cub::DeviceRadixSort::SortPairs` on the 44 significant key bits
+  (eta bin | phi) instead of a 64-bit `thrust::sort_by_key`: 6 one-sweep
+  passes instead of 8 (radix sort stability provides the spacepoint-index
+  tie break, since the keys are written in spacepoint order).
+Tried and rejected on the way: static block-striding over the work list with
+a per-block binary search for the pair (+25 us per pass: 12 dependent loads
+before any work), bigger grids (worse tail), Hillis-Steele scan per 512
+elements in the work-list kernel (~100 barriers, 13-20 us -> strip scan).
+Costs: `bin_spacepoints` 53 -> 70 us (writing keys for the full capacity;
+this kernel is a latency-bound chain of ~6 dependent loads and swings with
+buffer placement), `make_graph_edges` +10 us per pass from the dynamic work
+grabbing. Net GPU-kernel time 849 -> 890 us but ~70 us less host/sync gap.
+Determinism: identical seed totals.

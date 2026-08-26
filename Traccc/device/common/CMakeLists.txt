@@ -72,6 +72,8 @@ traccc_add_library( traccc_device_common device_common
    "include/traccc/gbts_seeding/device/impl/gbts_sort_nodes.ipp"
    "include/traccc/gbts_seeding/device/gbts_find_minmax_radius.hpp"
    "include/traccc/gbts_seeding/device/impl/gbts_find_minmax_radius.ipp"
+   "include/traccc/gbts_seeding/device/gbts_build_edge_work_list.hpp"
+   "include/traccc/gbts_seeding/device/impl/gbts_build_edge_work_list.ipp"
    "include/traccc/gbts_seeding/device/gbts_make_graph_edges.hpp"
    "include/traccc/gbts_seeding/device/impl/gbts_make_graph_edges.ipp"
    "include/traccc/gbts_seeding/device/gbts_match_graph_edges.hpp"

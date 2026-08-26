@@ -46,6 +46,8 @@ class gbts_seeding_algorithm : public device::gbts_seeding_algorithm,
       const device::gbts_bin_spacepoints_payload& payload) const override;
   void gbts_sort_nodes_kernel(
       const device::gbts_sort_nodes_payload& payload) const override;
+  void gbts_build_edge_work_list_kernel(
+      const device::gbts_build_edge_work_list_payload& payload) const override;
   void gbts_find_minmax_radius_kernel(
       const device::gbts_find_minmax_radius_payload& payload) const override;
   void gbts_count_graph_edges_kernel(

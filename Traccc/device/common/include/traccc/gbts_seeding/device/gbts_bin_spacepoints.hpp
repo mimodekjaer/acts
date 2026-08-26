@@ -9,7 +9,6 @@
 
 // Project include(s).
 #include "traccc/definitions/qualifiers.hpp"
-#include "traccc/device/concepts/barrier.hpp"
 #include "traccc/device/concepts/thread_id.hpp"
 #include "traccc/edm/measurement_collection.hpp"
 #include "traccc/edm/spacepoint_collection.hpp"
@@ -33,8 +32,10 @@ TRACCC_HOST_DEVICE inline unsigned int phi_ordered_bits(const float phi) {
 }
 
 /// Node sort key layout, from the least significant bit up: the low bits
-/// of the spacepoint index (a tie-break between nodes of identical eta bin
-/// and phi only, not a lookup), the order-preserving phi bits, the eta bin.
+/// of the spacepoint index, the order-preserving phi bits, the eta bin.
+/// The keys are written in spacepoint order, so a stable sort of the
+/// (eta bin, phi) bits alone already breaks ties by spacepoint index; the
+/// index bits only matter for sorts that are not stable.
 inline constexpr unsigned int gbts_sort_key_index_bits = 8u;
 inline constexpr unsigned int gbts_sort_key_phi_bits = 32u;
 inline constexpr unsigned int gbts_sort_key_eta_bits =
@@ -46,9 +47,12 @@ inline constexpr unsigned int gbts_sort_key_eta_shift =
 /// Mask selecting the spacepoint-index bits of a node sort key
 inline constexpr unsigned long long int gbts_sort_key_index_mask =
     (1ull << gbts_sort_key_index_bits) - 1ull;
-/// Largest number of eta bins the key's eta field can hold
+/// Largest number of eta bins the key's eta field can hold (one value is
+/// reserved for the "rejected" key)
 inline constexpr unsigned int gbts_sort_key_max_eta_bins =
-    1u << gbts_sort_key_eta_bits;
+    (1u << gbts_sort_key_eta_bits) - 1u;
+/// Key of a rejected spacepoint / unused slot: sorts after every node key
+inline constexpr unsigned long long int gbts_sort_key_rejected = ~0ull;
 
 /// (Global Event Data) Payload for the @c traccc::device::gbts_bin_spacepoints
 /// function
@@ -58,7 +62,8 @@ inline constexpr unsigned int gbts_sort_key_max_eta_bins =
 /// and its node sort key is appended to the compacted key array, all in a
 /// single pass.
 struct gbts_bin_spacepoints_payload {
-  /// Number of spacepoints in the event
+  /// Capacity of the spacepoint collection (the event's spacepoint count is
+  /// read on the device); also the size of the key / value arrays
   unsigned int nSp;
   /// Number of eta bins
   unsigned int nEtaBins;
@@ -80,20 +85,19 @@ struct gbts_bin_spacepoints_payload {
   vecmem::data::vector_view<const std::pair<float, float>> layer_geo;
   /// Output: reduced (x, y, z, cluster width) per spacepoint after filtering
   vecmem::data::vector_view<float4> reducedSP;
-  /// Output: nEtaBins + 1 counters, all atomically incremented. The first
-  /// nEtaBins are the raw per-eta-bin node counts; the last one is the
-  /// total node count, doubling as the write cursor of @c sort_keys.
+  /// Output: nEtaBins counters (per-eta-bin node counts), atomically
+  /// incremented
   vecmem::data::vector_view<unsigned int> eta_node_counter;
-  /// Output: one 64-bit node sort key per accepted spacepoint,
+  /// Output: one 64-bit node sort key per spacepoint slot (nSp entries),
   /// (eta bin << gbts_sort_key_eta_shift) |
   /// (order-preserving phi bits << gbts_sort_key_phi_shift) |
-  /// (spacepoint index & gbts_sort_key_index_mask), written to the next free
-  /// slot (order of writes is arbitrary). Sorting these keys orders the
-  /// nodes by (eta bin, exact float phi, spacepoint index bits), so the
-  /// sorted order does not depend on the write order.
+  /// (spacepoint index & gbts_sort_key_index_mask) for accepted spacepoints
+  /// and gbts_sort_key_rejected for rejected / unused slots, so that after
+  /// sorting the nodes come first, ordered by (eta bin, exact float phi,
+  /// spacepoint index bits).
   vecmem::data::vector_view<unsigned long long int> sort_keys;
-  /// Output: the full spacepoint index matching each @c sort_keys slot;
-  /// sorted alongside the keys by the gbts_sort_nodes launcher
+  /// Output: the spacepoint index matching each @c sort_keys slot;
+  /// sorted alongside @c sort_keys by the gbts_sort_nodes launcher
   vecmem::data::vector_view<unsigned int> sort_values;
   /// Size of the volume-to-layer map (for bounds checking)
   unsigned long int volumeMapSize;
@@ -105,37 +109,22 @@ struct gbts_bin_spacepoints_payload {
       gbts_count_spacepoints_by_layer_params;
 };
 
-/// (Shared Event Data) Payload for the @c traccc::device::gbts_bin_spacepoints
-/// function
-struct gbts_bin_spacepoints_shared_payload {
-  /// Two unsigned ints: [0] accepted spacepoints of the block, [1] the
-  /// block's base slot in the key array
-  vecmem::data::vector_view<unsigned int> scratch;
-};
-
 /// @brief Per-spacepoint binning kernel: look up the GBTS layer via the
 /// volume / surface map, optionally apply a cluster-width cut, and on
 /// acceptance write the reduced (x, y, z, width) tuple, bump the node's eta
-/// bin count and append its node sort key -- all from a single read of the
-/// source spacepoint.
+/// bin count and write its node sort key -- all from a single read of the
+/// source spacepoint. Keys are written in spacepoint order (no atomics);
+/// rejected spacepoints and unused slots get gbts_sort_key_rejected.
 ///
 /// Precondition (checked by make_nodes): n_eta_bins <=
 /// gbts_sort_key_max_eta_bins, so the eta field of every key fits.
 ///
-/// The key slots are claimed per block (one global atomic per block) so the
-/// write cursor is not a single hot atomic address; the slot order is
-/// irrelevant because the keys get sorted afterwards.
+/// @param[in] thread_id Thread identifier for the kernel launch
+/// @param[in] payload   The global memory payload
 ///
-/// @param[in] thread_id      Thread identifier for the kernel launch
-/// @param[in] barrier        Block-wide barrier
-/// @param[in] payload        The global memory payload
-/// @param[in] shared_payload The shared memory payload
-///
-template <concepts::thread_id1 thread_id_t, concepts::barrier barrier_t>
+template <concepts::thread_id1 thread_id_t>
 TRACCC_HOST_DEVICE inline void gbts_bin_spacepoints(
-    const thread_id_t& thread_id, const barrier_t& barrier,
-    const gbts_bin_spacepoints_payload& payload,
-    const gbts_bin_spacepoints_shared_payload& shared_payload);
+    const thread_id_t& thread_id, const gbts_bin_spacepoints_payload& payload);
 
 }  // namespace traccc::device
 

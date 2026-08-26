@@ -21,8 +21,12 @@ namespace traccc::device {
 /// (Global Event Data) Payload for the @c traccc::device::gbts_sort_nodes
 /// function
 struct gbts_sort_nodes_payload {
-  /// Total number of GBTS nodes (accepted spacepoints)
-  unsigned int nNodes;
+  /// Number of key / value slots to sort (the spacepoint capacity)
+  unsigned int nKeys;
+  /// Number of eta bins (bounds the significant key bits)
+  unsigned int nEtaBins;
+  /// Number of GBTS nodes (accepted spacepoints), on the device
+  const unsigned int* nNodes;
   /// Reduced (x, y, z, cluster width) per spacepoint, in original order
   vecmem::data::vector_view<const float4> reducedSP;
   /// In/out: the nNodes node sort keys from gbts_bin_spacepoints; the kernel

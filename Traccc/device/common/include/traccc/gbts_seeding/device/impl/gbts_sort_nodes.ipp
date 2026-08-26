@@ -37,9 +37,9 @@ TRACCC_HOST_DEVICE inline void gbts_sort_nodes(
   const unsigned int blockDimX = thread_id.getBlockDimX();
   const unsigned int gridDimX = thread_id.getGridDimX();
 
-  for (unsigned int globalIndex = globalIdx; globalIndex < payload.nNodes;
+  const unsigned int nNodes = *payload.nNodes;
+  for (unsigned int globalIndex = globalIdx; globalIndex < nNodes;
        globalIndex += blockDimX * gridDimX) {
-    
     const unsigned int srcIdx = d_sort_values[globalIndex];
     const float4 sp = d_reducedSP[srcIdx];
 

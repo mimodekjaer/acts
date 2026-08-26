@@ -46,6 +46,10 @@ struct gbts_layerInfo {
 // Named indices into the flat device counter buffer, mirroring the layout in
 // traccc/gbts_changes. One memset zeros all of them.
 enum gbts_counter : unsigned int {
+  nNodes,           // accepted spacepoints (gbts_build_edge_work_list)
+  nWork,            // graph-making work items (gbts_build_edge_work_list)
+  workCursorCount,  // next work item to grab (gbts_make_graph_edges<false>)
+  workCursorFill,   // next work item to grab (gbts_make_graph_edges<true>)
   nEdges,           // edges created by gbts_make_graph_edges
   nConnections,     // edge-to-edge connections from gbts_match_graph_edges
   nConnectedEdges,  // edges kept after gbts_reindex_edges

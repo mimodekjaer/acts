@@ -207,7 +207,6 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
     const thread_id_t& thread_id, const barrier_t& barrier,
     const gbts_make_graph_edges_payload& payload,
     const gbts_make_graph_edges_shared_payload& shared) {
-  const unsigned int blockIndex = thread_id.getBlockIdX();
   const unsigned int threadIndex = thread_id.getLocalThreadIdX();
   const unsigned int blockSize = thread_id.getBlockDimX();
 
@@ -231,132 +230,151 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
 
   vecmem::device_vector<float> shared_phi(shared.phi);
   vecmem::device_vector<float4> shared_node_pack(shared.node_pack);
+  vecmem::device_vector<unsigned int> shared_work_slot(shared.work_slot);
 
   const gbts_make_graph_edges_params& ap = payload.gbts_make_graph_edges_params;
   constexpr unsigned int chunk_size = gbts_consts::node_buffer_length;
 
-  // --- Block-uniform setup --------------------------------------------------
-  const uint2 work = d_work_items[blockIndex];
-  const unsigned int pair = work.x;
-  const unsigned int chunk = work.y;
-  const uint2 bins = d_bin_pairs[pair];
-
-  const unsigned int begin1 = d_eta_bin_views[2u * bins.x];
-  const unsigned int end1 = d_eta_bin_views[2u * bins.x + 1u];
-  const unsigned int begin2 = d_eta_bin_views[2u * bins.y];
-  const unsigned int end2 = d_eta_bin_views[2u * bins.y + 1u];
-
-  const unsigned int chunk_begin = begin1 + chunk * chunk_size;
-  const unsigned int chunk_end =
-      (chunk_begin + chunk_size < end1) ? chunk_begin + chunk_size : end1;
-  const unsigned int num_nodes1 = chunk_end - chunk_begin;
-
-  // delta-phi window of the bin pair from the radial separation of the bins
-  const float rb1 = d_bin_rads[2u * bins.x];
-  const float rb2 = d_bin_rads[2u * bins.y + 1u];
-  const float maxDeltaR = math::fabs(rb2 - rb1);
-  const gbts_dphi_window_params& dp = payload.gbts_dphi_window_params;
-  float deltaPhi = dp.min_delta_phi + dp.dphi_coeff * maxDeltaR;
-  if (maxDeltaR < dp.low_dr_threshold) {
-    deltaPhi = dp.min_delta_phi_low_dr + dp.dphi_coeff_low_dr * maxDeltaR;
-  }
-  const float window = deltaPhi + detail::gbts_phi_window_eps;
-
-  // Outer-node index ranges that can pair with any node of the chunk: up to
-  // two (wraparound), the lower-index one first. Computed redundantly by
-  // every thread from block-uniform data.
-  const detail::gbts_phi_window block_window = detail::gbts_make_phi_window(
-      d_node_phi[chunk_begin] - window, d_node_phi[chunk_end - 1u] + window);
-  unsigned int range_begin[2] = {begin2, end2};
-  unsigned int range_end[2] = {end2, end2};
-  if (!block_window.whole) {
-    range_begin[0] = detail::gbts_phi_lower_bound(d_node_phi, begin2, end2,
-                                                  block_window.lo_a);
-    range_end[0] = detail::gbts_phi_upper_bound(d_node_phi, range_begin[0],
-                                                end2, block_window.hi_a);
-    if (block_window.lo_b <= block_window.hi_b) {
-      range_begin[1] = detail::gbts_phi_lower_bound(d_node_phi, range_end[0],
-                                                    end2, block_window.lo_b);
-      range_end[1] = detail::gbts_phi_upper_bound(d_node_phi, range_begin[1],
-                                                  end2, block_window.hi_b);
+  const unsigned int nWork = *payload.nWork;
+  // Dynamic scheduling: every block grabs the next work item until the list
+  // is exhausted. The assignment of items to blocks is arbitrary, the output
+  // positions of every item are not.
+  for (;;) {
+    if (threadIndex == 0u) {
+      shared_work_slot[0] =
+          vecmem::device_atomic_ref<unsigned int>(*payload.work_cursor)
+              .fetch_add(1u);
     }
-  }
+    barrier.blockBarrier();
+    const unsigned int work = shared_work_slot[0];
+    if (work >= nWork) {
+      break;
+    }
+    // --- Block-uniform setup ------------------------------------------------
+    const uint2 item = d_work_items[work];
+    const unsigned int pair = item.x;
+    const unsigned int chunk = item.y;
+    const uint2 bins = d_bin_pairs[pair];
 
-  // --- Per-thread setup -----------------------------------------------------
-  const bool active = threadIndex < num_nodes1;
-  const unsigned int node1 = chunk_begin + (active ? threadIndex : 0u);
-  const float phi1 = d_node_phi[node1];
-  const float4 np1 = d_node_params[node1];
-  const detail::gbts_phi_window my_window =
-      detail::gbts_make_phi_window(phi1 - window, phi1 + window);
+    const unsigned int begin1 = d_eta_bin_views[2u * bins.x];
+    const unsigned int end1 = d_eta_bin_views[2u * bins.x + 1u];
+    const unsigned int begin2 = d_eta_bin_views[2u * bins.y];
+    const unsigned int end2 = d_eta_bin_views[2u * bins.y + 1u];
 
-  unsigned int cursor = 0u;
-  unsigned int cursor_end = 0u;
-  if constexpr (fill) {
-    if (active) {
-      cursor = d_num_outgoing_edges[node1];
-      cursor_end = d_num_outgoing_edges[node1 + 1u];
-      // Edges of the preceding pairs of the same inner bin come first in the
-      // bucket; they were processed by the block of the same chunk index.
-      for (unsigned int p = d_pair_group_begin[pair]; p < pair; p++) {
-        const unsigned int wb = d_pair_work_begin[p];
-        if (d_pair_work_begin[p + 1u] > wb) {
-          cursor += d_edge_counts[(wb + chunk) * blockSize + threadIndex];
+    const unsigned int chunk_begin = begin1 + chunk * chunk_size;
+    const unsigned int chunk_end =
+        (chunk_begin + chunk_size < end1) ? chunk_begin + chunk_size : end1;
+    const unsigned int num_nodes1 = chunk_end - chunk_begin;
+
+    // delta-phi window of the bin pair from the radial separation of the bins
+    const float rb1 = d_bin_rads[2u * bins.x];
+    const float rb2 = d_bin_rads[2u * bins.y + 1u];
+    const float maxDeltaR = math::fabs(rb2 - rb1);
+    const gbts_dphi_window_params& dp = payload.gbts_dphi_window_params;
+    float deltaPhi = dp.min_delta_phi + dp.dphi_coeff * maxDeltaR;
+    if (maxDeltaR < dp.low_dr_threshold) {
+      deltaPhi = dp.min_delta_phi_low_dr + dp.dphi_coeff_low_dr * maxDeltaR;
+    }
+    const float window = deltaPhi + detail::gbts_phi_window_eps;
+
+    // Outer-node index ranges that can pair with any node of the chunk: up to
+    // two (wraparound), the lower-index one first. Computed redundantly by
+    // every thread from block-uniform data.
+    const detail::gbts_phi_window block_window = detail::gbts_make_phi_window(
+        d_node_phi[chunk_begin] - window, d_node_phi[chunk_end - 1u] + window);
+    unsigned int range_begin[2] = {begin2, end2};
+    unsigned int range_end[2] = {end2, end2};
+    if (!block_window.whole) {
+      range_begin[0] = detail::gbts_phi_lower_bound(d_node_phi, begin2, end2,
+                                                    block_window.lo_a);
+      range_end[0] = detail::gbts_phi_upper_bound(d_node_phi, range_begin[0],
+                                                  end2, block_window.hi_a);
+      if (block_window.lo_b <= block_window.hi_b) {
+        range_begin[1] = detail::gbts_phi_lower_bound(d_node_phi, range_end[0],
+                                                      end2, block_window.lo_b);
+        range_end[1] = detail::gbts_phi_upper_bound(d_node_phi, range_begin[1],
+                                                    end2, block_window.hi_b);
+      }
+    }
+
+    // --- Per-thread setup
+    // -----------------------------------------------------
+    const bool active = threadIndex < num_nodes1;
+    const unsigned int node1 = chunk_begin + (active ? threadIndex : 0u);
+    const float phi1 = d_node_phi[node1];
+    const float4 np1 = d_node_params[node1];
+    const detail::gbts_phi_window my_window =
+        detail::gbts_make_phi_window(phi1 - window, phi1 + window);
+
+    unsigned int cursor = 0u;
+    unsigned int cursor_end = 0u;
+    if constexpr (fill) {
+      if (active) {
+        cursor = d_num_outgoing_edges[node1];
+        cursor_end = d_num_outgoing_edges[node1 + 1u];
+        // Edges of the preceding pairs of the same inner bin come first in the
+        // bucket; they were processed by the block of the same chunk index.
+        for (unsigned int p = d_pair_group_begin[pair]; p < pair; p++) {
+          const unsigned int wb = d_pair_work_begin[p];
+          if (d_pair_work_begin[p + 1u] > wb) {
+            cursor += d_edge_counts[(wb + chunk) * blockSize + threadIndex];
+          }
         }
       }
     }
-  }
 
-  // --- Stream the outer-node ranges through shared memory -------------------
-  for (unsigned int r = 0u; r < 2u; r++) {
-    for (unsigned int slab_begin = range_begin[r]; slab_begin < range_end[r];
-         slab_begin += chunk_size) {
-      const unsigned int slab_size = (slab_begin + chunk_size < range_end[r])
-                                         ? chunk_size
-                                         : range_end[r] - slab_begin;
-      // The previous slab is fully consumed before it gets overwritten.
-      barrier.blockBarrier();
-      for (unsigned int j = threadIndex; j < slab_size; j += blockSize) {
-        shared_phi[j] = d_node_phi[slab_begin + j];
-        shared_node_pack[j] = d_node_params[slab_begin + j];
-      }
-      barrier.blockBarrier();
+    // --- Stream the outer-node ranges through shared memory
+    // -------------------
+    for (unsigned int r = 0u; r < 2u; r++) {
+      for (unsigned int slab_begin = range_begin[r]; slab_begin < range_end[r];
+           slab_begin += chunk_size) {
+        const unsigned int slab_size = (slab_begin + chunk_size < range_end[r])
+                                           ? chunk_size
+                                           : range_end[r] - slab_begin;
+        // The previous slab is fully consumed before it gets overwritten.
+        barrier.blockBarrier();
+        for (unsigned int j = threadIndex; j < slab_size; j += blockSize) {
+          shared_phi[j] = d_node_phi[slab_begin + j];
+          shared_node_pack[j] = d_node_params[slab_begin + j];
+        }
+        barrier.blockBarrier();
 
-      if (!active) {
-        continue;
-      }
-      if (my_window.whole) {
-        cursor = detail::gbts_walk_slab_interval<fill>(
-            shared_phi, shared_node_pack, slab_begin, slab_size,
-            -traccc::device::PI_F - 1.0f, traccc::device::PI_F + 1.0f, np1,
-            phi1, node1, deltaPhi, ap, payload.edge_params_maker, d_edge_nodes,
-            d_edge_params, d_reindexer, cursor, cursor_end);
-      } else {
-        cursor = detail::gbts_walk_slab_interval<fill>(
-            shared_phi, shared_node_pack, slab_begin, slab_size, my_window.lo_a,
-            my_window.hi_a, np1, phi1, node1, deltaPhi, ap,
-            payload.edge_params_maker, d_edge_nodes, d_edge_params, d_reindexer,
-            cursor, cursor_end);
-        if (my_window.lo_b <= my_window.hi_b) {
+        if (!active) {
+          continue;
+        }
+        if (my_window.whole) {
           cursor = detail::gbts_walk_slab_interval<fill>(
               shared_phi, shared_node_pack, slab_begin, slab_size,
-              my_window.lo_b, my_window.hi_b, np1, phi1, node1, deltaPhi, ap,
+              -traccc::device::PI_F - 1.0f, traccc::device::PI_F + 1.0f, np1,
+              phi1, node1, deltaPhi, ap, payload.edge_params_maker,
+              d_edge_nodes, d_edge_params, d_reindexer, cursor, cursor_end);
+        } else {
+          cursor = detail::gbts_walk_slab_interval<fill>(
+              shared_phi, shared_node_pack, slab_begin, slab_size,
+              my_window.lo_a, my_window.hi_a, np1, phi1, node1, deltaPhi, ap,
               payload.edge_params_maker, d_edge_nodes, d_edge_params,
               d_reindexer, cursor, cursor_end);
+          if (my_window.lo_b <= my_window.hi_b) {
+            cursor = detail::gbts_walk_slab_interval<fill>(
+                shared_phi, shared_node_pack, slab_begin, slab_size,
+                my_window.lo_b, my_window.hi_b, np1, phi1, node1, deltaPhi, ap,
+                payload.edge_params_maker, d_edge_nodes, d_edge_params,
+                d_reindexer, cursor, cursor_end);
+          }
         }
       }
     }
-  }
 
-  if constexpr (!fill) {
-    const unsigned int count = active ? cursor : 0u;
-    d_edge_counts[(d_pair_work_begin[pair] + chunk) * blockSize + threadIndex] =
-        count;
-    if (count > 0u) {
-      vecmem::device_atomic_ref<unsigned int>(d_num_outgoing_edges[node1 + 1u])
-          .fetch_add(count);
+    if constexpr (!fill) {
+      const unsigned int count = active ? cursor : 0u;
+      d_edge_counts[work * blockSize + threadIndex] = count;
+      if (count > 0u) {
+        vecmem::device_atomic_ref<unsigned int>(
+            d_num_outgoing_edges[node1 + 1u])
+            .fetch_add(count);
+      }
     }
-  }
+  }  // work item loop
 }
 
 }  // namespace traccc::device

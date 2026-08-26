@@ -19,11 +19,21 @@
 
 namespace traccc::device {
 
+/// Largest launch grid of gbts_make_graph_edges (the blocks stride over the
+/// work items)
+inline constexpr unsigned int gbts_make_graph_edges_max_blocks = 4096u;
+
 /// (Global Event Data) Payload for the @c traccc::device::gbts_make_graph_edges
 /// function (shared by the counting and the filling pass).
 struct gbts_make_graph_edges_payload {
-  /// Number of work items (also the block count)
-  unsigned int nWork;
+  /// Upper bound on the number of work items (sizes the edge_counts buffer
+  /// and the launch grid)
+  unsigned int nWorkMax;
+  /// Number of work items, on the device (from gbts_build_edge_work_list)
+  const unsigned int* nWork;
+  /// In/out: next work item to process; the blocks grab work items from it
+  /// (must be zero at launch; one per pass)
+  unsigned int* work_cursor;
   /// Per work item: (bin-pair index, chunk index within bin 1)
   vecmem::data::vector_view<const uint2> work_items;
   /// Per bin pair: first work item of the pair (nPairs + 1 entries, equal to
@@ -72,11 +82,13 @@ struct gbts_make_graph_edges_shared_payload {
   vecmem::data::vector_view<float> phi;
   /// Shared-mem cache: (tau_min, tau_max, r, z) float4 / node
   vecmem::data::vector_view<float4> node_pack;
+  /// One unsigned int: the work item grabbed by the block
+  vecmem::data::vector_view<unsigned int> work_slot;
 };
 
 /// @brief Create candidate edges between node pairs in compatible eta bins.
 ///
-/// One block handles one work item: a bin pair and one
+/// The blocks stride over the work items; a work item is a bin pair and one
 /// gbts_consts::node_buffer_length-sized chunk of the pair's inner bin. Every
 /// thread owns one inner node of the chunk and walks the phi-sorted outer bin,
 /// which is streamed through shared memory in slabs, testing the nodes inside

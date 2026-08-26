@@ -16,6 +16,7 @@
 #include "traccc/gbts_seeding/device/gbts_bid_seeds_for_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_bid_seeds_for_hits.hpp"
 #include "traccc/gbts_seeding/device/gbts_bin_spacepoints.hpp"
+#include "traccc/gbts_seeding/device/gbts_build_edge_work_list.hpp"
 #include "traccc/gbts_seeding/device/gbts_compress_graph.hpp"
 #include "traccc/gbts_seeding/device/gbts_convert_seeds.hpp"
 #include "traccc/gbts_seeding/device/gbts_count_terminus_edges.hpp"
@@ -38,6 +39,9 @@
 #include <algorithm>
 #include <memory_resource>
 
+// CUB include(s).
+#include <cub/device/device_radix_sort.cuh>
+
 // Thrust include(s).
 #include <thrust/execution_policy.h>
 #include <thrust/scan.h>
@@ -58,11 +62,18 @@ using int2 = traccc::int2;
 /// CUDA kernel for running @c traccc::device::gbts_bin_spacepoints
 __global__ void gbts_bin_spacepoints(
     const device::gbts_bin_spacepoints_payload payload) {
-  __shared__ unsigned int scratch[2];
+  device::gbts_bin_spacepoints(details::thread_id1{}, payload);
+}
+
+/// CUDA kernel for running @c traccc::device::gbts_build_edge_work_list
+__global__ void gbts_build_edge_work_list(
+    const device::gbts_build_edge_work_list_payload payload) {
+  __shared__ unsigned int scratch[device::gbts_build_edge_work_list_block_size];
   const traccc::cuda::barrier barrier;
-  device::gbts_bin_spacepoints(
+  device::gbts_build_edge_work_list(
       details::thread_id1{}, barrier, payload,
-      {vecmem::data::vector_view<unsigned int>(2u, scratch)});
+      {vecmem::data::vector_view<unsigned int>(
+          device::gbts_build_edge_work_list_block_size, scratch)});
 }
 
 /// CUDA kernel for running @c traccc::device::gbts_sort_nodes
@@ -97,6 +108,7 @@ __global__ void gbts_make_graph_edges(
     const device::gbts_make_graph_edges_payload payload) {
   __shared__ float phi[traccc::device::gbts_consts::node_buffer_length];
   __shared__ float4 node_pack[traccc::device::gbts_consts::node_buffer_length];
+  __shared__ unsigned int work_slot[1];
   const traccc::cuda::barrier barrier;
 
   device::gbts_make_graph_edges<fill>(
@@ -104,7 +116,8 @@ __global__ void gbts_make_graph_edges(
       {vecmem::data::vector_view<float>(
            traccc::device::gbts_consts::node_buffer_length, phi),
        vecmem::data::vector_view<float4>(
-           traccc::device::gbts_consts::node_buffer_length, node_pack)});
+           traccc::device::gbts_consts::node_buffer_length, node_pack),
+       vecmem::data::vector_view<unsigned int>(1u, work_slot)});
 }
 
 /// CUDA kernel for running @c traccc::device::gbts_match_graph_edges
@@ -203,19 +216,57 @@ void gbts_seeding_algorithm::gbts_sort_nodes_kernel(
     const device::gbts_sort_nodes_payload& payload) const {
   // Order the nodes by their (eta bin, phi, spacepoint index bits) keys,
   // carrying the full spacepoint index along as the value.
-  vecmem::device_vector<unsigned long long int> d_sort_keys(payload.sort_keys);
-  vecmem::device_vector<unsigned int> d_sort_values(payload.sort_values);
-  thrust::sort_by_key(
-      thrust::cuda::par_nosync(std::pmr::polymorphic_allocator(&(mr().main)))
-          .on(details::get_stream(stream())),
-      d_sort_keys.begin(),
-      d_sort_keys.begin() + static_cast<int>(payload.nNodes),
-      d_sort_values.begin());
+  // Stable radix sort of the significant key bits only (the eta bin and phi
+  // fields; the keys are written in spacepoint order, so the low index bits
+  // are redundant for a stable sort): fewer radix passes than a full 64-bit
+  // sort.
+  unsigned int eta_bits = 0u;
+  while ((1u << eta_bits) <= payload.nEtaBins) {
+    ++eta_bits;
+  }
+  const int begin_bit = static_cast<int>(device::gbts_sort_key_phi_shift);
+  const int end_bit =
+      static_cast<int>(device::gbts_sort_key_eta_shift + eta_bits);
+
+  cudaStream_t cuda_stream = details::get_stream(stream());
+  vecmem::data::vector_buffer<unsigned long long int> keys_alt(payload.nKeys,
+                                                               mr().main);
+  vecmem::data::vector_buffer<unsigned int> values_alt(payload.nKeys,
+                                                       mr().main);
+  cub::DoubleBuffer<unsigned long long int> d_keys(payload.sort_keys.ptr(),
+                                                   keys_alt.ptr());
+  cub::DoubleBuffer<unsigned int> d_values(payload.sort_values.ptr(),
+                                           values_alt.ptr());
+  std::size_t temp_bytes = 0u;
+  TRACCC_CUDA_ERROR_CHECK(cub::DeviceRadixSort::SortPairs(
+      nullptr, temp_bytes, d_keys, d_values, static_cast<int>(payload.nKeys),
+      begin_bit, end_bit, cuda_stream));
+  vecmem::data::vector_buffer<char> temp(
+      static_cast<unsigned int>(std::max<std::size_t>(temp_bytes, 1u)),
+      mr().main);
+  TRACCC_CUDA_ERROR_CHECK(cub::DeviceRadixSort::SortPairs(
+      temp.ptr(), temp_bytes, d_keys, d_values, static_cast<int>(payload.nKeys),
+      begin_bit, end_bit, cuda_stream));
+  if (d_values.Current() != payload.sort_values.ptr()) {
+    // The sorted values ended up in the alternate buffer.
+    TRACCC_CUDA_ERROR_CHECK(
+        cudaMemcpyAsync(payload.sort_values.ptr(), d_values.Current(),
+                        payload.nKeys * sizeof(unsigned int),
+                        cudaMemcpyDeviceToDevice, cuda_stream));
+  }
 
   const unsigned int n_threads = 256;
-  const unsigned int n_blocks = 1 + (payload.nNodes - 1) / n_threads;
+  const unsigned int n_blocks = 1 + (payload.nKeys - 1) / n_threads;
   kernels::gbts_sort_nodes<<<n_blocks, n_threads, 0,
                              details::get_stream(stream())>>>(payload);
+  TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
+}
+
+void gbts_seeding_algorithm::gbts_build_edge_work_list_kernel(
+    const device::gbts_build_edge_work_list_payload& payload) const {
+  kernels::gbts_build_edge_work_list<<<
+      1, device::gbts_build_edge_work_list_block_size, 0,
+      details::get_stream(stream())>>>(payload);
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
 }
 
@@ -235,7 +286,9 @@ void gbts_seeding_algorithm::gbts_count_graph_edges_kernel(
   // chunk size.
   const unsigned int n_threads =
       traccc::device::gbts_consts::node_buffer_length;
-  const unsigned int n_blocks = payload.nWork;
+  // The blocks stride over the device-side work list.
+  const unsigned int n_blocks =
+      std::min(payload.nWorkMax, device::gbts_make_graph_edges_max_blocks);
   kernels::gbts_make_graph_edges<false>
       <<<n_blocks, n_threads, 0, details::get_stream(stream())>>>(payload);
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
@@ -253,7 +306,9 @@ void gbts_seeding_algorithm::gbts_make_graph_edges_kernel(
     const device::gbts_make_graph_edges_payload& payload) const {
   const unsigned int n_threads =
       traccc::device::gbts_consts::node_buffer_length;
-  const unsigned int n_blocks = payload.nWork;
+  // The blocks stride over the device-side work list.
+  const unsigned int n_blocks =
+      std::min(payload.nWorkMax, device::gbts_make_graph_edges_max_blocks);
   kernels::gbts_make_graph_edges<true>
       <<<n_blocks, n_threads, 0, details::get_stream(stream())>>>(payload);
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
