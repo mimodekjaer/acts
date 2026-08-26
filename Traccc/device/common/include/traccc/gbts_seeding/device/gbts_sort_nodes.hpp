@@ -30,13 +30,9 @@ struct gbts_sort_nodes_payload {
   const unsigned int* nNodes;
   /// Reduced (x, y, z, cluster width) per spacepoint, in original order
   vecmem::data::vector_view<const float4> reducedSP;
-  /// In/out: the nNodes node sort keys from gbts_bin_spacepoints; the kernel
-  /// launcher sorts them (with @c sort_values as the values) before this
-  /// kernel runs
+  /// In/out: the node sort keys from gbts_bin_spacepoints (the spacepoint
+  /// index in the low bits); gbts_sort_node_keys_kernel sorts them in place
   vecmem::data::vector_view<gbts_sort_key_t> sort_keys;
-  /// In/out: the spacepoint index belonging to each key, sorted alongside
-  /// @c sort_keys by the kernel launcher
-  vecmem::data::vector_view<unsigned int> sort_values;
   /// Output: per-node (tau_min, tau_max, r, z), written in sorted order
   vecmem::data::vector_view<float4> node_params;
   /// Output: per-node phi, written in sorted order

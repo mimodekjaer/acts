@@ -262,3 +262,12 @@ per bin, see entry 9), zero buffer without the eta section. Seeds identical.
 Bins are contiguous in the sorted keys, so only the begin of each bin is
 searched (the end is the next bin's begin); block of 1024 threads.
 Work-list kernel 36 -> 26 us. Seeds identical.
+
+### 10. Keys-only 64-bit node sort, 12-bit phi, 3 radix passes  -> 0.766 ms/event (-3.5%)
+Key = (eta bin << 44) | (12-bit quantised phi << 32) | spacepoint index;
+`cub::DeviceRadixSort::SortKeys` on the bits above the index only (3
+one-sweep passes: a standalone micro-benchmark showed keys-only 64-bit
+sorting 15% faster than 32/32 pairs at equal pass count). Runs of equal
+(eta bin, quantised phi) are longer with 12 phi bits (a few nodes, more in
+jets), and `gbts_sort_nodes` orders them by exact (phi, index): 7 -> 10.5 us.
+Node sort 89 -> 46 us; no sort_values array any more. Seeds identical.

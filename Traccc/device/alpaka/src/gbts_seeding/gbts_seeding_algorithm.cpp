@@ -281,9 +281,8 @@ void gbts_seeding_algorithm::gbts_sort_node_keys_kernel(
     const device::gbts_sort_nodes_payload& payload) const {
   // Order the nodes by their (eta bin, phi, spacepoint index bits) keys,
   // carrying the full spacepoint index along as the value.
-  details::sort_by_key(
-      details::get_queue(queue()), mr(), payload.sort_keys.ptr(),
-      payload.sort_keys.ptr() + payload.nKeys, payload.sort_values.ptr());
+  details::sort(details::get_queue(queue()), mr(), payload.sort_keys.ptr(),
+                payload.sort_keys.ptr() + payload.nKeys);
 }
 
 void gbts_seeding_algorithm::gbts_sort_nodes_kernel(

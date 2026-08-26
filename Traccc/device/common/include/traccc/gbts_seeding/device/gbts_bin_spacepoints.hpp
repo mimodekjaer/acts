@@ -25,24 +25,37 @@
 namespace traccc::device {
 
 /// Type of the node sort key
-using gbts_sort_key_t = unsigned int;
+using gbts_sort_key_t = unsigned long long int;
 
-/// Node sort key layout, from the least significant bit up: the quantised
-/// phi, then the eta bin. Sorting the keys groups the nodes by eta bin and
-/// orders them by phi up to the quantisation; the keys are written in
-/// spacepoint order, so a stable sort breaks ties by spacepoint index, and
-/// gbts_sort_nodes restores the exact (phi, spacepoint index) order inside
-/// every run of equal keys.
-inline constexpr unsigned int gbts_sort_key_phi_bits = 20u;
+/// Node sort key layout: the spacepoint index in the low 32 bits, then the
+/// quantised phi, then the eta bin. Only the bits above the index are radix
+/// sorted (a stable sort of the (eta bin, phi) fields), so ties in
+/// (eta bin, quantised phi) keep the spacepoint index order; gbts_sort_nodes
+/// restores the exact (phi, spacepoint index) order inside every run of
+/// equal (eta bin, quantised phi).
+inline constexpr unsigned int gbts_sort_key_index_bits = 32u;
+inline constexpr unsigned int gbts_sort_key_phi_bits = 12u;
+inline constexpr unsigned int gbts_sort_key_phi_shift =
+    gbts_sort_key_index_bits;
+inline constexpr unsigned int gbts_sort_key_eta_shift =
+    gbts_sort_key_index_bits + gbts_sort_key_phi_bits;
 inline constexpr unsigned int gbts_sort_key_eta_bits =
-    32u - gbts_sort_key_phi_bits;
-inline constexpr unsigned int gbts_sort_key_eta_shift = gbts_sort_key_phi_bits;
+    64u - gbts_sort_key_eta_shift;
 /// Largest number of eta bins the key's eta field can hold (one value is
 /// reserved for the "rejected" key)
-inline constexpr unsigned int gbts_sort_key_max_eta_bins =
-    (1u << gbts_sort_key_eta_bits) - 1u;
+inline constexpr unsigned int gbts_sort_key_max_eta_bins = (1u << 20u) - 1u;
 /// Key of a rejected spacepoint / unused slot: sorts after every node key
-inline constexpr gbts_sort_key_t gbts_sort_key_rejected = ~0u;
+inline constexpr gbts_sort_key_t gbts_sort_key_rejected = ~0ull;
+/// The (eta bin, quantised phi) part of a key
+TRACCC_HOST_DEVICE inline unsigned int gbts_sort_key_bin_phi(
+    const gbts_sort_key_t key) {
+  return static_cast<unsigned int>(key >> gbts_sort_key_index_bits);
+}
+/// The spacepoint index part of a key
+TRACCC_HOST_DEVICE inline unsigned int gbts_sort_key_index(
+    const gbts_sort_key_t key) {
+  return static_cast<unsigned int>(key & 0xFFFFFFFFull);
+}
 
 /// Quantised phi (monotone in phi): the low gbts_sort_key_phi_bits key bits
 TRACCC_HOST_DEVICE inline unsigned int gbts_quantised_phi(const float phi) {
@@ -88,15 +101,13 @@ struct gbts_bin_spacepoints_payload {
   vecmem::data::vector_view<const std::pair<float, float>> layer_geo;
   /// Output: reduced (x, y, z, cluster width) per spacepoint after filtering
   vecmem::data::vector_view<float4> reducedSP;
-  /// Output: one node sort key per spacepoint slot (nSp entries),
-  /// (eta bin << gbts_sort_key_eta_shift) | quantised phi for accepted
-  /// spacepoints and gbts_sort_key_rejected for rejected / unused slots, so
-  /// that after a stable sort the nodes come first, grouped by eta bin and
-  /// ordered by (quantised phi, spacepoint index).
+  /// Output: one node sort key per spacepoint slot (nSp entries):
+  /// (eta bin << gbts_sort_key_eta_shift) | (quantised phi <<
+  /// gbts_sort_key_phi_shift) | spacepoint index for accepted spacepoints,
+  /// gbts_sort_key_rejected for rejected / unused slots, so that after the
+  /// sort the nodes come first, grouped by eta bin and ordered by
+  /// (quantised phi, spacepoint index).
   vecmem::data::vector_view<gbts_sort_key_t> sort_keys;
-  /// Output: the spacepoint index matching each @c sort_keys slot;
-  /// sorted alongside @c sort_keys by the gbts_sort_nodes launcher
-  vecmem::data::vector_view<unsigned int> sort_values;
   /// Size of the volume-to-layer map (for bounds checking)
   unsigned long int volumeMapSize;
   /// Size of the surface-to-layer map (for bounds checking)

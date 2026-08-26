@@ -557,50 +557,36 @@ void gbts_seeding_algorithm::gbts_bin_spacepoints_kernel(
 
 void gbts_seeding_algorithm::gbts_sort_node_keys_kernel(
     const device::gbts_sort_nodes_payload& payload) const {
-  // Order the nodes by their (eta bin, phi, spacepoint index bits) keys,
-  // carrying the full spacepoint index along as the value.
-  // Stable radix sort of the 32-bit keys (quantised phi | eta bin), on the
-  // significant bits only: 4 one-sweep passes at most.
+  // Keys-only radix sort of the (eta bin, quantised phi) bits above the
+  // spacepoint index: 3 one-sweep passes at most, stable in the index.
   unsigned int eta_bits = 0u;
   while ((1u << eta_bits) <= payload.nEtaBins) {
     ++eta_bits;
   }
-  const int begin_bit = 0;
+  const int begin_bit = static_cast<int>(device::gbts_sort_key_phi_shift);
   const int end_bit =
       static_cast<int>(device::gbts_sort_key_eta_shift + eta_bits);
 
   cudaStream_t cuda_stream = details::get_stream(stream());
   vecmem::data::vector_buffer<device::gbts_sort_key_t> keys_alt(payload.nKeys,
                                                                 mr().main);
-  vecmem::data::vector_buffer<unsigned int> values_alt(payload.nKeys,
-                                                       mr().main);
   cub::DoubleBuffer<device::gbts_sort_key_t> d_keys(payload.sort_keys.ptr(),
                                                     keys_alt.ptr());
-  cub::DoubleBuffer<unsigned int> d_values(payload.sort_values.ptr(),
-                                           values_alt.ptr());
   std::size_t temp_bytes = 0u;
-  TRACCC_CUDA_ERROR_CHECK(cub::DeviceRadixSort::SortPairs(
-      nullptr, temp_bytes, d_keys, d_values, static_cast<int>(payload.nKeys),
-      begin_bit, end_bit, cuda_stream));
+  TRACCC_CUDA_ERROR_CHECK(cub::DeviceRadixSort::SortKeys(
+      nullptr, temp_bytes, d_keys, static_cast<int>(payload.nKeys), begin_bit,
+      end_bit, cuda_stream));
   vecmem::data::vector_buffer<char> temp(
       static_cast<unsigned int>(std::max<std::size_t>(temp_bytes, 1u)),
       mr().main);
-  TRACCC_CUDA_ERROR_CHECK(cub::DeviceRadixSort::SortPairs(
-      temp.ptr(), temp_bytes, d_keys, d_values, static_cast<int>(payload.nKeys),
+  TRACCC_CUDA_ERROR_CHECK(cub::DeviceRadixSort::SortKeys(
+      temp.ptr(), temp_bytes, d_keys, static_cast<int>(payload.nKeys),
       begin_bit, end_bit, cuda_stream));
   if (d_keys.Current() != payload.sort_keys.ptr()) {
-    // The sorted keys ended up in the alternate buffer (gbts_sort_nodes
-    // reads them to find runs of equal keys).
+    // The sorted keys ended up in the alternate buffer.
     TRACCC_CUDA_ERROR_CHECK(
         cudaMemcpyAsync(payload.sort_keys.ptr(), d_keys.Current(),
                         payload.nKeys * sizeof(device::gbts_sort_key_t),
-                        cudaMemcpyDeviceToDevice, cuda_stream));
-  }
-  if (d_values.Current() != payload.sort_values.ptr()) {
-    // The sorted values ended up in the alternate buffer.
-    TRACCC_CUDA_ERROR_CHECK(
-        cudaMemcpyAsync(payload.sort_values.ptr(), d_values.Current(),
-                        payload.nKeys * sizeof(unsigned int),
                         cudaMemcpyDeviceToDevice, cuda_stream));
   }
 }

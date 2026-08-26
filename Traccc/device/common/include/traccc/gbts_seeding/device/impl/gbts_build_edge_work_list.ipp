@@ -87,11 +87,14 @@ TRACCC_HOST_DEVICE inline void gbts_build_edge_work_list(
     for (unsigned int bin = threadIndex; bin < payload.nEtaBins;
          bin += blockSize) {
       d_eta_bin_views[2u * bin] = detail::gbts_key_lower_bound(
-          d_sort_keys, nKeys, bin << gbts_sort_key_eta_shift);
+          d_sort_keys, nKeys,
+          static_cast<gbts_sort_key_t>(bin) << gbts_sort_key_eta_shift);
     }
     if (threadIndex == 0u) {
       *payload.nNodes = detail::gbts_key_lower_bound(
-          d_sort_keys, nKeys, payload.nEtaBins << gbts_sort_key_eta_shift);
+          d_sort_keys, nKeys,
+          static_cast<gbts_sort_key_t>(payload.nEtaBins)
+              << gbts_sort_key_eta_shift);
     }
     barrier.blockBarrier();
     const unsigned int nNodes = *payload.nNodes;

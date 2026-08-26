@@ -131,7 +131,10 @@ TRACCC_HOST_DEVICE inline bool gbts_bin_one_spacepoint(
   // Concatenate the eta bin, order-preserving phi bits, and the spacepoint
   // index into a single 64-bit integer, used to sort the nodes.
   const float Phi = math::atan2(pos[1], pos[0]);
-  key = (eta_index << gbts_sort_key_eta_shift) | gbts_quantised_phi(Phi);
+  key = (static_cast<gbts_sort_key_t>(eta_index) << gbts_sort_key_eta_shift) |
+        (static_cast<gbts_sort_key_t>(gbts_quantised_phi(Phi))
+         << gbts_sort_key_phi_shift) |
+        static_cast<gbts_sort_key_t>(globalIndex);
   return true;
 }
 
@@ -156,7 +159,6 @@ TRACCC_HOST_DEVICE inline void gbts_bin_spacepoints(
 
   vecmem::device_vector<float4> reducedSP(payload.reducedSP);
   vecmem::device_vector<gbts_sort_key_t> d_sort_keys(payload.sort_keys);
-  vecmem::device_vector<unsigned int> d_sort_values(payload.sort_values);
 
   const unsigned int nSp = spacepoints.size();
   const unsigned int globalIdx = thread_id.getGlobalThreadIdX();
@@ -168,7 +170,7 @@ TRACCC_HOST_DEVICE inline void gbts_bin_spacepoints(
        globalIndex += stride) {
     gbts_sort_key_t key = gbts_sort_key_rejected;
     if (globalIndex < nSp) {
-      gbts_sort_key_t node_key = 0u;
+      gbts_sort_key_t node_key = 0ull;
       if (detail::gbts_bin_one_spacepoint(payload, spacepoints, measurements,
                                           volumeToLayerMap, surfaceToLayerMap,
                                           layerType, d_layer_info, d_layer_geo,
@@ -177,7 +179,6 @@ TRACCC_HOST_DEVICE inline void gbts_bin_spacepoints(
       }
     }
     d_sort_keys[globalIndex] = key;
-    d_sort_values[globalIndex] = globalIndex;
   }
 }
 

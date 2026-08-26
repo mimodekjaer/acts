@@ -26,8 +26,6 @@ TRACCC_HOST_DEVICE inline void gbts_sort_nodes(
   const vecmem::device_vector<const float4> d_reducedSP(payload.reducedSP);
   const vecmem::device_vector<const gbts_sort_key_t> d_sort_keys(
       payload.sort_keys);
-  const vecmem::device_vector<const unsigned int> d_sort_values(
-      payload.sort_values);
   vecmem::device_vector<float4> d_node_params(payload.node_params);
   vecmem::device_vector<float> d_node_phi(payload.node_phi);
   vecmem::device_vector<unsigned int> d_node_index(payload.node_index);
@@ -42,7 +40,9 @@ TRACCC_HOST_DEVICE inline void gbts_sort_nodes(
   const unsigned int nNodes = *payload.nNodes;
   for (unsigned int globalIndex = globalIdx; globalIndex < nNodes;
        globalIndex += blockDimX * gridDimX) {
-    const unsigned int srcIdx = d_sort_values[globalIndex];
+    const gbts_sort_key_t key = d_sort_keys[globalIndex];
+    const unsigned int srcIdx = gbts_sort_key_index(key);
+    const unsigned int bin_phi = gbts_sort_key_bin_phi(key);
     const float4 sp = d_reducedSP[srcIdx];
 
     const float Phi = math::atan2(sp.y, sp.x);
@@ -83,17 +83,20 @@ TRACCC_HOST_DEVICE inline void gbts_sort_nodes(
     // the exact (phi, spacepoint index) rank decides the slot, so the nodes
     // of an eta bin end up exactly sorted by phi (deterministically).
     unsigned int pos = globalIndex;
-    const gbts_sort_key_t key = d_sort_keys[globalIndex];
     const bool in_run =
-        ((globalIndex > 0u) && (d_sort_keys[globalIndex - 1u] == key)) ||
-        ((globalIndex + 1u < nNodes) && (d_sort_keys[globalIndex + 1u] == key));
+        ((globalIndex > 0u) &&
+         (gbts_sort_key_bin_phi(d_sort_keys[globalIndex - 1u]) == bin_phi)) ||
+        ((globalIndex + 1u < nNodes) &&
+         (gbts_sort_key_bin_phi(d_sort_keys[globalIndex + 1u]) == bin_phi));
     if (in_run) {
       unsigned int start = globalIndex;
-      while ((start > 0u) && (d_sort_keys[start - 1u] == key)) {
+      while ((start > 0u) &&
+             (gbts_sort_key_bin_phi(d_sort_keys[start - 1u]) == bin_phi)) {
         --start;
       }
       unsigned int end = globalIndex + 1u;
-      while ((end < nNodes) && (d_sort_keys[end] == key)) {
+      while ((end < nNodes) &&
+             (gbts_sort_key_bin_phi(d_sort_keys[end]) == bin_phi)) {
         ++end;
       }
       unsigned int rank = 0u;
@@ -101,7 +104,7 @@ TRACCC_HOST_DEVICE inline void gbts_sort_nodes(
         if (j == globalIndex) {
           continue;
         }
-        const unsigned int otherIdx = d_sort_values[j];
+        const unsigned int otherIdx = gbts_sort_key_index(d_sort_keys[j]);
         const float4 other = d_reducedSP[otherIdx];
         const float otherPhi = math::atan2(other.y, other.x);
         if ((otherPhi < Phi) || ((otherPhi == Phi) && (otherIdx < srcIdx))) {

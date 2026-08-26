@@ -92,14 +92,12 @@ auto gbts_seeding_algorithm::make_nodes(
 
   vecmem::data::vector_buffer<gbts_sort_key_t> sort_keys_buf(nSp, mr().main);
   copy().setup(sort_keys_buf)->ignore();
-  vecmem::data::vector_buffer<unsigned int> sort_values_buf(nSp, mr().main);
-  copy().setup(sort_values_buf)->ignore();
 
   gbts_bin_spacepoints_kernel(
       {nSp, cfg.n_eta_bins, spacepoints, measurements, volumeToLayerMap_buf,
        surfaceToLayerMap_buf, layerType_buf, layer_info_buf, layer_geo_buf,
-       reducedSP_buf, sort_keys_buf, sort_values_buf,
-       cfg.volumeToLayerMap.size(), cfg.surfaceToLayerMap.size(),
+       reducedSP_buf, sort_keys_buf, cfg.volumeToLayerMap.size(),
+       cfg.surfaceToLayerMap.size(),
        cfg.gbts_count_spacepoints_by_layer_params});
 
   // Per-node outputs of the gather (node sorting) kernel.
@@ -117,7 +115,6 @@ auto gbts_seeding_algorithm::make_nodes(
       d_counters + gbts_counter::nNodes,
       reducedSP_buf,
       sort_keys_buf,
-      sort_values_buf,
       node_params_buf,
       node_phi_buf,
       node_index_buf,
