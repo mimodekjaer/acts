@@ -11,7 +11,6 @@
 #include "traccc/definitions/math.hpp"
 #include "traccc/definitions/qualifiers.hpp"
 #include "traccc/device/concepts/thread_id.hpp"
-#include "traccc/gbts_seeding/device/details/gbts_create_seed_candidate.hpp"
 #include "traccc/gbts_seeding/gbts_seeding_config.hpp"
 #include "traccc/gbts_seeding/gbts_types.hpp"
 
@@ -251,6 +250,7 @@ TRACCC_HOST_DEVICE inline void gbts_fit_segments(
   const vecmem::device_vector<const unsigned int> d_output_graph(
       payload.output_graph);
   const vecmem::device_vector<const int2> d_path_store(payload.path_store);
+  vecmem::device_vector<int2> d_seed_proposals(payload.seed_proposals);
 
   const gbts_fit_segments_params& fit_params = payload.gbts_fit_segments_params;
   const float max_z0 = payload.max_z0;
@@ -259,23 +259,22 @@ TRACCC_HOST_DEVICE inline void gbts_fit_segments(
   // edge_size = 2 + 1 + max_num_neighbours ints.
   const unsigned int edge_size = 2u + 1u + payload.max_num_neighbours;
 
-  const unsigned int store_size = *payload.nPathStoreSize;
-
   const unsigned int globalIdx = thread_id.getGlobalThreadIdX();
   const unsigned int blockDimX = thread_id.getBlockDimX();
   const unsigned int gridDimX = thread_id.getGridDimX();
 
-  for (unsigned int globalIndex = globalIdx;
-       globalIndex + payload.nTerminusEdges < store_size;
-       globalIndex += blockDimX * gridDimX) {
-    const unsigned int path_idx = globalIndex + payload.nTerminusEdges;
+  for (unsigned int path_idx = globalIdx; path_idx < payload.nRows;
+       path_idx += blockDimX * gridDimX) {
+    int2 path = d_path_store[path_idx];
+    // Terminus rows are single-edge paths and never long enough to fit.
+    if (path.y < 0) {
+      continue;
+    }
 
     unsigned char length = 1;
     bool toggle = false;
     details::edgeState state1;
     details::edgeState state2;
-
-    int2 path = d_path_store[path_idx];
 
     const unsigned int nodeidx1 =
         d_output_graph[edge_size * static_cast<unsigned int>(path.x) +
@@ -289,9 +288,10 @@ TRACCC_HOST_DEVICE inline void gbts_fit_segments(
     state1.initialize(node2, node1);
     while (path.y >= 0) {
       path = d_path_store[static_cast<unsigned int>(path.y)];
-      node2 = d_sp_reduced[d_output_graph[edge_size * static_cast<unsigned int>(
-                                                          path.x) +
-                                          gbts_consts::node2]];
+      const unsigned int nodeidx =
+          d_output_graph[edge_size * static_cast<unsigned int>(path.x) +
+                         gbts_consts::node2];
+      node2 = d_sp_reduced[nodeidx];
       if (toggle) {
         if (!details::gbts_kalman_update(&state1, &state2, node2, fit_params,
                                          max_z0)) {
@@ -314,7 +314,7 @@ TRACCC_HOST_DEVICE inline void gbts_fit_segments(
     if (math::fabs(state1.m_X[2]) * fit_params.final_curv_cut_tighten *
             fit_params.inv_max_curvature >
         1.0f) {
-      return;
+      continue;
     }
     // prefer seeds that reach to the outer edge of the detector for better
     // resoultion at high pT
@@ -326,12 +326,9 @@ TRACCC_HOST_DEVICE inline void gbts_fit_segments(
     }
     int qual = static_cast<int>(fit_params.qual_scale * state1.m_J);
 
-    const unsigned int prop_idx =
-        vecmem::device_atomic_ref<unsigned int>(*payload.nPropsCounter)
-            .fetch_add(1u);
-    details::gbts_create_seed_candidate(
-        qual, static_cast<int>(path_idx), prop_idx, payload.seed_ambiguity,
-        payload.seed_proposals, payload.edge_bids, payload.path_store, 1);
+    d_seed_proposals[path_idx] = int2{qual, static_cast<int>(path_idx)};
+    vecmem::device_atomic_ref<unsigned int>(*payload.nPropsCounter)
+        .fetch_add(1u);
   }
 }
 

@@ -60,9 +60,7 @@ enum gbts_counter : unsigned int {
 struct gbts_consts {
   // CCA max iterations -> maximum seed length (in edges).
   static constexpr unsigned short max_cca_iter = 15;
-  // shared memory allocation sizes (element counts per block).
-  // Which is used in the fill_path_store, and store 2 unsigned int.
-  static constexpr unsigned short live_path_buffer = 1024;
+  // node cache in gbts_make_graph_edges.
   static constexpr unsigned short node_buffer_length = 128;
 
   // Per-edge offsets into the row-major output graph
@@ -287,7 +285,7 @@ struct gbts_seedfinder_config {
   unsigned char minLevel = 3;
 
   // nMaxEdges = max_edges_factor * nNodes  (fixed buffer size).
-  unsigned int max_edges_factor = 10;
+  unsigned int max_edges_factor = 13;
 
   // number of seed-vs-edge bidding rounds during disambiguation.
   unsigned int edge_bidding_rounds = 5;

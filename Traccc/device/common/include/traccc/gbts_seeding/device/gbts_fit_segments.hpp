@@ -24,11 +24,8 @@ namespace traccc::device {
 /// (Global Event Data) Payload for the @c traccc::device::gbts_fit_segments
 /// function
 struct gbts_fit_segments_payload {
-  /// Upper bound on the number of paths (== path_store size minus
-  /// terminus prefix)
-  unsigned int nPaths;
-  /// Number of terminus edges (path-store offset for fittable paths)
-  unsigned int nTerminusEdges;
+  /// Number of path-store rows
+  unsigned int nRows;
   /// Maximum number of neighbours retained per edge
   unsigned int max_num_neighbours;
   /// Minimum number of edges a path must have to be fit
@@ -37,17 +34,12 @@ struct gbts_fit_segments_payload {
   vecmem::data::vector_view<const float4> reducedSP;
   /// Compacted graph from gbts_compress_graph
   vecmem::data::vector_view<const unsigned int> output_graph;
-  /// Per-path (edge index, parent path-store index or -1) entries
+  /// Per-row (edge index, parent row or -1) entries
   vecmem::data::vector_view<const int2> path_store;
-  /// Output: per-accepted-path (path_store index, level) seed proposal
+  /// Output: per-row (quality, row) for accepted paths; rows that do not
+  /// become a proposal keep their pre-filled {-1, -1}
   vecmem::data::vector_view<int2> seed_proposals;
-  /// In/out: per-edge highest-bidder seed proposal (packed 64-bit)
-  vecmem::data::vector_view<unsigned long long int> edge_bids;
-  /// Output: per-seed-proposal ambiguity tag (multi-bid resolution flag)
-  vecmem::data::vector_view<char> seed_ambiguity;
-  /// Read-only upper bound on path indices (set by earlier kernels)
-  unsigned int* nPathStoreSize;
-  /// In/out: global atomic counter of accepted seed proposals
+  /// In/out: global atomic count of accepted seed proposals
   unsigned int* nPropsCounter;
   /// Curvature / pT / chi-squared cut parameters
   traccc::gbts_fit_segments_params gbts_fit_segments_params;
@@ -58,10 +50,11 @@ struct gbts_fit_segments_payload {
 /// @brief Fit each candidate path and emit seed proposals that pass quality
 /// cuts.
 ///
-/// One thread per path-store entry walks backwards from a leaf, gathers the
-/// involved spacepoints, runs the helix / chi-squared fit, and on success
-/// atomically claims a seed-proposal slot, bids for its leaf edge, and tags
-/// ambiguity.
+/// One thread per path-store row walks backwards from the row's edge,
+/// gathers the involved spacepoints, runs the helix / chi-squared fit, and
+/// on success writes the proposal at the row itself. Path-store rows are a
+/// deterministic function of the graph, so the row doubles as the
+/// reproducible tie-break of every later bid.
 ///
 /// @param[in] thread_id Thread identifier for the kernel launch
 /// @param[in] payload     The global memory payload

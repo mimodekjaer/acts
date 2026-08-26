@@ -37,10 +37,12 @@ TRACCC_HOST_DEVICE inline void gbts_compress_graph(
 
   for (unsigned int globalIndex = globalIdx; globalIndex < payload.nEdges;
        globalIndex += blockDimX * gridDimX) {
-    const int newIdx = d_reIndexer[globalIndex];
-    if (newIdx == -1) {
+    const int scan = d_reIndexer[globalIndex];
+    const int prev = (globalIndex == 0u) ? 0 : d_reIndexer[globalIndex - 1u];
+    if (scan == prev) {
       continue;
     }
+    const int newIdx = scan - 1;
 
     // Row-major output graph: each edge owns a contiguous block of
     // edge_size = 2 + 1 + nMaxNei ints ([node1, node2, nNei,
@@ -56,8 +58,10 @@ TRACCC_HOST_DEVICE inline void gbts_compress_graph(
     d_output_graph[pos + gbts_consts::nNei] = nNei;
     const unsigned int nei_pos = payload.nMaxNei * globalIndex;
     for (unsigned int k = 0u; k < nNei; k++) {
+      // Every recorded neighbour is itself kept (match flagged it).
       d_output_graph[pos + gbts_consts::nei_start + k] =
-          static_cast<unsigned int>(d_reIndexer[d_neighbours[nei_pos + k]]);
+          static_cast<unsigned int>(d_reIndexer[d_neighbours[nei_pos + k]] -
+                                    1);
     }
   }
 }

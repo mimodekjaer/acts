@@ -23,7 +23,8 @@ TRACCC_HOST_DEVICE inline void gbts_link_graph_edges(
     const thread_id_t& thread_id,
     const gbts_link_graph_edges_payload& payload) {
   const vecmem::device_vector<const uint2> d_edge_nodes(payload.edge_nodes);
-  vecmem::device_vector<unsigned int> d_edge_links(payload.edge_links);
+  vecmem::device_vector<unsigned int> d_bucket_outer(payload.bucket_outer);
+  vecmem::device_vector<unsigned int> d_bucket_edge(payload.bucket_edge);
   vecmem::device_vector<unsigned int> d_num_outgoing_edges(
       payload.num_outgoing_edges);
 
@@ -33,11 +34,12 @@ TRACCC_HOST_DEVICE inline void gbts_link_graph_edges(
 
   for (unsigned int globalIndex = globalIdx; globalIndex < payload.nEdges;
        globalIndex += blockDimX * gridDimX) {
-    const unsigned int sharedNode = d_edge_nodes[globalIndex].y;
+    const uint2 nodes = d_edge_nodes[globalIndex];
     const unsigned int pos = vecmem::device_atomic_ref<unsigned int>(
-                                 d_num_outgoing_edges[sharedNode])
+                                 d_num_outgoing_edges[nodes.y])
                                  .fetch_sub(1u);
-    d_edge_links[pos - 1u] = static_cast<unsigned int>(globalIndex);
+    d_bucket_outer[pos - 1u] = nodes.x;
+    d_bucket_edge[pos - 1u] = globalIndex;
   }
 }
 

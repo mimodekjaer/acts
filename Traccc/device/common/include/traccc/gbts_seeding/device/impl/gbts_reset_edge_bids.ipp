@@ -31,14 +31,17 @@ TRACCC_HOST_DEVICE inline void gbts_reset_edge_bids(
   const unsigned int blockDimX = thread_id.getBlockDimX();
   const unsigned int gridDimX = thread_id.getGridDimX();
 
-  for (unsigned int prop_idx = globalIdx; prop_idx < payload.nProps;
+  for (unsigned int prop_idx = globalIdx; prop_idx < payload.nRows;
        prop_idx += blockDimX * gridDimX) {
+    const int2 prop = d_seed_proposals[prop_idx];
+    if (prop.y < 0) {
+      continue;
+    }
     const char ambi = d_seed_ambiguity[prop_idx];
     if ((ambi == -2) | (ambi == 0)) {
       // only reset maybes
       continue;
     }
-    const int2 prop = d_seed_proposals[prop_idx];
 
     bool isgood = true;
     // dummy path to start the loop

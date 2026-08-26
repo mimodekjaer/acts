@@ -32,13 +32,12 @@ inline void gbts_create_seed_candidate(
   const vecmem::device_vector<const int2> d_path_store(d_path_store_view);
 
   d_seed_proposals[prop_idx] = int2{qual, path_idx};
-  d_seed_ambiguity[prop_idx] = 0;
 
   const unsigned long long int seed_bid =
       (static_cast<unsigned long long int>(qual) << 32) |
       (static_cast<unsigned long long int>(prop_idx));
 
-  int2 path = int2{0, d_seed_proposals[prop_idx].y};
+  int2 path = int2{0, path_idx};
   while (path.y >= 0 && depth != 0) {
     path = d_path_store[static_cast<unsigned int>(path.y)];
     depth--;

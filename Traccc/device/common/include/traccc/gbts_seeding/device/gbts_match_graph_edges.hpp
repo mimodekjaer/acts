@@ -27,15 +27,14 @@ struct gbts_match_graph_edges_payload {
   unsigned int nMaxNei;
   /// Edge-matching pair cuts
   traccc::gbts_match_graph_edges_params gbts_match_graph_edges_params;
-  /// Packed per-edge [exp_eta, curv, phi_z, phi_w], from
-  /// gbts_make_graph_edges
+  /// Packed per-edge [exp_eta, curv, phi_z, phi_w], in canonical edge
+  /// order (from gbts_sort_graph_edges)
   vecmem::data::vector_view<const short4> edge_params;
-  /// (src, dst) node indices per edge
+  /// (outer, inner) node indices per edge, in canonical edge order
   vecmem::data::vector_view<const uint2> edge_nodes;
-  /// Per-node prefix sum of incoming edges (used to locate candidates)
+  /// Per-node [begin, end) canonical edge range of the edges entering the
+  /// node (used to locate candidates)
   vecmem::data::vector_view<const unsigned int> num_outgoing_edges;
-  /// Per-edge slot in its destination node's incoming-edge list
-  vecmem::data::vector_view<const unsigned int> edge_links;
   /// Output: number of accepted neighbours per edge (0..nMaxNei)
   vecmem::data::vector_view<unsigned char> num_neighbours;
   /// Output: neighbour edge indices, nMaxNei entries per edge (flat)
@@ -51,10 +50,11 @@ struct gbts_match_graph_edges_payload {
 /// @brief For each edge, find compatible neighbour edges sharing its outer
 /// node.
 ///
-/// One thread per edge pair-tests the edge against every edge leaving its
-/// outer node using the packed edge parameters, recording up to nMaxNei
-/// accepted neighbours, marking the edge as "kept", and atomically
-/// incrementing the connection counter.
+/// One thread per edge pair-tests the edge against every edge entering its
+/// outer node (a contiguous canonical index range) using the packed edge
+/// parameters, recording up to nMaxNei accepted neighbours in canonical
+/// order, marking the edge as "kept", and atomically incrementing the
+/// connection counter.
 ///
 /// @param[in] thread_id Thread identifier for the kernel launch
 /// @param[in] payload   The global memory payload

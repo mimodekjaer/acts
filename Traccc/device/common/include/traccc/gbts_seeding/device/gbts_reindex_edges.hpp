@@ -7,10 +7,6 @@
 
 #pragma once
 
-// Project include(s).
-#include "traccc/definitions/qualifiers.hpp"
-#include "traccc/device/concepts/thread_id.hpp"
-
 // VecMem include(s).
 #include <vecmem/containers/data/vector_view.hpp>
 
@@ -21,25 +17,16 @@ namespace traccc::device {
 struct gbts_reindex_edges_payload {
   /// Number of original edges
   unsigned int nEdges;
-  /// In/out: per-edge "kept" flag in, compact new index out
+  /// In/out: per-edge "kept" flag (0/1) in, inclusive prefix sum out. The
+  /// kernel launcher runs the scan in place; the compact index of a kept
+  /// edge e is then reIndexer[e] - 1, and the last entry is the total.
   vecmem::data::vector_view<int> reIndexer;
-  /// In/out: global atomic counter of edges that survived re-indexing
-  unsigned int* nConnectedEdgesCounter;
 };
 
-/// @brief Replace the per-edge "kept" flag with its compacted index.
+/// @brief Turn the per-edge "kept" flags into compact indices.
 ///
-/// Each thread reads its slot in the re-indexer; if the edge is marked
-/// "kept", it atomically claims the next compact slot and writes that
-/// compact index back; otherwise the slot is set to a sentinel.
-///
-/// @param[in] thread_id Thread identifier for the kernel launch
-/// @param[in] payload   The global memory payload
-///
-template <concepts::thread_id1 thread_id_t>
-TRACCC_HOST_DEVICE inline void gbts_reindex_edges(
-    const thread_id_t& thread_id, const gbts_reindex_edges_payload& payload);
+/// Implemented entirely by the backend launcher as an in-place inclusive
+/// scan, so the compact order is the canonical edge order restricted to the
+/// kept edges -- deterministic and locality preserving.
 
 }  // namespace traccc::device
-
-#include "traccc/gbts_seeding/device/impl/gbts_reindex_edges.ipp"

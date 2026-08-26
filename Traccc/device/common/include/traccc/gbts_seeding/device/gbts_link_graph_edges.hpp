@@ -24,19 +24,22 @@ struct gbts_link_graph_edges_payload {
   unsigned int nEdges;
   /// (src, dst) node indices per edge
   vecmem::data::vector_view<const uint2> edge_nodes;
-  /// Output: per-edge slot in the per-node incoming-edge list
-  vecmem::data::vector_view<unsigned int> edge_links;
+  /// Output: per inner-node bucket, the outer node index of every edge
+  /// entering that bucket (bucket order is race-assigned; only the
+  /// multiset matters, gbts_sort_graph_edges ranks it)
+  vecmem::data::vector_view<unsigned int> bucket_outer;
+  /// Output: the edge index matching each @c bucket_outer entry
+  vecmem::data::vector_view<unsigned int> bucket_edge;
   /// In/out: per-node prefix-sum / write cursor of incoming edges
   vecmem::data::vector_view<unsigned int> num_outgoing_edges;
 };
 
-/// @brief Compute each edge's slot in its destination node's incoming-edge
-/// list.
+/// @brief Scatter each edge's outer node index into its inner node's bucket.
 ///
-/// One thread per edge atomically increments the per-destination-node count
-/// and records the returned slot in the edge-link list.  After this kernel
-/// the count buffer has been turned into a write cursor that
-/// gbts_match_graph_edges can read sequentially.
+/// One thread per edge atomically decrements the per-inner-node cursor and
+/// records the edge's (outer node index, edge index) at the returned slot.  After this
+/// kernel the count buffer holds the bucket begin offsets, and
+/// gbts_sort_graph_edges can rank every edge inside its bucket.
 ///
 /// @param[in] thread_id Thread identifier for the kernel launch
 /// @param[in] payload   The global memory payload

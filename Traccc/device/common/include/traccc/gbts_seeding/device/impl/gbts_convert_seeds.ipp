@@ -97,15 +97,18 @@ TRACCC_HOST_DEVICE inline void gbts_convert_seeds(
   const unsigned int blockDimX = thread_id.getBlockDimX();
   const unsigned int gridDimX = thread_id.getGridDimX();
 
-  for (unsigned int prop_idx = globalIdx; prop_idx < payload.nProps;
+  for (unsigned int prop_idx = globalIdx; prop_idx < payload.nRows;
        prop_idx += blockDimX * gridDimX) {
+    const int2 prop = d_seed_proposals[prop_idx];
+    if (prop.y < 0) {
+      continue;
+    }
     if (d_seed_ambiguity[prop_idx] == -2) {
       continue;
     }
     char best_for_hit = 0;
     detail::Tracklet seed;
     seed.size = 0;
-    const int2 prop = d_seed_proposals[prop_idx];
     int2 path = int2{0, prop.y};
     while (path.y >= 0) {
       path = d_path_store[static_cast<unsigned int>(path.y)];

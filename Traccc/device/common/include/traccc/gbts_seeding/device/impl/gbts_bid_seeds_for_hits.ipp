@@ -36,12 +36,15 @@ TRACCC_HOST_DEVICE inline void gbts_bid_seeds_for_hits(
   const unsigned int blockDimX = thread_id.getBlockDimX();
   const unsigned int gridDimX = thread_id.getGridDimX();
 
-  for (unsigned int prop_idx = globalIdx; prop_idx < payload.nProps;
+  for (unsigned int prop_idx = globalIdx; prop_idx < payload.nRows;
        prop_idx += blockDimX * gridDimX) {
+    const int2 prop = d_seed_proposals[prop_idx];
+    if (prop.y < 0) {
+      continue;
+    }
     if (d_seed_ambiguity[prop_idx] == -2) {
       continue;
     }
-    const int2 prop = d_seed_proposals[prop_idx];
     const unsigned long long int seed_bid =
         (static_cast<unsigned long long int>(prop.x) << 32) |
         (static_cast<unsigned long long int>(prop_idx));

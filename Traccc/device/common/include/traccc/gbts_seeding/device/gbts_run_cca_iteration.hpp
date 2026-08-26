@@ -36,8 +36,9 @@ struct gbts_run_cca_iteration_payload {
   /// In/out: per-edge active-flag (holds the next iter index, or -1
   /// once the edge is no longer active).
   vecmem::data::vector_view<char> active_edges;
-  /// Output: longest outgoing-path summary per edge (length, next-edge)
-  vecmem::data::vector_view<short2> outgoing_paths;
+  /// Output: per-edge (number of path-store rows below the edge, terminus
+  /// flag: 0 = candidate seed root, -1 = not a root)
+  vecmem::data::vector_view<int2> outgoing_paths;
   /// Iteration index (0-based)
   unsigned char iter;
 };

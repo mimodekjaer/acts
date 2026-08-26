@@ -22,19 +22,24 @@ namespace traccc::device {
 struct gbts_count_terminus_edges_payload {
   /// Number of edges in the compacted graph
   unsigned int nConnectedEdges;
-  /// Per-edge longest-outgoing-path summary from CCA
-  vecmem::data::vector_view<short2> outgoing_paths;
-  /// Total number of paths reachable from any terminus edge
-  unsigned int* nPathsCounter;
-  /// Running size of the path store (initialised to nTerminusEdges)
-  unsigned int* nPathStoreSizeCounter;
+  /// Per-edge (subtree row count, terminus flag) from CCA
+  vecmem::data::vector_view<const int2> outgoing_paths;
+  /// Output: per-edge number of path-store rows owned by the edge (1 + its
+  /// subtree row count for a terminus edge, 0 otherwise). The kernel
+  /// launcher turns this into an inclusive prefix sum in place, so the rows
+  /// of terminus edge e are [row_sizes[e] - (1 + subtree), row_sizes[e]) and
+  /// the last entry is the total path-store size.
+  vecmem::data::vector_view<unsigned int> row_sizes;
+  /// In/out: global atomic count of terminus edges
+  unsigned int* nTerminusEdgesCounter;
 };
 
-/// @brief Count terminus edges (those with no live outgoing path) and total
-/// paths.
+/// @brief Count terminus edges and lay out the path store.
 ///
-/// Each thread inspects one edge; terminus edges atomically claim a slot in
-/// the path store and fold their reachable-path count into the total.
+/// Each thread inspects one edge; a terminus edge (a settled edge long
+/// enough to seed) claims 1 + subtree rows of the path store, everything
+/// else claims none. The launcher's prefix sum then gives every terminus a
+/// contiguous, deterministic row range that gbts_fill_path_store fills.
 ///
 /// @param[in] thread_id Thread identifier for the kernel launch
 /// @param[in] payload   The global memory payload

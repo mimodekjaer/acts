@@ -23,8 +23,8 @@ namespace traccc::device {
 /// (Global Event Data) Payload for the @c
 /// traccc::device::gbts_rebid_seeds_for_edges function
 struct gbts_rebid_seeds_for_edges_payload {
-  /// Number of seed proposals
-  unsigned int nProps;
+  /// Number of path-store rows (proposals are indexed by row)
+  unsigned int nRows;
   /// Per-path (edge index, parent path-store index or -1) entries
   vecmem::data::vector_view<const int2> path_store;
   /// Per-seed-proposal (path_store index, level)

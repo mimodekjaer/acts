@@ -33,8 +33,6 @@ TRACCC_HOST_DEVICE inline void gbts_match_graph_edges(
   const vecmem::device_vector<const uint2> d_edge_nodes(payload.edge_nodes);
   const vecmem::device_vector<const unsigned int> d_num_outgoing_edges(
       payload.num_outgoing_edges);
-  const vecmem::device_vector<const unsigned int> d_edge_links(
-      payload.edge_links);
   vecmem::device_vector<unsigned char> d_num_neighbours(payload.num_neighbours);
   vecmem::device_vector<unsigned int> d_neighbours(payload.neighbours);
   vecmem::device_vector<int> d_reIndexer(payload.reIndexer);
@@ -89,7 +87,7 @@ TRACCC_HOST_DEVICE inline void gbts_match_graph_edges(
       if (num_nei >= payload.nMaxNei) {
         break;
       }
-      const unsigned int edge2_idx = d_edge_links[link_begin + k];
+      const unsigned int edge2_idx = link_begin + k;
 
       const std::pair<float4, bool> params2 =
           payload.edge_params_decoder.decode_edge_params(

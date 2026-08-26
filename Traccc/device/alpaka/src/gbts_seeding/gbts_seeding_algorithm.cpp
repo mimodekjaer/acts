@@ -15,13 +15,11 @@
 #include "../utils/utils.hpp"
 
 // Project include(s).
-#include "traccc/gbts_seeding/device/gbts_add_terminus_to_path_store.hpp"
+#include "traccc/gbts_seeding/device/gbts_bid_seeds_for_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_bid_seeds_for_hits.hpp"
 #include "traccc/gbts_seeding/device/gbts_bin_spacepoints.hpp"
 #include "traccc/gbts_seeding/device/gbts_compress_graph.hpp"
 #include "traccc/gbts_seeding/device/gbts_convert_seeds.hpp"
-#include "traccc/gbts_seeding/device/gbts_count_eta_phi_bins.hpp"
-#include "traccc/gbts_seeding/device/gbts_count_spacepoints_by_layer.hpp"
 #include "traccc/gbts_seeding/device/gbts_count_terminus_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_fill_path_store.hpp"
 #include "traccc/gbts_seeding/device/gbts_find_minmax_radius.hpp"
@@ -29,11 +27,11 @@
 #include "traccc/gbts_seeding/device/gbts_link_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_make_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_match_graph_edges.hpp"
-#include "traccc/gbts_seeding/device/gbts_prefix_sum_eta_phi_bins.hpp"
 #include "traccc/gbts_seeding/device/gbts_rebid_seeds_for_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_reindex_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_reset_edge_bids.hpp"
 #include "traccc/gbts_seeding/device/gbts_run_cca_iteration.hpp"
+#include "traccc/gbts_seeding/device/gbts_sort_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_sort_nodes.hpp"
 #include "traccc/gbts_seeding/gbts_types.hpp"
 
@@ -52,16 +50,6 @@ namespace kernels {
 // Stage 1 — nodes-making kernels
 // ---------------------------------------------------------------------------
 
-/// Alpaka kernel for running @c traccc::device::gbts_count_spacepoints_by_layer
-struct gbts_count_spacepoints_by_layer {
-  template <typename TAcc>
-  ALPAKA_FN_ACC void operator()(
-      TAcc const& acc,
-      const device::gbts_count_spacepoints_by_layer_payload payload) const {
-    device::gbts_count_spacepoints_by_layer(details::thread_id1{acc}, payload);
-  }
-};
-
 /// Alpaka kernel for running @c traccc::device::gbts_bin_spacepoints
 struct gbts_bin_spacepoints {
   template <typename TAcc>
@@ -69,26 +57,6 @@ struct gbts_bin_spacepoints {
       TAcc const& acc,
       const device::gbts_bin_spacepoints_payload payload) const {
     device::gbts_bin_spacepoints(details::thread_id1{acc}, payload);
-  }
-};
-
-/// Alpaka kernel for running @c traccc::device::gbts_count_eta_phi_bins
-struct gbts_count_eta_phi_bins {
-  template <typename TAcc>
-  ALPAKA_FN_ACC void operator()(
-      TAcc const& acc,
-      const device::gbts_count_eta_phi_bins_payload payload) const {
-    device::gbts_count_eta_phi_bins(details::thread_id1{acc}, payload);
-  }
-};
-
-/// Alpaka kernel for running @c traccc::device::gbts_prefix_sum_eta_phi_bins
-struct gbts_prefix_sum_eta_phi_bins {
-  template <typename TAcc>
-  ALPAKA_FN_ACC void operator()(
-      TAcc const& acc,
-      const device::gbts_prefix_sum_eta_phi_bins_payload payload) const {
-    device::gbts_prefix_sum_eta_phi_bins(details::thread_id1{acc}, payload);
   }
 };
 
@@ -107,7 +75,18 @@ struct gbts_find_minmax_radius {
   ALPAKA_FN_ACC void operator()(
       TAcc const& acc,
       const device::gbts_find_minmax_radius_payload payload) const {
-    device::gbts_find_minmax_radius(details::thread_id1{acc}, payload);
+    auto& shared_min = ::alpaka::declareSharedVar<
+        float[device::gbts_find_minmax_radius_block_size], __COUNTER__>(acc);
+    auto& shared_max = ::alpaka::declareSharedVar<
+        float[device::gbts_find_minmax_radius_block_size], __COUNTER__>(acc);
+    const alpaka::barrier<TAcc> barrier(&acc);
+
+    device::gbts_find_minmax_radius(
+        details::thread_id1{acc}, barrier, payload,
+        {vecmem::data::vector_view<float>(
+             device::gbts_find_minmax_radius_block_size, &shared_min[0]),
+         vecmem::data::vector_view<float>(
+             device::gbts_find_minmax_radius_block_size, &shared_max[0])});
   }
 };
 
@@ -148,6 +127,39 @@ struct gbts_link_graph_edges {
   }
 };
 
+/// Alpaka kernel for running @c traccc::device::gbts_sort_graph_edges_small
+struct gbts_sort_graph_edges_small {
+  template <typename TAcc>
+  ALPAKA_FN_ACC void operator()(
+      TAcc const& acc,
+      const device::gbts_sort_graph_edges_payload payload) const {
+    device::gbts_sort_graph_edges_small(details::thread_id1{acc}, payload);
+  }
+};
+
+/// Alpaka kernel for running @c traccc::device::gbts_sort_graph_edges_large
+struct gbts_sort_graph_edges_large {
+  template <typename TAcc>
+  ALPAKA_FN_ACC void operator()(
+      TAcc const& acc,
+      const device::gbts_sort_graph_edges_payload payload) const {
+    auto& bucket_cache = ::alpaka::declareSharedVar<
+        unsigned int[device::gbts_sort_graph_edges_cache_size], __COUNTER__>(
+        acc);
+    auto& large_flags = ::alpaka::declareSharedVar<
+        unsigned int[device::gbts_sort_graph_edges_block_size], __COUNTER__>(
+        acc);
+    const alpaka::barrier<TAcc> barrier(&acc);
+
+    device::gbts_sort_graph_edges_large(
+        details::thread_id1{acc}, barrier, payload,
+        {vecmem::data::vector_view<unsigned int>(
+             device::gbts_sort_graph_edges_cache_size, &bucket_cache[0]),
+         vecmem::data::vector_view<unsigned int>(
+             device::gbts_sort_graph_edges_block_size, &large_flags[0])});
+  }
+};
+
 /// Alpaka kernel for running @c traccc::device::gbts_match_graph_edges
 struct gbts_match_graph_edges {
   template <typename TAcc>
@@ -155,15 +167,6 @@ struct gbts_match_graph_edges {
       TAcc const& acc,
       const device::gbts_match_graph_edges_payload payload) const {
     device::gbts_match_graph_edges(details::thread_id1{acc}, payload);
-  }
-};
-
-/// Alpaka kernel for running @c traccc::device::gbts_reindex_edges
-struct gbts_reindex_edges {
-  template <typename TAcc>
-  ALPAKA_FN_ACC void operator()(
-      TAcc const& acc, const device::gbts_reindex_edges_payload payload) const {
-    device::gbts_reindex_edges(details::thread_id1{acc}, payload);
   }
 };
 
@@ -201,33 +204,13 @@ struct gbts_count_terminus_edges {
   }
 };
 
-/// Alpaka kernel for running @c traccc::device::gbts_add_terminus_to_path_store
-struct gbts_add_terminus_to_path_store {
-  template <typename TAcc>
-  ALPAKA_FN_ACC void operator()(
-      TAcc const& acc,
-      const device::gbts_add_terminus_to_path_store_payload payload) const {
-    device::gbts_add_terminus_to_path_store(details::thread_id1{acc}, payload);
-  }
-};
-
 /// Alpaka kernel for running @c traccc::device::gbts_fill_path_store
 struct gbts_fill_path_store {
   template <typename TAcc>
   ALPAKA_FN_ACC void operator()(
       TAcc const& acc,
       const device::gbts_fill_path_store_payload payload) const {
-    auto& live_paths = ::alpaka::declareSharedVar<
-        traccc::uint2[traccc::device::gbts_consts::live_path_buffer],
-        __COUNTER__>(acc);
-    auto& n_live_paths = ::alpaka::declareSharedVar<int, __COUNTER__>(acc);
-    const alpaka::barrier<TAcc> barrier(&acc);
-
-    device::gbts_fill_path_store(
-        details::thread_id1{acc}, barrier, payload,
-        {vecmem::data::vector_view<traccc::uint2>(
-             traccc::device::gbts_consts::live_path_buffer, &live_paths[0]),
-         n_live_paths});
+    device::gbts_fill_path_store(details::thread_id1{acc}, payload);
   }
 };
 
@@ -237,6 +220,16 @@ struct gbts_fit_segments {
   ALPAKA_FN_ACC void operator()(
       TAcc const& acc, const device::gbts_fit_segments_payload payload) const {
     device::gbts_fit_segments(details::thread_id1{acc}, payload);
+  }
+};
+
+/// Alpaka kernel for running @c traccc::device::gbts_bid_seeds_for_edges
+struct gbts_bid_seeds_for_edges {
+  template <typename TAcc>
+  ALPAKA_FN_ACC void operator()(
+      TAcc const& acc,
+      const device::gbts_bid_seeds_for_edges_payload payload) const {
+    device::gbts_bid_seeds_for_edges(details::thread_id1{acc}, payload);
   }
 };
 
@@ -292,19 +285,6 @@ gbts_seeding_algorithm::gbts_seeding_algorithm(
     : device::gbts_seeding_algorithm(cfg, mr, copy, std::move(logger)),
       alpaka::algorithm_base{q} {}
 
-void gbts_seeding_algorithm::gbts_count_spacepoints_by_layer_kernel(
-    const device::gbts_count_spacepoints_by_layer_payload& payload) const {
-  const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nSp - 1) / n_threads;
-  ::alpaka::exec<Acc>(details::get_queue(queue()),
-                      makeWorkDiv<Acc>(n_blocks, n_threads),
-                      kernels::gbts_count_spacepoints_by_layer{}, payload);
-  vecmem::device_vector<unsigned int> d_layer_sums(payload.layerCounts);
-  details::inclusive_scan(details::get_queue(queue()), mr(),
-                          d_layer_sums.begin(), d_layer_sums.end(),
-                          d_layer_sums.begin());
-}
-
 void gbts_seeding_algorithm::gbts_bin_spacepoints_kernel(
     const device::gbts_bin_spacepoints_payload& payload) const {
   const unsigned int n_threads = 128;
@@ -314,29 +294,15 @@ void gbts_seeding_algorithm::gbts_bin_spacepoints_kernel(
                       kernels::gbts_bin_spacepoints{}, payload);
 }
 
-void gbts_seeding_algorithm::gbts_count_eta_phi_bins_kernel(
-    const device::gbts_count_eta_phi_bins_payload& payload) const {
-  const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nEtaBins - 1) / n_threads;
-  ::alpaka::exec<Acc>(details::get_queue(queue()),
-                      makeWorkDiv<Acc>(n_blocks, n_threads),
-                      kernels::gbts_count_eta_phi_bins{}, payload);
-  vecmem::device_vector<unsigned int> d_eta_sums(payload.eta_node_counter);
-  details::inclusive_scan(details::get_queue(queue()), mr(), d_eta_sums.begin(),
-                          d_eta_sums.end(), d_eta_sums.begin());
-}
-
-void gbts_seeding_algorithm::gbts_prefix_sum_eta_phi_bins_kernel(
-    const device::gbts_prefix_sum_eta_phi_bins_payload& payload) const {
-  const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nEtaBins - 1) / n_threads;
-  ::alpaka::exec<Acc>(details::get_queue(queue()),
-                      makeWorkDiv<Acc>(n_blocks, n_threads),
-                      kernels::gbts_prefix_sum_eta_phi_bins{}, payload);
-}
-
 void gbts_seeding_algorithm::gbts_sort_nodes_kernel(
     const device::gbts_sort_nodes_payload& payload) const {
+  // Order the nodes by their (eta bin, phi, spacepoint index bits) keys,
+  // carrying the full spacepoint index along as the value.
+  details::sort_by_key(details::get_queue(queue()), mr(),
+                       payload.sort_keys.ptr(),
+                       payload.sort_keys.ptr() + payload.nNodes,
+                       payload.sort_values.ptr());
+
   const unsigned int n_threads = 256;
   const unsigned int n_blocks = 1 + (payload.nNodes - 1) / n_threads;
   ::alpaka::exec<Acc>(details::get_queue(queue()),
@@ -376,6 +342,25 @@ void gbts_seeding_algorithm::gbts_link_graph_edges_kernel(
                       kernels::gbts_link_graph_edges{}, payload);
 }
 
+void gbts_seeding_algorithm::gbts_sort_graph_edges_kernel(
+    const device::gbts_sort_graph_edges_payload& payload) const {
+  const unsigned int n_threads = 128;
+  // Small buckets: one thread per edge.
+  const unsigned int n_blocks_small = 1 + (payload.nEdges - 1) / n_threads;
+  ::alpaka::exec<Acc>(details::get_queue(queue()),
+                      makeWorkDiv<Acc>(n_blocks_small, n_threads),
+                      kernels::gbts_sort_graph_edges_small{}, payload);
+  // Large buckets: blocks stride over the nodes a block's worth at a time.
+  const unsigned int n_blocks_large =
+      std::min(1 + (payload.nNodes - 1) / device::gbts_sort_graph_edges_block_size,
+               4096u);
+  ::alpaka::exec<Acc>(
+      details::get_queue(queue()),
+      makeWorkDiv<Acc>(n_blocks_large,
+                       device::gbts_sort_graph_edges_block_size),
+      kernels::gbts_sort_graph_edges_large{}, payload);
+}
+
 void gbts_seeding_algorithm::gbts_match_graph_edges_kernel(
     const device::gbts_match_graph_edges_payload& payload) const {
   const unsigned int n_threads = 256;
@@ -387,11 +372,12 @@ void gbts_seeding_algorithm::gbts_match_graph_edges_kernel(
 
 void gbts_seeding_algorithm::gbts_reindex_edges_kernel(
     const device::gbts_reindex_edges_payload& payload) const {
-  const unsigned int n_threads = 256;
-  const unsigned int n_blocks = 1 + (payload.nEdges - 1) / n_threads;
-  ::alpaka::exec<Acc>(details::get_queue(queue()),
-                      makeWorkDiv<Acc>(n_blocks, n_threads),
-                      kernels::gbts_reindex_edges{}, payload);
+  // Compact the kept edges with a prefix sum over their 0/1 flags.
+  vecmem::device_vector<int> d_reIndexer(payload.reIndexer);
+  details::inclusive_scan(details::get_queue(queue()), mr(),
+                          d_reIndexer.begin(),
+                          d_reIndexer.begin() + payload.nEdges,
+                          d_reIndexer.begin());
 }
 
 void gbts_seeding_algorithm::gbts_compress_graph_kernel(
@@ -419,27 +405,18 @@ void gbts_seeding_algorithm::gbts_count_terminus_edges_kernel(
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),
                       kernels::gbts_count_terminus_edges{}, payload);
-}
-
-void gbts_seeding_algorithm::gbts_add_terminus_to_path_store_kernel(
-    const device::gbts_add_terminus_to_path_store_payload& payload) const {
-  const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nConnectedEdges - 1) / n_threads;
-  ::alpaka::exec<Acc>(details::get_queue(queue()),
-                      makeWorkDiv<Acc>(n_blocks, n_threads),
-                      kernels::gbts_add_terminus_to_path_store{}, payload);
+  // Lay out the path store: each terminus edge gets a contiguous row range.
+  vecmem::device_vector<unsigned int> d_row_sizes(payload.row_sizes);
+  details::inclusive_scan(details::get_queue(queue()), mr(),
+                          d_row_sizes.begin(),
+                          d_row_sizes.begin() + payload.nConnectedEdges,
+                          d_row_sizes.begin());
 }
 
 void gbts_seeding_algorithm::gbts_fill_path_store_kernel(
     const device::gbts_fill_path_store_payload& payload) const {
   const unsigned int n_threads = 128;
-  const unsigned int pathsPerTerminus =
-      1 + (payload.nPaths - 1) / payload.nTerminusEdges;
-  const unsigned int terminusPerBlock = std::min(
-      n_threads, 1 + (traccc::device::gbts_consts::live_path_buffer - 1) /
-                         pathsPerTerminus);
-  const unsigned int n_blocks =
-      1 + (payload.nTerminusEdges - 1) / terminusPerBlock;
+  const unsigned int n_blocks = 1 + (payload.nRows - 1) / n_threads;
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),
                       kernels::gbts_fill_path_store{}, payload);
@@ -448,16 +425,25 @@ void gbts_seeding_algorithm::gbts_fill_path_store_kernel(
 void gbts_seeding_algorithm::gbts_fit_segments_kernel(
     const device::gbts_fit_segments_payload& payload) const {
   const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nPaths - 1) / n_threads;
+  const unsigned int n_blocks = 1 + (payload.nRows - 1) / n_threads;
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),
                       kernels::gbts_fit_segments{}, payload);
 }
 
+void gbts_seeding_algorithm::gbts_bid_seeds_for_edges_kernel(
+    const device::gbts_bid_seeds_for_edges_payload& payload) const {
+  const unsigned int n_threads = 128;
+  const unsigned int n_blocks = 1 + (payload.nRows - 1) / n_threads;
+  ::alpaka::exec<Acc>(details::get_queue(queue()),
+                      makeWorkDiv<Acc>(n_blocks, n_threads),
+                      kernels::gbts_bid_seeds_for_edges{}, payload);
+}
+
 void gbts_seeding_algorithm::gbts_reset_edge_bids_kernel(
     const device::gbts_reset_edge_bids_payload& payload) const {
   const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nProps - 1) / n_threads;
+  const unsigned int n_blocks = 1 + (payload.nRows - 1) / n_threads;
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),
                       kernels::gbts_reset_edge_bids{}, payload);
@@ -466,7 +452,7 @@ void gbts_seeding_algorithm::gbts_reset_edge_bids_kernel(
 void gbts_seeding_algorithm::gbts_rebid_seeds_for_edges_kernel(
     const device::gbts_rebid_seeds_for_edges_payload& payload) const {
   const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nProps - 1) / n_threads;
+  const unsigned int n_blocks = 1 + (payload.nRows - 1) / n_threads;
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),
                       kernels::gbts_rebid_seeds_for_edges{}, payload);
@@ -475,7 +461,7 @@ void gbts_seeding_algorithm::gbts_rebid_seeds_for_edges_kernel(
 void gbts_seeding_algorithm::gbts_bid_seeds_for_hits_kernel(
     const device::gbts_bid_seeds_for_hits_payload& payload) const {
   const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nProps - 1) / n_threads;
+  const unsigned int n_blocks = 1 + (payload.nRows - 1) / n_threads;
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),
                       kernels::gbts_bid_seeds_for_hits{}, payload);
@@ -484,7 +470,7 @@ void gbts_seeding_algorithm::gbts_bid_seeds_for_hits_kernel(
 void gbts_seeding_algorithm::gbts_convert_seeds_kernel(
     const device::gbts_convert_seeds_payload& payload) const {
   const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nProps - 1) / n_threads;
+  const unsigned int n_blocks = 1 + (payload.nRows - 1) / n_threads;
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),
                       kernels::gbts_convert_seeds{}, payload);
