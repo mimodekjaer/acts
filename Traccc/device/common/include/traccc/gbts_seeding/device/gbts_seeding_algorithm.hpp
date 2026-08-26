@@ -44,6 +44,7 @@
 #include <cstdint>
 #include <memory>
 #include <utility>
+#include <vector>
 
 namespace traccc::device {
 
@@ -296,10 +297,11 @@ class gbts_seeding_algorithm
   gbts_seedfinder_config m_config;
   /// Number of bin pairs in m_config.binTables
   unsigned int m_nBinPairs = 0;
-  /// Device copy of m_config.binTables as (bin1, bin2), uploaded once
-  vecmem::data::vector_buffer<uint2> m_bin_pairs_buf;
-  /// Per bin pair: index of the first pair with the same bin1, uploaded once
-  vecmem::data::vector_buffer<unsigned int> m_pair_group_begin_buf;
+  /// m_config.binTables as (bin1, bin2), uploaded per event
+  std::vector<uint2> m_bin_pairs;
+  /// Per bin pair: index of the first pair with the same bin1, uploaded per
+  /// event
+  std::vector<unsigned int> m_pair_group_begin;
 
 };  // class gbts_seeding_algorithm
 
