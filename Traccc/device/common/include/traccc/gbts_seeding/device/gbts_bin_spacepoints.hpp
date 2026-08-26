@@ -9,6 +9,7 @@
 
 // Project include(s).
 #include "traccc/definitions/qualifiers.hpp"
+#include "traccc/device/concepts/barrier.hpp"
 #include "traccc/device/concepts/thread_id.hpp"
 #include "traccc/edm/measurement_collection.hpp"
 #include "traccc/edm/spacepoint_collection.hpp"
@@ -104,6 +105,14 @@ struct gbts_bin_spacepoints_payload {
       gbts_count_spacepoints_by_layer_params;
 };
 
+/// (Shared Event Data) Payload for the @c traccc::device::gbts_bin_spacepoints
+/// function
+struct gbts_bin_spacepoints_shared_payload {
+  /// Two unsigned ints: [0] accepted spacepoints of the block, [1] the
+  /// block's base slot in the key array
+  vecmem::data::vector_view<unsigned int> scratch;
+};
+
 /// @brief Per-spacepoint binning kernel: look up the GBTS layer via the
 /// volume / surface map, optionally apply a cluster-width cut, and on
 /// acceptance write the reduced (x, y, z, width) tuple, bump the node's eta
@@ -113,12 +122,20 @@ struct gbts_bin_spacepoints_payload {
 /// Precondition (checked by make_nodes): n_eta_bins <=
 /// gbts_sort_key_max_eta_bins, so the eta field of every key fits.
 ///
-/// @param[in] thread_id Thread identifier for the kernel launch
-/// @param[in] payload   The global memory payload
+/// The key slots are claimed per block (one global atomic per block) so the
+/// write cursor is not a single hot atomic address; the slot order is
+/// irrelevant because the keys get sorted afterwards.
 ///
-template <concepts::thread_id1 thread_id_t>
+/// @param[in] thread_id      Thread identifier for the kernel launch
+/// @param[in] barrier        Block-wide barrier
+/// @param[in] payload        The global memory payload
+/// @param[in] shared_payload The shared memory payload
+///
+template <concepts::thread_id1 thread_id_t, concepts::barrier barrier_t>
 TRACCC_HOST_DEVICE inline void gbts_bin_spacepoints(
-    const thread_id_t& thread_id, const gbts_bin_spacepoints_payload& payload);
+    const thread_id_t& thread_id, const barrier_t& barrier,
+    const gbts_bin_spacepoints_payload& payload,
+    const gbts_bin_spacepoints_shared_payload& shared_payload);
 
 }  // namespace traccc::device
 

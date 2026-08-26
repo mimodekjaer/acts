@@ -135,10 +135,14 @@ void gbts_seeding_algorithm::gbts_bin_spacepoints_kernel(
 
   const unsigned int n_threads = 128;
   squeue.submit([&](::sycl::handler& h) {
+    vecmem::sycl::local_accessor<unsigned int> scratch(2u, h);
     h.parallel_for<kernels::gbts_bin_spacepoints>(
         details::calculate1DimNdRange(payload.nSp, n_threads),
-        [payload](::sycl::nd_item<1> item) {
-          device::gbts_bin_spacepoints(details::thread_id<1>{item}, payload);
+        [payload, scratch](::sycl::nd_item<1> item) {
+          const details::barrier<1> barrier{item};
+          device::gbts_bin_spacepoints(
+              details::thread_id<1>{item}, barrier, payload,
+              {vecmem::data::vector_view<unsigned int>(2u, &scratch[0])});
         });
   });
 }

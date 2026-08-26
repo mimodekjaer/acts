@@ -54,7 +54,12 @@ struct gbts_bin_spacepoints {
   ALPAKA_FN_ACC void operator()(
       TAcc const& acc,
       const device::gbts_bin_spacepoints_payload payload) const {
-    device::gbts_bin_spacepoints(details::thread_id1{acc}, payload);
+    auto& scratch =
+        ::alpaka::declareSharedVar<unsigned int[2], __COUNTER__>(acc);
+    const alpaka::barrier<TAcc> barrier(&acc);
+    device::gbts_bin_spacepoints(
+        details::thread_id1{acc}, barrier, payload,
+        {vecmem::data::vector_view<unsigned int>(2u, &scratch[0])});
   }
 };
 

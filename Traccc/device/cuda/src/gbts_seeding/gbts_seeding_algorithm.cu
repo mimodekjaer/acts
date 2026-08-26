@@ -58,7 +58,11 @@ using int2 = traccc::int2;
 /// CUDA kernel for running @c traccc::device::gbts_bin_spacepoints
 __global__ void gbts_bin_spacepoints(
     const device::gbts_bin_spacepoints_payload payload) {
-  device::gbts_bin_spacepoints(details::thread_id1{}, payload);
+  __shared__ unsigned int scratch[2];
+  const traccc::cuda::barrier barrier;
+  device::gbts_bin_spacepoints(
+      details::thread_id1{}, barrier, payload,
+      {vecmem::data::vector_view<unsigned int>(2u, scratch)});
 }
 
 /// CUDA kernel for running @c traccc::device::gbts_sort_nodes
