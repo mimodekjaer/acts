@@ -244,7 +244,8 @@ void submit_gbts_make_graph_edges(
         traccc::device::gbts_consts::node_buffer_length, h);
     vecmem::sycl::local_accessor<traccc::float4> node_pack(
         traccc::device::gbts_consts::node_buffer_length, h);
-    vecmem::sycl::local_accessor<unsigned int> work_slot(1u, h);
+    vecmem::sycl::local_accessor<unsigned int> work_slot(
+        traccc::device::gbts_make_graph_edges_scratch_size, h);
 
     h.parallel_for<kernel_name_t>(
         details::calculate1DimNdRange(n_blocks * n_threads, n_threads),
@@ -257,7 +258,9 @@ void submit_gbts_make_graph_edges(
                vecmem::data::vector_view<traccc::float4>(
                    traccc::device::gbts_consts::node_buffer_length,
                    &node_pack[0]),
-               vecmem::data::vector_view<unsigned int>(1u, &work_slot[0])});
+               vecmem::data::vector_view<unsigned int>(
+                   traccc::device::gbts_make_graph_edges_scratch_size,
+                   &work_slot[0])});
         });
   });
 }

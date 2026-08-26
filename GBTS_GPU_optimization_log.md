@@ -100,3 +100,48 @@ Determinism: identical seed totals.
   exact count (17.7 us with int flags over the capacity).
 Net: removed 2 host syncs, +~10 us of kernel time -> 0.945 -> 0.942 ms/event.
 Determinism: identical seed totals.
+
+## Session B (second Claude session, worktree branch, cherry-picked onto the branch)
+
+Measurement protocol as above; every entry: seeding-only ms/event over 500
+events, two runs with identical seed totals (1 953 000), ncu over 3 events.
+
+### B1. Fused cooperative CCA + seed bidding, two fewer host syncs (FASTER)
+1.010 -> 0.963 ms/event. The 15 CCA iterations run in one cooperative kernel
+(grid.sync between iterations); the initial bid + 5 rebid/reset rounds in
+another. nProps/nRejected readbacks removed (later kernels loop over the rows;
+seed output sized by the row count). Kernel time itself barely changed
+(CCA 111 -> 114 us, bidding 100 -> 92 us): the win is the removed launch gaps
+and syncs.
+- 1024-thread blocks instead of 128: CCA 100 -> 87 us, bidding 92 -> 70 us
+  (the grid-wide barrier cost scales with the number of blocks).
+- Neighbour lists cached in registers across iterations + early exit when no
+  edge is active: CCA 114 -> 100 us. Active edges per iteration (event 0):
+  61k, 21k, 14k, 10k, 7k, 4.7k, 2.9k, 1.6k, 769, 329, 110, 29, 6, 0 of 101k,
+  i.e. from iteration 4 on the cost is the fixed per-iteration latency
+  (level loads + barrier), not work.
+
+### B2. Register-cached fused bidding (FASTER, small)
+Bidding kernel 70 -> 65 us: each row's proposal chain (<= 16 edges) is walked
+once and kept in registers across the rounds.
+
+### B3. Things that did NOT help (kept out)
+- Block-aggregated write cursor in gbts_bin_spacepoints: 53 -> 53 us. The
+  compiler already warp-aggregates the single-address atomic.
+- `#pragma unroll` of the chain loops (bidding atomics, CCA neighbour level
+  loads) for memory-level parallelism: no measurable change.
+- CCA "tail mode" (after iteration ~4 only 8 blocks continue over a compacted
+  active list with a custom spin barrier, the other blocks retire):
+  SLOWER, 87 -> 120 us. The per-iteration compaction (ballot/scan/extra block
+  barriers) and the spin barrier cost more than the grid barrier they replace.
+
+### B4. Block-cooperative outer-node range search in make_graph_edges (FASTER)
+0.945 -> 0.927 ms/event (count 125 -> 110 us, fill 177 -> 167 us). Every
+thread used to redundantly run the block's 2-4 global binary searches (18
+steps each) per work item, ~30% of the kernel's instructions. Now the block
+probes 128 evenly spaced nodes and 32 threads per boundary refine inside the
+probe interval (two rounds, four barriers).
+Cut selectivity measured in the count pass (event 0, 7.2M candidates):
+dr 6%, tau bounds 24%, z0 47%, zouter 0%, dphi ~0% (window pre-selection),
+curvature 5%; ~17% accepted. Reordering the cuts cannot buy much: everything
+after dr needs the tau division anyway.

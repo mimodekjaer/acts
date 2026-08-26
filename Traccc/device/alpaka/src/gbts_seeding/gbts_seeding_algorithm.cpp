@@ -135,8 +135,9 @@ struct gbts_make_graph_edges {
     auto& node_pack = ::alpaka::declareSharedVar<
         traccc::float4[traccc::device::gbts_consts::node_buffer_length],
         __COUNTER__>(acc);
-    auto& work_slot =
-        ::alpaka::declareSharedVar<unsigned int[1], __COUNTER__>(acc);
+    auto& work_slot = ::alpaka::declareSharedVar<
+        unsigned int[traccc::device::gbts_make_graph_edges_scratch_size],
+        __COUNTER__>(acc);
     const alpaka::barrier<TAcc> barrier(&acc);
 
     device::gbts_make_graph_edges<fill>(
@@ -145,7 +146,9 @@ struct gbts_make_graph_edges {
              traccc::device::gbts_consts::node_buffer_length, &phi[0]),
          vecmem::data::vector_view<traccc::float4>(
              traccc::device::gbts_consts::node_buffer_length, &node_pack[0]),
-         vecmem::data::vector_view<unsigned int>(1u, &work_slot[0])});
+         vecmem::data::vector_view<unsigned int>(
+             traccc::device::gbts_make_graph_edges_scratch_size,
+             &work_slot[0])});
   }
 };
 

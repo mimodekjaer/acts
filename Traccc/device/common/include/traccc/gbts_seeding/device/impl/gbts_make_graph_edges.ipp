@@ -63,6 +63,79 @@ TRACCC_HOST_DEVICE inline unsigned int gbts_phi_upper_bound(
   return begin;
 }
 
+/// Block-cooperative search of up to four boundaries in the phi-sorted node
+/// range [begin, end): boundary k is lower_bound(values[k]) for even k and
+/// upper_bound(values[k]) for odd k (only the first @c n_values are
+/// searched). Round 1 probes blockSize evenly spaced nodes, round 2 lets 32
+/// threads per boundary refine inside the probe interval. All threads of
+/// the block must call this; the results are broadcast through
+/// @c shared_bounds (>= 8 entries). @c shared_phi must hold >= blockSize
+/// entries and is clobbered.
+template <typename barrier_t>
+TRACCC_HOST_DEVICE inline void gbts_block_find_bounds(
+    const barrier_t& barrier, const unsigned int threadIndex,
+    const unsigned int blockSize,
+    const vecmem::device_vector<const float>& d_node_phi,
+    const unsigned int begin, const unsigned int end, const float* values,
+    const unsigned int n_values, vecmem::device_vector<float>& shared_phi,
+    vecmem::device_vector<unsigned int>& shared_bounds, unsigned int* bounds) {
+  const unsigned int n = end - begin;
+  // Round 1: probe positions pos(t) = begin + t * n / blockSize.
+  const auto pos = [&](const unsigned int t) {
+    return begin +
+           static_cast<unsigned int>(
+               (static_cast<unsigned long long int>(t) * n) / blockSize);
+  };
+  shared_phi[threadIndex] = d_node_phi[pos(threadIndex)];
+  barrier.blockBarrier();
+  // The predicate P_k(i): the boundary lies after node i.
+  const auto pred = [&](const unsigned int k, const float phi) {
+    return (k % 2u == 0u) ? (phi < values[k]) : (phi <= values[k]);
+  };
+  // Find, per boundary, the last probe satisfying the predicate (or none).
+  for (unsigned int k = 0u; k < n_values; ++k) {
+    const bool p_here = pred(k, shared_phi[threadIndex]);
+    const bool p_next = (threadIndex + 1u < blockSize)
+                            ? pred(k, shared_phi[threadIndex + 1u])
+                            : false;
+    if (threadIndex == 0u && !p_here) {
+      shared_bounds[k] = blockSize;  // sentinel: boundary == begin
+    } else if (p_here && !p_next) {
+      shared_bounds[k] = threadIndex;
+    }
+  }
+  barrier.blockBarrier();
+  // Round 2: 32 threads per boundary scan the probe interval
+  // (pos(m), pos(m + 1)], with pos(blockSize) == end, in chunks of 32.
+  const unsigned int k = threadIndex / 32u;
+  const unsigned int lane = threadIndex % 32u;
+  if (k < n_values) {
+    const unsigned int m = shared_bounds[k];
+    if (m == blockSize) {
+      if (lane == 0u) {
+        shared_bounds[4u + k] = begin;
+      }
+    } else {
+      const unsigned int first = pos(m) + 1u;
+      const unsigned int last = (m + 1u < blockSize) ? pos(m + 1u) : end;
+      for (unsigned int i = first + lane; i <= last; i += 32u) {
+        // P(i - 1) holds by construction for i == first.
+        const bool p_prev = (i == first) ? true : pred(k, d_node_phi[i - 1u]);
+        const bool p_here = (i < end) ? pred(k, d_node_phi[i]) : false;
+        if (p_prev && !p_here) {
+          shared_bounds[4u + k] = i;
+        }
+      }
+    }
+  }
+  barrier.blockBarrier();
+  for (unsigned int b = 0u; b < n_values; ++b) {
+    bounds[b] = shared_bounds[4u + b];
+  }
+  // The scratch is reused by the next work item only after further
+  // barriers, so no trailing barrier is needed here.
+}
+
 /// A phi window [lo, hi] split at the +/- pi boundary into up to two
 /// intervals, ordered by ascending phi (and therefore ascending node index).
 struct gbts_phi_window {
@@ -295,15 +368,19 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
     unsigned int range_begin[2] = {begin2, end2};
     unsigned int range_end[2] = {end2, end2};
     if (!block_window.whole) {
-      range_begin[0] = detail::gbts_phi_lower_bound(d_node_phi, begin2, end2,
-                                                    block_window.lo_a);
-      range_end[0] = detail::gbts_phi_upper_bound(d_node_phi, range_begin[0],
-                                                  end2, block_window.hi_a);
-      if (block_window.lo_b <= block_window.hi_b) {
-        range_begin[1] = detail::gbts_phi_lower_bound(d_node_phi, range_end[0],
-                                                      end2, block_window.lo_b);
-        range_end[1] = detail::gbts_phi_upper_bound(d_node_phi, range_begin[1],
-                                                    end2, block_window.hi_b);
+      const bool has_b = block_window.lo_b <= block_window.hi_b;
+      const float values[4] = {block_window.lo_a, block_window.hi_a,
+                               block_window.lo_b, block_window.hi_b};
+      unsigned int bounds[4] = {begin2, end2, end2, end2};
+      // Cooperative search (barriers inside): block-uniform call.
+      detail::gbts_block_find_bounds(
+          barrier, threadIndex, blockSize, d_node_phi, begin2, end2, values,
+          has_b ? 4u : 2u, shared_phi, shared_work_slot, bounds);
+      range_begin[0] = bounds[0];
+      range_end[0] = bounds[1];
+      if (has_b) {
+        range_begin[1] = bounds[2];
+        range_end[1] = bounds[3];
       }
     }
 

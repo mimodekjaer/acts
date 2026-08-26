@@ -120,7 +120,8 @@ __global__ void gbts_make_graph_edges(
     const device::gbts_make_graph_edges_payload payload) {
   __shared__ float phi[traccc::device::gbts_consts::node_buffer_length];
   __shared__ float4 node_pack[traccc::device::gbts_consts::node_buffer_length];
-  __shared__ unsigned int work_slot[1];
+  __shared__ unsigned int
+      work_slot[traccc::device::gbts_make_graph_edges_scratch_size];
   const traccc::cuda::barrier barrier;
 
   device::gbts_make_graph_edges<fill>(
@@ -129,7 +130,8 @@ __global__ void gbts_make_graph_edges(
            traccc::device::gbts_consts::node_buffer_length, phi),
        vecmem::data::vector_view<float4>(
            traccc::device::gbts_consts::node_buffer_length, node_pack),
-       vecmem::data::vector_view<unsigned int>(1u, work_slot)});
+       vecmem::data::vector_view<unsigned int>(
+           traccc::device::gbts_make_graph_edges_scratch_size, work_slot)});
 }
 
 /// CUDA kernel for running @c traccc::device::gbts_match_graph_edges

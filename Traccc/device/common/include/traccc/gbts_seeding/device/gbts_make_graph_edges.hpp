@@ -88,9 +88,14 @@ struct gbts_make_graph_edges_shared_payload {
   vecmem::data::vector_view<float> phi;
   /// Shared-mem cache: (tau_min, tau_max, r, z) float4 / node
   vecmem::data::vector_view<float4> node_pack;
-  /// One unsigned int: the work item grabbed by the block
+  /// gbts_make_graph_edges_scratch_size unsigned ints: [0] the work item
+  /// grabbed by the block, [1..8] the outer-node range boundaries found by
+  /// the block-cooperative search
   vecmem::data::vector_view<unsigned int> work_slot;
 };
+
+/// Number of entries of gbts_make_graph_edges_shared_payload::work_slot
+inline constexpr unsigned int gbts_make_graph_edges_scratch_size = 16u;
 
 /// @brief Create candidate edges between node pairs in compatible eta bins.
 ///
