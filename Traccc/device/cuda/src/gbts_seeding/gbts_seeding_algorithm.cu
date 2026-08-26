@@ -48,12 +48,20 @@
 
 // Thrust include(s).
 #include <thrust/execution_policy.h>
+#include <thrust/iterator/transform_iterator.h>
 #include <thrust/scan.h>
 #include <thrust/sort.h>
 
 namespace traccc::cuda {
 
 namespace kernels {
+
+/// Widens a 1-byte flag to int (for the kept-flag prefix sum)
+struct byte_to_int {
+  __host__ __device__ int operator()(unsigned char k) const {
+    return static_cast<int>(k);
+  }
+};
 
 using float4 = traccc::float4;
 using uint2 = traccc::uint2;
@@ -128,6 +136,12 @@ __global__ void gbts_make_graph_edges(
 __global__ void gbts_match_graph_edges(
     const device::gbts_match_graph_edges_payload payload) {
   device::gbts_match_graph_edges(details::thread_id1{}, payload);
+}
+
+/// CUDA kernel for running @c traccc::device::gbts_reindex_edges_finish
+__global__ void gbts_reindex_edges_finish(
+    const device::gbts_reindex_edges_payload payload) {
+  device::gbts_reindex_edges_finish(payload);
 }
 
 /// CUDA kernel for running @c traccc::device::gbts_compress_graph
@@ -563,7 +577,8 @@ void gbts_seeding_algorithm::gbts_make_graph_edges_kernel(
 void gbts_seeding_algorithm::gbts_match_graph_edges_kernel(
     const device::gbts_match_graph_edges_payload& payload) const {
   const unsigned int n_threads = 256;
-  const unsigned int n_blocks = 1 + (payload.nEdges - 1) / n_threads;
+  const unsigned int n_blocks =
+      std::min(1u + (payload.nEdgesMax - 1u) / n_threads, 8192u);
   kernels::gbts_match_graph_edges<<<n_blocks, n_threads, 0,
                                     details::get_stream(stream())>>>(payload);
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
@@ -571,18 +586,24 @@ void gbts_seeding_algorithm::gbts_match_graph_edges_kernel(
 
 void gbts_seeding_algorithm::gbts_reindex_edges_kernel(
     const device::gbts_reindex_edges_payload& payload) const {
-  vecmem::device_vector<int> d_reIndexer(payload.reIndexer);
+  // The 1-byte flags are widened on the fly; the sum is accumulated in int.
+  const unsigned char* kept = payload.kept.ptr();
+  auto kept_int = thrust::make_transform_iterator(kept, kernels::byte_to_int{});
   thrust::inclusive_scan(
       thrust::cuda::par_nosync(std::pmr::polymorphic_allocator(&(mr().main)))
           .on(details::get_stream(stream())),
-      d_reIndexer.begin(), d_reIndexer.begin() + payload.nEdges,
-      d_reIndexer.begin());
+      kept_int, kept_int + payload.nEdgesMax, payload.reIndexer.ptr());
+  kernels::
+      gbts_reindex_edges_finish<<<1, 1, 0, details::get_stream(stream())>>>(
+          payload);
+  TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
 }
 
 void gbts_seeding_algorithm::gbts_compress_graph_kernel(
     const device::gbts_compress_graph_payload& payload) const {
   const unsigned int n_threads = 256;
-  const unsigned int n_blocks = 1 + (payload.nEdges - 1) / n_threads;
+  const unsigned int n_blocks =
+      std::min(1u + (payload.nEdgesMax - 1u) / n_threads, 8192u);
   kernels::gbts_compress_graph<<<n_blocks, n_threads, 0,
                                  details::get_stream(stream())>>>(payload);
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());

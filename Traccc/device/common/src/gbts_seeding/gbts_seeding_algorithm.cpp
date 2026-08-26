@@ -202,8 +202,8 @@ auto gbts_seeding_algorithm::create_edges(
     const vecmem::data::vector_buffer<unsigned int>& pair_work_begin_buf,
     const vecmem::data::vector_buffer<uint2>& work_items_buf,
     const unsigned int nWorkMax, const unsigned int nSp,
-    vecmem::data::vector_buffer<unsigned int>& counters_buf) const
-    -> graph_making_output {
+    vecmem::data::vector_buffer<unsigned int>& counters_buf,
+    vecmem::vector<unsigned int>& h_counters) const -> graph_making_output {
   const gbts_seedfinder_config& cfg = m_config;
   unsigned int* d_counters = counters_buf.ptr();
 
@@ -256,72 +256,76 @@ auto gbts_seeding_algorithm::create_edges(
       num_incoming_edges_buf,
       {},
       {},
-      {}};
+      {},
+      0u,
+      nullptr,
+      nullptr};
 
   // Count pass + inclusive scan of the per-node counts (in the launcher).
   gbts_count_graph_edges_kernel(make_graph_edges_payload);
 
-  // Read back the number of edges produced.
-  unsigned int nEdges = 0;
-  copy()(vecmem::data::vector_view<const unsigned int>(
-             1u, num_incoming_edges_buf.ptr() + nSp),
-         vecmem::data::vector_view<unsigned int>(1u, &nEdges))
-      ->wait();
-
-  TRACCC_DEBUG("Created " << nEdges << " edges");
-  if (nEdges == 0) {
-    TRACCC_WARNING("No edges were found");
-    return graph_making_output{};
-  }
-
+  // 2. Write the edges into buffers sized by the capacity; the edge count
+  //    only lives on the device (deterministic truncation at the capacity,
+  //    reported after the single synchronisation below).
+  const unsigned int nEdgesMax = cfg.max_edges_per_spacepoint * nSp;
   // Packed per-edge parameter buffer ([exp(-eta), curv, phi_z, phi_w]).
-  vecmem::data::vector_buffer<short4> edge_params_buf(nEdges, mr().main);
+  vecmem::data::vector_buffer<short4> edge_params_buf(nEdgesMax, mr().main);
   copy().setup(edge_params_buf)->ignore();
-  vecmem::data::vector_buffer<uint2> edge_nodes_buf(nEdges, mr().main);
+  vecmem::data::vector_buffer<uint2> edge_nodes_buf(nEdgesMax, mr().main);
   copy().setup(edge_nodes_buf)->ignore();
+  // The per-edge "kept" flags are initialised by the fill pass (no memset).
+  vecmem::data::vector_buffer<unsigned char> edge_kept_buf(nEdgesMax,
+                                                           mr().main);
+  copy().setup(edge_kept_buf)->ignore();
+  vecmem::data::vector_buffer<int> reIndexer_buf(nEdgesMax, mr().main);
+  copy().setup(reIndexer_buf)->ignore();
 
   make_graph_edges_payload.edge_nodes = edge_nodes_buf;
   make_graph_edges_payload.edge_params = edge_params_buf;
-
-  // The per-edge "kept" flags are initialised by the fill pass (no memset).
-  vecmem::data::vector_buffer<int> reIndexer_buf(nEdges, mr().main);
-  copy().setup(reIndexer_buf)->ignore();
-  make_graph_edges_payload.reindexer = reIndexer_buf;
-
-  // Fill pass: every edge lands in its canonical slot.
+  make_graph_edges_payload.reindexer = edge_kept_buf;
+  make_graph_edges_payload.nEdgesMax = nEdgesMax;
+  make_graph_edges_payload.nEdges = d_counters + gbts_counter::nEdges;
+  make_graph_edges_payload.nEdgesTotal = d_counters + gbts_counter::nEdgesTotal;
   make_graph_edges_payload.work_cursor =
       d_counters + gbts_counter::workCursorFill;
+  // Fill pass: every edge lands in its canonical slot.
   gbts_make_graph_edges_kernel(make_graph_edges_payload);
 
-  // 4. Edge matching to create edge-to-edge connections.
-  vecmem::data::vector_buffer<unsigned char> num_neighbours_buf(nEdges,
+  // 3. Edge matching to create edge-to-edge connections.
+  vecmem::data::vector_buffer<unsigned char> num_neighbours_buf(nEdgesMax,
                                                                 mr().main);
   copy().setup(num_neighbours_buf)->ignore();
 
   // Only the first num_neighbours[e] entries of an edge's row are ever read,
   // so the buffer does not need to be initialised.
   vecmem::data::vector_buffer<unsigned int> neighbours_buf(
-      cfg.max_num_neighbours * nEdges, mr().main);
+      cfg.max_num_neighbours * nEdgesMax, mr().main);
   copy().setup(neighbours_buf)->ignore();
 
   gbts_match_graph_edges_kernel(
-      {nEdges, cfg.max_num_neighbours, cfg.gbts_match_graph_edges_params,
-       edge_params_buf, edge_nodes_buf, num_incoming_edges_buf,
-       num_neighbours_buf, neighbours_buf, reIndexer_buf,
-       edge_param_converter});
+      {nEdgesMax, d_counters + gbts_counter::nEdges, cfg.max_num_neighbours,
+       cfg.gbts_match_graph_edges_params, edge_params_buf, edge_nodes_buf,
+       num_incoming_edges_buf, num_neighbours_buf, neighbours_buf,
+       edge_kept_buf, edge_param_converter});
 
-  gbts_reindex_edges_kernel({nEdges, reIndexer_buf});
+  gbts_reindex_edges_kernel({nEdgesMax, d_counters + gbts_counter::nEdges,
+                             edge_kept_buf, reIndexer_buf,
+                             d_counters + gbts_counter::nConnectedEdges});
 
-  int h_nConnectedEdges = 0;
-  copy()(vecmem::data::vector_view<const int>(1u,
-                                              reIndexer_buf.ptr() + nEdges - 1),
-         vecmem::data::vector_view<int>(1u, &h_nConnectedEdges))
-      ->wait();
-
+  // The one synchronisation of the graph making: the number of kept edges
+  // sizes the compacted graph.
+  copy()(counters_buf, h_counters)->wait();
+  const unsigned int nEdges = h_counters[gbts_counter::nEdges];
   const unsigned int nConnectedEdges =
-      static_cast<unsigned int>(h_nConnectedEdges);
-  TRACCC_DEBUG("found " << nConnectedEdges
-                        << " connected edges for seed extraction");
+      h_counters[gbts_counter::nConnectedEdges];
+  TRACCC_DEBUG("Created " << nEdges << " edges, found " << nConnectedEdges
+                          << " connected edges for seed extraction");
+  if (h_counters[gbts_counter::nEdgesTotal] > nEdgesMax) {
+    TRACCC_WARNING("Edge buffer capacity ("
+                   << nEdgesMax << ") exceeded: "
+                   << h_counters[gbts_counter::nEdgesTotal] - nEdgesMax
+                   << " edges were dropped; raise max_edges_per_spacepoint");
+  }
   if (nConnectedEdges == 0) {
     TRACCC_WARNING("No connected edges were found");
     return graph_making_output{};
@@ -339,10 +343,10 @@ auto gbts_seeding_algorithm::create_edges(
                                                         mr().main);
   copy().setup(levels_buf)->ignore();
 
-  gbts_compress_graph_kernel({nEdges, nConnectedEdges, cfg.max_num_neighbours,
-                              node_index, edge_nodes_buf, num_neighbours_buf,
-                              neighbours_buf, reIndexer_buf, output_graph_buf,
-                              levels_buf});
+  gbts_compress_graph_kernel(
+      {nEdgesMax, d_counters + gbts_counter::nEdges, nConnectedEdges,
+       cfg.max_num_neighbours, node_index, edge_nodes_buf, num_neighbours_buf,
+       neighbours_buf, reIndexer_buf, output_graph_buf, levels_buf});
 
   return graph_making_output{std::move(output_graph_buf), std::move(levels_buf),
                              nConnectedEdges};
@@ -566,8 +570,10 @@ auto gbts_seeding_algorithm::operator()(
     const edm::spacepoint_collection::const_view& spacepoints,
     const edm::measurement_collection::const_view& measurements) const
     -> output_type {
-  const unsigned int nSp = copy().get_size(spacepoints);
-  TRACCC_DEBUG("nSp " << nSp);
+  // The capacity bounds the spacepoint count without a synchronisation; the
+  // actual counts are only read on the device.
+  const unsigned int nSp = spacepoints.capacity();
+  TRACCC_DEBUG("nSp (capacity) " << nSp);
   if (nSp == 0) {
     TRACCC_WARNING("No spacepoints were found in the event");
     return {0, mr().main};
@@ -593,7 +599,7 @@ auto gbts_seeding_algorithm::operator()(
       std::move(nodes.node_params), std::move(nodes.node_phi),
       std::move(nodes.node_index), nodes.bin_rads, nodes.eta_bin_views_buf,
       nodes.pair_work_begin_buf, nodes.work_items_buf, nodes.nWorkMax,
-      nodes.nSp, counters_buf);
+      nodes.nSp, counters_buf, h_counters);
   if (graph.nConnectedEdges == 0) {
     // No connected edges survived graph making -> no seeds.
     return {0, mr().main};

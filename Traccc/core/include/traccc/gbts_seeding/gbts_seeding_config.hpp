@@ -50,7 +50,8 @@ enum gbts_counter : unsigned int {
   nWork,            // graph-making work items (gbts_build_edge_work_list)
   workCursorCount,  // next work item to grab (gbts_make_graph_edges<false>)
   workCursorFill,   // next work item to grab (gbts_make_graph_edges<true>)
-  nEdges,           // edges created by gbts_make_graph_edges
+  nEdges,           // edges kept by gbts_make_graph_edges (capped)
+  nEdgesTotal,      // edges found by gbts_make_graph_edges (uncapped)
   nConnections,     // edge-to-edge connections from gbts_match_graph_edges
   nConnectedEdges,  // edges kept after gbts_reindex_edges
   nEdgesLeft,       // edges remaining for CCA (kept for reference parity)
@@ -280,6 +281,11 @@ struct gbts_seedfinder_config {
 
   // Phi bin width
   unsigned int n_phi_bins = 128;
+
+  // Edge buffer capacity per spacepoint (capacity = factor * number of
+  // spacepoints). Lets the graph making run without a host synchronisation;
+  // events with more edges are truncated deterministically (with a warning).
+  unsigned int max_edges_per_spacepoint = 8;
 
   // graph making maxiums: max neighbours kept per edge.
   unsigned int max_num_neighbours = 10;

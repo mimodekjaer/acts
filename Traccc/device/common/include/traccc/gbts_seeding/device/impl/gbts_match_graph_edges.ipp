@@ -35,7 +35,7 @@ TRACCC_HOST_DEVICE inline void gbts_match_graph_edges(
       payload.num_outgoing_edges);
   vecmem::device_vector<unsigned char> d_num_neighbours(payload.num_neighbours);
   vecmem::device_vector<unsigned int> d_neighbours(payload.neighbours);
-  vecmem::device_vector<int> d_reIndexer(payload.reIndexer);
+  vecmem::device_vector<unsigned char> d_reIndexer(payload.reIndexer);
 
   const float cut_dphi_max = payload.gbts_match_graph_edges_params.cut_dphi_max;
   const float cut_dcurv_max =
@@ -56,14 +56,20 @@ TRACCC_HOST_DEVICE inline void gbts_match_graph_edges(
   const unsigned int blockDimX = thread_id.getBlockDimX();
   const unsigned int gridDimX = thread_id.getGridDimX();
 
-  for (unsigned int globalIndex = globalIdx; globalIndex < payload.nEdges;
+  const unsigned int nEdges = *payload.nEdges;
+  for (unsigned int globalIndex = globalIdx; globalIndex < nEdges;
        globalIndex += blockDimX * gridDimX) {
     const unsigned int sharedNode = d_edge_nodes[globalIndex].x;
 
     const unsigned int link_begin = d_num_outgoing_edges[sharedNode];
-    // the number of edges leaving the sharedNode
+    // the number of edges leaving the sharedNode (the buckets beyond the
+    // edge capacity are empty)
+    unsigned int link_end = d_num_outgoing_edges[sharedNode + 1u];
+    if (link_end > nEdges) {
+      link_end = nEdges;
+    }
     const unsigned int nLinks =
-        d_num_outgoing_edges[sharedNode + 1u] - link_begin;
+        (link_end > link_begin) ? link_end - link_begin : 0u;
     if (nLinks == 0u) {
       d_num_neighbours[globalIndex] = 0u;
       continue;
@@ -126,14 +132,14 @@ TRACCC_HOST_DEVICE inline void gbts_match_graph_edges(
       }
 
       d_neighbours[nei_pos + num_nei] = edge2_idx;
-      d_reIndexer[edge2_idx] = 1;
+      d_reIndexer[edge2_idx] = 1u;
       ++num_nei;
     }
 
     d_num_neighbours[globalIndex] = num_nei;
 
     if (num_nei != 0) {
-      d_reIndexer[globalIndex] = 1;
+      d_reIndexer[globalIndex] = 1u;
     }
   }
 }

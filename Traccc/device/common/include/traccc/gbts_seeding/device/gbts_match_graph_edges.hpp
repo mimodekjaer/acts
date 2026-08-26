@@ -21,8 +21,10 @@ namespace traccc::device {
 /// (Global Event Data) Payload for the @c
 /// traccc::device::gbts_match_graph_edges function
 struct gbts_match_graph_edges_payload {
-  /// Number of edges to match
-  unsigned int nEdges;
+  /// Capacity of the edge buffers (sizes the launch grid)
+  unsigned int nEdgesMax;
+  /// Number of edges to match, on the device
+  const unsigned int* nEdges;
   /// Maximum number of neighbours retained per edge
   unsigned int nMaxNei;
   /// Edge-matching pair cuts
@@ -40,7 +42,7 @@ struct gbts_match_graph_edges_payload {
   /// Output: neighbour edge indices, nMaxNei entries per edge (flat)
   vecmem::data::vector_view<unsigned int> neighbours;
   /// Output: per-edge "kept" flag, later compacted into a re-index
-  vecmem::data::vector_view<int> reIndexer;
+  vecmem::data::vector_view<unsigned char> reIndexer;
   /// class for decoding short4 edge params to float4, bool
   edge_params_converter edge_params_decoder;
 };

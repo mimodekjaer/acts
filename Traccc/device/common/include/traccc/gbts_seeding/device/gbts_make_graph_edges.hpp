@@ -70,7 +70,13 @@ struct gbts_make_graph_edges_payload {
   vecmem::data::vector_view<short4> edge_params;
   /// Fill pass output: per-edge "kept" flag, initialised to 0 (later set by
   /// gbts_match_graph_edges)
-  vecmem::data::vector_view<int> reindexer;
+  vecmem::data::vector_view<unsigned char> reindexer;
+  /// Capacity of the edge buffers; edges beyond it are dropped (fill pass)
+  unsigned int nEdgesMax;
+  /// Output (fill pass): number of edges written, min(total, nEdgesMax)
+  unsigned int* nEdges;
+  /// Output (fill pass): number of edges found (before the cap)
+  unsigned int* nEdgesTotal;
 };
 
 /// (Shared Event Data) Payload for the @c traccc::device::gbts_make_graph_edges

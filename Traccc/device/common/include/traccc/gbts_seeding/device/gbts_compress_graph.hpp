@@ -20,8 +20,10 @@ namespace traccc::device {
 /// (Global Event Data) Payload for the @c traccc::device::gbts_compress_graph
 /// function
 struct gbts_compress_graph_payload {
-  /// Number of original (uncompressed) edges
-  unsigned int nEdges;
+  /// Capacity of the edge buffers (sizes the launch grid)
+  unsigned int nEdgesMax;
+  /// Number of original (uncompressed) edges, on the device
+  const unsigned int* nEdges;
   /// Number of kept edges (size of one CCA levels buffer)
   unsigned int nConnectedEdges;
   /// Maximum number of neighbours retained per edge

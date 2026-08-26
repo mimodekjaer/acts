@@ -160,7 +160,7 @@ TRACCC_HOST_DEVICE inline unsigned int gbts_walk_slab_interval(
     const edge_params_converter& edge_params_maker,
     vecmem::device_vector<uint2>& d_edge_nodes,
     vecmem::device_vector<short4>& d_edge_params,
-    vecmem::device_vector<int>& d_reindexer, unsigned int cursor,
+    vecmem::device_vector<unsigned char>& d_reindexer, unsigned int cursor,
     const unsigned int cursor_end) {
   if (hi < shared_phi[0] || lo > shared_phi[slab_size - 1u]) {
     return cursor;
@@ -185,7 +185,7 @@ TRACCC_HOST_DEVICE inline unsigned int gbts_walk_slab_interval(
       const float eta = -1 * math::log(math::sqrt(1.0f + tau * tau) - tau);
       // edge linking order is inside->out
       d_edge_nodes[cursor] = uint2{slab_begin + j, node1};
-      d_reindexer[cursor] = 0;
+      d_reindexer[cursor] = 0u;
       const bool inflate_matching_cuts = (ap.long_edge_dz < math::fabs(dz)) ||
                                          (ap.long_edge_dr < math::fabs(dr));
       d_edge_params[cursor] = edge_params_maker.make_edge_params(
@@ -226,7 +226,7 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
       payload.num_outgoing_edges);
   vecmem::device_vector<uint2> d_edge_nodes(payload.edge_nodes);
   vecmem::device_vector<short4> d_edge_params(payload.edge_params);
-  vecmem::device_vector<int> d_reindexer(payload.reindexer);
+  vecmem::device_vector<unsigned char> d_reindexer(payload.reindexer);
 
   vecmem::device_vector<float> shared_phi(shared.phi);
   vecmem::device_vector<float4> shared_node_pack(shared.node_pack);
@@ -249,6 +249,16 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
     const unsigned int work = shared_work_slot[0];
     if (work >= nWork) {
       break;
+    }
+    if constexpr (fill) {
+      if ((work == 0u) && (threadIndex == 0u)) {
+        // The scanned per-node counts end with the total edge count.
+        const unsigned int total =
+            d_num_outgoing_edges[d_num_outgoing_edges.size() - 1u];
+        *payload.nEdgesTotal = total;
+        *payload.nEdges =
+            (total < payload.nEdgesMax) ? total : payload.nEdgesMax;
+      }
     }
     // --- Block-uniform setup ------------------------------------------------
     const uint2 item = d_work_items[work];
@@ -312,6 +322,10 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
       if (active) {
         cursor = d_num_outgoing_edges[node1];
         cursor_end = d_num_outgoing_edges[node1 + 1u];
+        // Deterministic truncation at the edge buffer capacity.
+        if (cursor_end > payload.nEdgesMax) {
+          cursor_end = payload.nEdgesMax;
+        }
         // Edges of the preceding pairs of the same inner bin come first in the
         // bucket; they were processed by the block of the same chunk index.
         for (unsigned int p = d_pair_group_begin[pair]; p < pair; p++) {

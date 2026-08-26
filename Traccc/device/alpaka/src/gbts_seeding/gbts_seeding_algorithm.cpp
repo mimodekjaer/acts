@@ -34,6 +34,9 @@
 #include "traccc/gbts_seeding/device/gbts_sort_nodes.hpp"
 #include "traccc/gbts_seeding/gbts_types.hpp"
 
+// Thrust include(s).
+#include <thrust/iterator/transform_iterator.h>
+
 // VecMem include(s).
 #include <vecmem/containers/data/vector_view.hpp>
 #include <vecmem/containers/device_vector.hpp>
@@ -44,6 +47,13 @@
 namespace traccc::alpaka {
 
 namespace kernels {
+
+/// Widens a 1-byte flag to int (for the kept-flag prefix sum)
+struct byte_to_int {
+  ALPAKA_FN_HOST_ACC int operator()(unsigned char k) const {
+    return static_cast<int>(k);
+  }
+};
 
 // ---------------------------------------------------------------------------
 // Stage 1 — nodes-making kernels
@@ -146,6 +156,15 @@ struct gbts_match_graph_edges {
       TAcc const& acc,
       const device::gbts_match_graph_edges_payload payload) const {
     device::gbts_match_graph_edges(details::thread_id1{acc}, payload);
+  }
+};
+
+/// Alpaka kernel for running @c traccc::device::gbts_reindex_edges_finish
+struct gbts_reindex_edges_finish {
+  template <typename TAcc>
+  ALPAKA_FN_ACC void operator()(
+      TAcc const&, const device::gbts_reindex_edges_payload payload) const {
+    device::gbts_reindex_edges_finish(payload);
   }
 };
 
@@ -341,7 +360,8 @@ void gbts_seeding_algorithm::gbts_make_graph_edges_kernel(
 void gbts_seeding_algorithm::gbts_match_graph_edges_kernel(
     const device::gbts_match_graph_edges_payload& payload) const {
   const unsigned int n_threads = 256;
-  const unsigned int n_blocks = 1 + (payload.nEdges - 1) / n_threads;
+  const unsigned int n_blocks =
+      std::min(1u + (payload.nEdgesMax - 1u) / n_threads, 8192u);
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),
                       kernels::gbts_match_graph_edges{}, payload);
@@ -350,16 +370,21 @@ void gbts_seeding_algorithm::gbts_match_graph_edges_kernel(
 void gbts_seeding_algorithm::gbts_reindex_edges_kernel(
     const device::gbts_reindex_edges_payload& payload) const {
   // Compact the kept edges with a prefix sum over their 0/1 flags.
-  vecmem::device_vector<int> d_reIndexer(payload.reIndexer);
-  details::inclusive_scan(
-      details::get_queue(queue()), mr(), d_reIndexer.begin(),
-      d_reIndexer.begin() + payload.nEdges, d_reIndexer.begin());
+  // The 1-byte flags are widened on the fly; the sum is accumulated in int.
+  auto kept_int = thrust::make_transform_iterator(payload.kept.ptr(),
+                                                  kernels::byte_to_int{});
+  details::inclusive_scan(details::get_queue(queue()), mr(), kept_int,
+                          kept_int + payload.nEdgesMax,
+                          payload.reIndexer.ptr());
+  ::alpaka::exec<Acc>(details::get_queue(queue()), makeWorkDiv<Acc>(1u, 1u),
+                      kernels::gbts_reindex_edges_finish{}, payload);
 }
 
 void gbts_seeding_algorithm::gbts_compress_graph_kernel(
     const device::gbts_compress_graph_payload& payload) const {
   const unsigned int n_threads = 256;
-  const unsigned int n_blocks = 1 + (payload.nEdges - 1) / n_threads;
+  const unsigned int n_blocks =
+      std::min(1u + (payload.nEdgesMax - 1u) / n_threads, 8192u);
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),
                       kernels::gbts_compress_graph{}, payload);

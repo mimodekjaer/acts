@@ -81,6 +81,10 @@ class gbts_make_graph_edges;
 /// traccc::device::gbts_match_graph_edges
 class gbts_match_graph_edges;
 
+/// Class identifying the kernel running @c
+/// traccc::device::gbts_reindex_edges_finish
+class gbts_reindex_edges_finish;
+
 /// Class identifying the kernel running @c traccc::device::gbts_compress_graph
 class gbts_compress_graph;
 
@@ -293,7 +297,8 @@ void gbts_seeding_algorithm::gbts_match_graph_edges_kernel(
   const unsigned int n_threads = 256;
   squeue.submit([&](::sycl::handler& h) {
     h.parallel_for<kernels::gbts_match_graph_edges>(
-        details::calculate1DimNdRange(payload.nEdges, n_threads),
+        details::calculate1DimNdRange(
+            std::min(payload.nEdgesMax, 8192u * n_threads), n_threads),
         [payload](::sycl::nd_item<1> item) {
           device::gbts_match_graph_edges(details::thread_id<1>{item}, payload);
         });
@@ -306,9 +311,15 @@ void gbts_seeding_algorithm::gbts_reindex_edges_kernel(
   squeue.throw_asynchronous();
 
   // Compact the kept edges with a prefix sum over their 0/1 flags.
-  oneapi::dpl::inclusive_scan(
-      oneapi::dpl::execution::device_policy{squeue}, payload.reIndexer.ptr(),
-      payload.reIndexer.ptr() + payload.nEdges, payload.reIndexer.ptr());
+  // The 1-byte flags are widened on the fly; the sum is accumulated in int.
+  oneapi::dpl::transform_inclusive_scan(
+      oneapi::dpl::execution::device_policy{squeue}, payload.kept.ptr(),
+      payload.kept.ptr() + payload.nEdgesMax, payload.reIndexer.ptr(),
+      std::plus<int>{}, [](unsigned char k) { return static_cast<int>(k); });
+  squeue.submit([&](::sycl::handler& h) {
+    h.single_task<kernels::gbts_reindex_edges_finish>(
+        [payload]() { device::gbts_reindex_edges_finish(payload); });
+  });
 }
 
 void gbts_seeding_algorithm::gbts_compress_graph_kernel(
@@ -319,7 +330,8 @@ void gbts_seeding_algorithm::gbts_compress_graph_kernel(
   const unsigned int n_threads = 256;
   squeue.submit([&](::sycl::handler& h) {
     h.parallel_for<kernels::gbts_compress_graph>(
-        details::calculate1DimNdRange(payload.nEdges, n_threads),
+        details::calculate1DimNdRange(
+            std::min(payload.nEdgesMax, 8192u * n_threads), n_threads),
         [payload](::sycl::nd_item<1> item) {
           device::gbts_compress_graph(details::thread_id<1>{item}, payload);
         });

@@ -82,3 +82,21 @@ this kernel is a latency-bound chain of ~6 dependent loads and swings with
 buffer placement), `make_graph_edges` +10 us per pass from the dynamic work
 grabbing. Net GPU-kernel time 849 -> 890 us but ~70 us less host/sync gap.
 Determinism: identical seed totals.
+
+### 3. Asynchronous edge stage  -> 0.942 ms/event (~neutral, -1 host sync)
+- Edge buffers sized by a capacity `max_edges_per_spacepoint * nSp` (new
+  config field, default 8; ttbar mu200 produces ~5.8 edges/spacepoint); the
+  fill pass truncates deterministically at the capacity and stores the
+  device-side edge count + the uncapped total (warning after the stage's one
+  synchronisation if edges were dropped). match / re-index / compress read
+  the edge count on the device (grid-stride loops with capped grids); a one
+  thread kernel stores the kept-edge count after the re-index scan, so the
+  stage synchronises once (kept count -> compacted graph allocation) instead
+  of twice. The initial `get_size(spacepoints)` sync is replaced by the
+  collection capacity as well.
+- The kept flags are 1-byte (scanned into the int re-index through a
+  transform iterator): the scan over the capacity (8x nSp instead of the
+  exact 6x nNodes) costs 12.7 us instead of 8.9 us with int flags over the
+  exact count (17.7 us with int flags over the capacity).
+Net: removed 2 host syncs, +~10 us of kernel time -> 0.945 -> 0.942 ms/event.
+Determinism: identical seed totals.

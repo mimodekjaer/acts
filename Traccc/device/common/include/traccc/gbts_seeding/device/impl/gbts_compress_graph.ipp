@@ -36,7 +36,8 @@ TRACCC_HOST_DEVICE inline void gbts_compress_graph(
   const unsigned int blockDimX = thread_id.getBlockDimX();
   const unsigned int gridDimX = thread_id.getGridDimX();
 
-  for (unsigned int globalIndex = globalIdx; globalIndex < payload.nEdges;
+  const unsigned int nEdges = *payload.nEdges;
+  for (unsigned int globalIndex = globalIdx; globalIndex < nEdges;
        globalIndex += blockDimX * gridDimX) {
     const int scan = d_reIndexer[globalIndex];
     const int prev = (globalIndex == 0u) ? 0 : d_reIndexer[globalIndex - 1u];
