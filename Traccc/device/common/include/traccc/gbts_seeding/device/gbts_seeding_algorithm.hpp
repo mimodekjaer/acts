@@ -287,6 +287,8 @@ class gbts_seeding_algorithm
     unsigned int nWorkMax = 0;
     /// Capacity of the spacepoint collection (upper bound of the node count)
     unsigned int nSp = 0;
+    /// Device copy of the packed static tables (see m_static_blob)
+    vecmem::data::vector_buffer<unsigned char> static_blob;
   };
 
   /// Outputs of the graph-making stage that are consumed by seed extraction.
@@ -304,7 +306,7 @@ class gbts_seeding_algorithm
   node_making_output make_nodes(
       const edm::spacepoint_collection::const_view& spacepoints,
       const edm::measurement_collection::const_view& measurements,
-      vecmem::data::vector_buffer<unsigned int>& counters_buf) const;
+      vecmem::data::vector_buffer<unsigned int>& zero_buf) const;
 
   /// Stage 2: build, link, match and compress the edge graph. The per-node
   /// buffers are taken by value so they are released when this stage returns.
@@ -317,7 +319,8 @@ class gbts_seeding_algorithm
       const vecmem::data::vector_buffer<unsigned int>& pair_work_begin_buf,
       const vecmem::data::vector_buffer<uint2>& work_items_buf,
       const unsigned int nWorkMax, const unsigned int nSp,
-      vecmem::data::vector_buffer<unsigned int>& counters_buf,
+      const vecmem::data::vector_buffer<unsigned char>& static_blob,
+      vecmem::data::vector_buffer<unsigned int>& zero_buf,
       vecmem::vector<unsigned int>& h_counters) const;
 
   /// Stage 3: run the CCA, extract paths, fit and disambiguate into seeds.
@@ -326,7 +329,7 @@ class gbts_seeding_algorithm
       vecmem::data::vector_buffer<unsigned char>& levels,
       vecmem::data::vector_buffer<float4>& reducedSP,
       const unsigned int nConnectedEdges, const unsigned int nSp,
-      vecmem::data::vector_buffer<unsigned int>& counters_buf,
+      const vecmem::data::vector_view<unsigned int>& counters_view,
       vecmem::vector<unsigned int>& h_counters) const;
 
   /// @}
@@ -338,19 +341,34 @@ class gbts_seeding_algorithm
   unsigned int m_nBinPairs = 0;
   /// Largest number of bin pairs sharing one inner bin
   unsigned int m_maxPairsPerBin1 = 0;
-  /// @name Static tables, kept in (pinned) host memory and uploaded
-  /// asynchronously per event
+  /// @name Static tables, packed into one (pinned) host blob that is
+  /// uploaded with a single copy per event
   /// @{
-  vecmem::vector<short> m_h_volumeToLayerMap;
-  vecmem::vector<std::pair<unsigned int, unsigned int>> m_h_surfaceToLayerMap;
-  vecmem::vector<char> m_h_layerType;
-  vecmem::vector<std::pair<unsigned int, unsigned int>> m_h_layer_info;
-  vecmem::vector<std::pair<float, float>> m_h_layer_geo;
-  vecmem::vector<float> m_h_tau_lut;
+  /// A table inside the blob: byte offset and element count
+  struct table_section {
+    unsigned int offset = 0;
+    unsigned int count = 0;
+  };
+  /// Typed view of a table section of a device copy of the blob
+  template <typename T>
+  static vecmem::data::vector_view<T> section_view(
+      const vecmem::data::vector_buffer<unsigned char>& blob,
+      const table_section& section) {
+    return vecmem::data::vector_view<T>(
+        section.count, reinterpret_cast<T*>(blob.ptr() + section.offset));
+  }
+  /// The packed static tables (pinned host memory)
+  vecmem::vector<unsigned char> m_static_blob;
+  table_section m_sec_volumeToLayerMap;
+  table_section m_sec_surfaceToLayerMap;
+  table_section m_sec_layerType;
+  table_section m_sec_layer_info;
+  table_section m_sec_layer_geo;
+  table_section m_sec_tau_lut;
   /// m_config.binTables as (bin1, bin2)
-  vecmem::vector<uint2> m_bin_pairs;
+  table_section m_sec_bin_pairs;
   /// Per bin pair: index of the first pair with the same bin1
-  vecmem::vector<unsigned int> m_pair_group_begin;
+  table_section m_sec_pair_group_begin;
   /// @}
 
 };  // class gbts_seeding_algorithm

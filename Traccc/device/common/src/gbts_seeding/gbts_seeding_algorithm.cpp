@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <memory_resource>
 #include <unordered_map>
@@ -42,13 +43,16 @@ vecmem::memory_resource* host_resource(const memory_resource& mr) {
 auto gbts_seeding_algorithm::make_nodes(
     const edm::spacepoint_collection::const_view& spacepoints,
     const edm::measurement_collection::const_view& measurements,
-    vecmem::data::vector_buffer<unsigned int>& counters_buf) const
+    vecmem::data::vector_buffer<unsigned int>& zero_buf) const
     -> node_making_output {
   const gbts_seedfinder_config& cfg = m_config;
   // Every per-node buffer is sized for the capacity of the spacepoint
   // collection; the actual counts are only ever read on the device.
   const unsigned int nSp = spacepoints.capacity();
-  unsigned int* d_counters = counters_buf.ptr();
+  // Layout of the zeroed buffer: [counters | eta node counters | edge CSR]
+  unsigned int* d_counters = zero_buf.ptr();
+  const vecmem::data::vector_view<unsigned int> eta_node_counter_buf(
+      cfg.n_eta_bins, zero_buf.ptr() + gbts_counter::nCounters);
 
   // Check that the number of eta bins is compatible with the node sort key
   // field width.
@@ -59,37 +63,27 @@ auto gbts_seeding_algorithm::make_nodes(
     return node_making_output{};
   }
 
-  // 0. Upload the layer maps and tables.
-  vecmem::data::vector_buffer<short> volumeToLayerMap_buf(
-      static_cast<unsigned int>(cfg.volumeToLayerMap.size()), mr().main);
-  copy().setup(volumeToLayerMap_buf)->ignore();
-  copy()(vecmem::get_data(m_h_volumeToLayerMap), volumeToLayerMap_buf)
-      ->ignore();
-
-  vecmem::data::vector_buffer<std::pair<unsigned int, unsigned int>>
-      surfaceToLayerMap_buf;
-  if (!cfg.surfaceToLayerMap.empty()) {
-    surfaceToLayerMap_buf =
-        vecmem::data::vector_buffer<std::pair<unsigned int, unsigned int>>(
-            static_cast<unsigned int>(cfg.surfaceToLayerMap.size()), mr().main);
-    copy().setup(surfaceToLayerMap_buf)->ignore();
-    copy()(vecmem::get_data(m_h_surfaceToLayerMap), surfaceToLayerMap_buf)
-        ->ignore();
-  }
-
-  vecmem::data::vector_buffer<char> layerType_buf(cfg.nLayers, mr().main);
-  copy().setup(layerType_buf)->ignore();
-  copy()(vecmem::get_data(m_h_layerType), layerType_buf)->ignore();
-
-  vecmem::data::vector_buffer<std::pair<unsigned int, unsigned int>>
-      layer_info_buf(cfg.nLayers, mr().main);
-  copy().setup(layer_info_buf)->ignore();
-  copy()(vecmem::get_data(m_h_layer_info), layer_info_buf)->ignore();
-
-  vecmem::data::vector_buffer<std::pair<float, float>> layer_geo_buf(
-      cfg.nLayers, mr().main);
-  copy().setup(layer_geo_buf)->ignore();
-  copy()(vecmem::get_data(m_h_layer_geo), layer_geo_buf)->ignore();
+  // 0. Upload the static tables (one copy).
+  vecmem::data::vector_buffer<unsigned char> static_blob(
+      static_cast<unsigned int>(m_static_blob.size()), mr().main);
+  copy().setup(static_blob)->ignore();
+  copy()(vecmem::get_data(m_static_blob), static_blob)->ignore();
+  const auto volumeToLayerMap_buf =
+      section_view<const short>(static_blob, m_sec_volumeToLayerMap);
+  const auto surfaceToLayerMap_buf =
+      section_view<const std::pair<unsigned int, unsigned int>>(
+          static_blob, m_sec_surfaceToLayerMap);
+  const auto layerType_buf =
+      section_view<const char>(static_blob, m_sec_layerType);
+  const auto layer_info_buf =
+      section_view<const std::pair<unsigned int, unsigned int>>(
+          static_blob, m_sec_layer_info);
+  const auto layer_geo_buf =
+      section_view<const std::pair<float, float>>(static_blob, m_sec_layer_geo);
+  const auto tau_lut_buf =
+      section_view<const float>(static_blob, m_sec_tau_lut);
+  const auto bin_pairs_buf =
+      section_view<const uint2>(static_blob, m_sec_bin_pairs);
 
   // 1. Fused binning: assign each spacepoint a layer (or reject it), write
   //    its reduced parameters, count its eta bin and write its node sort
@@ -103,11 +97,6 @@ auto gbts_seeding_algorithm::make_nodes(
   vecmem::data::vector_buffer<unsigned int> sort_values_buf(nSp, mr().main);
   copy().setup(sort_values_buf)->ignore();
 
-  vecmem::data::vector_buffer<unsigned int> eta_node_counter_buf(cfg.n_eta_bins,
-                                                                 mr().main);
-  copy().setup(eta_node_counter_buf)->ignore();
-  copy().memset(eta_node_counter_buf, 0)->ignore();
-
   gbts_bin_spacepoints_kernel(
       {nSp, cfg.n_eta_bins, spacepoints, measurements, volumeToLayerMap_buf,
        surfaceToLayerMap_buf, layerType_buf, layer_info_buf, layer_geo_buf,
@@ -117,9 +106,6 @@ auto gbts_seeding_algorithm::make_nodes(
 
   // 2. Node ranges of the eta bins and the graph-making work list, on the
   //    device (no synchronisation).
-  vecmem::data::vector_buffer<uint2> bin_pairs_buf(m_nBinPairs, mr().main);
-  copy().setup(bin_pairs_buf)->ignore();
-  copy()(vecmem::get_data(m_bin_pairs), bin_pairs_buf)->ignore();
 
   vecmem::data::vector_buffer<unsigned int> eta_bin_views_buf(
       2 * cfg.n_eta_bins, mr().main);
@@ -150,18 +136,6 @@ auto gbts_seeding_algorithm::make_nodes(
   vecmem::data::vector_buffer<unsigned int> node_index_buf(nSp, mr().main);
   copy().setup(node_index_buf)->ignore();
 
-  // Optional tau LUT consumed by device::gbts_sort_nodes when
-  // cfg.gbts_sort_nodes_params.useTauLUT is set. A size-1 dummy is allocated
-  // when the LUT is unused so the kernel always receives a valid (never-read)
-  // view.
-  const unsigned int tau_lut_size =
-      std::max<unsigned int>(1u, static_cast<unsigned int>(cfg.tau_lut.size()));
-  vecmem::data::vector_buffer<float> tau_lut_buf(tau_lut_size, mr().main);
-  copy().setup(tau_lut_buf)->ignore();
-  if (!cfg.tau_lut.empty()) {
-    copy()(vecmem::get_data(cfg.tau_lut), tau_lut_buf)->ignore();
-  }
-
   gbts_sort_nodes_kernel(
       {nSp, cfg.n_eta_bins, d_counters + gbts_counter::nNodes, reducedSP_buf,
        sort_keys_buf, sort_values_buf, node_params_buf, node_phi_buf,
@@ -183,7 +157,8 @@ auto gbts_seeding_algorithm::make_nodes(
                             std::move(pair_work_begin_buf),
                             std::move(work_items_buf),
                             nWorkMax,
-                            nSp};
+                            nSp,
+                            std::move(static_blob)};
 }
 
 // Stage 2:
@@ -201,10 +176,17 @@ auto gbts_seeding_algorithm::create_edges(
     const vecmem::data::vector_buffer<unsigned int>& pair_work_begin_buf,
     const vecmem::data::vector_buffer<uint2>& work_items_buf,
     const unsigned int nWorkMax, const unsigned int nSp,
-    vecmem::data::vector_buffer<unsigned int>& counters_buf,
+    const vecmem::data::vector_buffer<unsigned char>& static_blob,
+    vecmem::data::vector_buffer<unsigned int>& zero_buf,
     vecmem::vector<unsigned int>& h_counters) const -> graph_making_output {
   const gbts_seedfinder_config& cfg = m_config;
-  unsigned int* d_counters = counters_buf.ptr();
+  unsigned int* d_counters = zero_buf.ptr();
+  const vecmem::data::vector_view<unsigned int> counters_view(
+      gbts_counter::nCounters, d_counters);
+  // The edge CSR ([node] = bucket begin after the scan) is the zeroed tail
+  // of the shared buffer.
+  const vecmem::data::vector_view<unsigned int> num_incoming_edges_buf(
+      nSp + 1, d_counters + gbts_counter::nCounters + cfg.n_eta_bins);
 
   // 1. Count the edges per inner node, then write them in canonical (inner
   //    node bucket, outer node ascending) order. The work list lives on the
@@ -214,10 +196,6 @@ auto gbts_seeding_algorithm::create_edges(
   vecmem::data::vector_buffer<unsigned int> edge_counts_buf(
       nWorkMax * gbts_consts::node_buffer_length, mr().main);
   copy().setup(edge_counts_buf)->ignore();
-  vecmem::data::vector_buffer<unsigned int> num_incoming_edges_buf(nSp + 1,
-                                                                   mr().main);
-  copy().setup(num_incoming_edges_buf)->ignore();
-  copy().memset(num_incoming_edges_buf, 0)->ignore();
   // setup edge param converter
   const float max_Kappa =
       std::max(cfg.gbts_make_graph_edges_params.max_Kappa_low_tau,
@@ -225,17 +203,10 @@ auto gbts_seeding_algorithm::create_edges(
   edge_params_converter edge_param_converter(max_Kappa,
                                              cfg.gbts_sort_nodes_params.maxTau);
 
-  // The static per-pair tables are uploaded per event on purpose: keeping
-  // them allocated across events in the (cached) device memory resource
-  // shifts the placement of every later buffer and was measured to slow
-  // gbts_bin_spacepoints down by ~30%.
-  vecmem::data::vector_buffer<uint2> bin_pairs_buf(m_nBinPairs, mr().main);
-  copy().setup(bin_pairs_buf)->ignore();
-  copy()(vecmem::get_data(m_bin_pairs), bin_pairs_buf)->ignore();
-  vecmem::data::vector_buffer<unsigned int> pair_group_begin_buf(m_nBinPairs,
-                                                                 mr().main);
-  copy().setup(pair_group_begin_buf)->ignore();
-  copy()(vecmem::get_data(m_pair_group_begin), pair_group_begin_buf)->ignore();
+  const auto bin_pairs_buf =
+      section_view<const uint2>(static_blob, m_sec_bin_pairs);
+  const auto pair_group_begin_buf =
+      section_view<const unsigned int>(static_blob, m_sec_pair_group_begin);
   gbts_make_graph_edges_payload make_graph_edges_payload{
       nWorkMax,
       d_counters + gbts_counter::nWork,
@@ -313,7 +284,7 @@ auto gbts_seeding_algorithm::create_edges(
 
   // The one synchronisation of the graph making: the number of kept edges
   // sizes the compacted graph.
-  copy()(counters_buf, h_counters)->wait();
+  copy()(counters_view, h_counters)->wait();
   const unsigned int nEdges = h_counters[gbts_counter::nEdges];
   const unsigned int nConnectedEdges =
       h_counters[gbts_counter::nConnectedEdges];
@@ -360,11 +331,11 @@ auto gbts_seeding_algorithm::extract_seeds(
     vecmem::data::vector_buffer<unsigned char>& levels,
     vecmem::data::vector_buffer<float4>& reducedSP,
     const unsigned int nConnectedEdges, const unsigned int nSp,
-    vecmem::data::vector_buffer<unsigned int>& counters_buf,
+    const vecmem::data::vector_view<unsigned int>& counters_view,
     vecmem::vector<unsigned int>& h_counters) const
     -> edm::seed_collection::buffer {
   const gbts_seedfinder_config& cfg = m_config;
-  unsigned int* d_counters = counters_buf.ptr();
+  unsigned int* d_counters = counters_view.ptr();
   // The device counters of this stage are only used by the kernels.
   static_cast<void>(h_counters);
 
@@ -500,29 +471,7 @@ gbts_seeding_algorithm::gbts_seeding_algorithm(
     : messaging(std::move(callers_logger)),
       algorithm_base{mr, copy},
       m_config{cfg},
-      m_h_volumeToLayerMap(host_resource(mr)),
-      m_h_surfaceToLayerMap(host_resource(mr)),
-      m_h_layerType(host_resource(mr)),
-      m_h_layer_info(host_resource(mr)),
-      m_h_layer_geo(host_resource(mr)),
-      m_h_tau_lut(host_resource(mr)),
-      m_bin_pairs(host_resource(mr)),
-      m_pair_group_begin(host_resource(mr)) {
-  // Static tables are kept in pinned host memory so that the per-event
-  // uploads are truly asynchronous (copies from pageable memory stall the
-  // host thread).
-  m_h_volumeToLayerMap.assign(cfg.volumeToLayerMap.begin(),
-                              cfg.volumeToLayerMap.end());
-  m_h_surfaceToLayerMap.assign(cfg.surfaceToLayerMap.begin(),
-                               cfg.surfaceToLayerMap.end());
-  m_h_layerType.assign(cfg.layerInfo.type.begin(), cfg.layerInfo.type.end());
-  m_h_layer_info.assign(cfg.layerInfo.info.begin(), cfg.layerInfo.info.end());
-  m_h_layer_geo.assign(cfg.layerInfo.geo.begin(), cfg.layerInfo.geo.end());
-  m_h_tau_lut.assign(cfg.tau_lut.begin(), cfg.tau_lut.end());
-  if (m_h_tau_lut.empty()) {
-    // A size-1 dummy so the sort-nodes kernel always gets a valid view.
-    m_h_tau_lut.push_back(0.0f);
-  }
+      m_static_blob(host_resource(mr)) {
   // The edge-making kernel relies on the bin pairs being sorted by
   // (bin1, bin2) without duplicates: this is what makes the edges come out in
   // canonical order. Pairs referring to non-existent eta bins are dropped.
@@ -553,16 +502,46 @@ gbts_seeding_algorithm::gbts_seeding_algorithm(
     m_maxPairsPerBin1 = std::max(m_maxPairsPerBin1, run);
   }
 
-  // Precompute the static per-pair tables (uploaded per event).
-  m_bin_pairs.resize(m_nBinPairs);
-  m_pair_group_begin.resize(m_nBinPairs);
+  // Precompute the static per-pair tables.
+  std::vector<uint2> bin_pairs(m_nBinPairs);
+  std::vector<unsigned int> pair_group_begin(m_nBinPairs);
   for (unsigned int i = 0; i < m_nBinPairs; i++) {
-    m_bin_pairs[i] = uint2{binTables[i].first, binTables[i].second};
-    m_pair_group_begin[i] =
+    bin_pairs[i] = uint2{binTables[i].first, binTables[i].second};
+    pair_group_begin[i] =
         (i > 0 && binTables[i - 1].first == binTables[i].first)
-            ? m_pair_group_begin[i - 1]
+            ? pair_group_begin[i - 1]
             : i;
   }
+  std::vector<float> tau_lut(cfg.tau_lut.begin(), cfg.tau_lut.end());
+  if (tau_lut.empty()) {
+    // A size-1 dummy so the sort-nodes kernel always gets a valid view.
+    tau_lut.push_back(0.0f);
+  }
+
+  // Pack every static table into one pinned host blob (16-byte aligned
+  // sections), uploaded with a single copy per event.
+  std::vector<unsigned char> blob;
+  auto pack = [&blob](const auto& table) {
+    using value_t = typename std::decay_t<decltype(table)>::value_type;
+    table_section section;
+    section.offset = static_cast<unsigned int>((blob.size() + 15u) & ~15u);
+    section.count = static_cast<unsigned int>(table.size());
+    blob.resize(section.offset + section.count * sizeof(value_t));
+    if (section.count > 0) {
+      std::memcpy(blob.data() + section.offset, table.data(),
+                  section.count * sizeof(value_t));
+    }
+    return section;
+  };
+  m_sec_volumeToLayerMap = pack(cfg.volumeToLayerMap);
+  m_sec_surfaceToLayerMap = pack(cfg.surfaceToLayerMap);
+  m_sec_layerType = pack(cfg.layerInfo.type);
+  m_sec_layer_info = pack(cfg.layerInfo.info);
+  m_sec_layer_geo = pack(cfg.layerInfo.geo);
+  m_sec_tau_lut = pack(tau_lut);
+  m_sec_bin_pairs = pack(bin_pairs);
+  m_sec_pair_group_begin = pack(pair_group_begin);
+  m_static_blob.assign(blob.begin(), blob.end());
 }
 
 auto gbts_seeding_algorithm::operator()(
@@ -578,18 +557,20 @@ auto gbts_seeding_algorithm::operator()(
     return {0, mr().main};
   }
 
-  // Named counters shared by all stages.
-  vecmem::data::vector_buffer<unsigned int> counters_buf(
-      gbts_counter::nCounters, mr().main);
-  copy().setup(counters_buf)->ignore();
-  copy().memset(counters_buf, 0)->ignore();
+  // One zeroed buffer for the named counters, the eta node counters and the
+  // edge CSR: a single memset per event.
+  vecmem::data::vector_buffer<unsigned int> zero_buf(
+      gbts_counter::nCounters + m_config.n_eta_bins + nSp + 1, mr().main);
+  copy().setup(zero_buf)->ignore();
+  copy().memset(zero_buf, 0)->ignore();
+  const vecmem::data::vector_view<unsigned int> counters_view(
+      gbts_counter::nCounters, zero_buf.ptr());
   vecmem::vector<unsigned int> h_counters(gbts_counter::nCounters,
                                           mr().host ? mr().host : &(mr().main));
 
   // Stage 1: bin spacepoints and create nodes with the parameters (eta, phi,
   // r, z). No synchronisation: an event without nodes produces no edges.
-  node_making_output nodes =
-      make_nodes(spacepoints, measurements, counters_buf);
+  node_making_output nodes = make_nodes(spacepoints, measurements, zero_buf);
 
   // Stage 2: graph. The per-node buffers are moved in so they are released
   // when create_gbts_edges_from_nodes returns, along with all the edge/link
@@ -598,7 +579,7 @@ auto gbts_seeding_algorithm::operator()(
       std::move(nodes.node_params), std::move(nodes.node_phi),
       std::move(nodes.node_index), nodes.bin_rads, nodes.eta_bin_views_buf,
       nodes.pair_work_begin_buf, nodes.work_items_buf, nodes.nWorkMax,
-      nodes.nSp, counters_buf, h_counters);
+      nodes.nSp, nodes.static_blob, zero_buf, h_counters);
   if (graph.nConnectedEdges == 0) {
     // No connected edges survived graph making -> no seeds.
     return {0, mr().main};
@@ -606,7 +587,7 @@ auto gbts_seeding_algorithm::operator()(
 
   // Stage 3: Create seeds from the graph edges.
   return extract_seeds(graph.output_graph, graph.levels, nodes.reducedSP,
-                       graph.nConnectedEdges, nSp, counters_buf, h_counters);
+                       graph.nConnectedEdges, nSp, counters_view, h_counters);
 }
 
 }  // namespace traccc::device

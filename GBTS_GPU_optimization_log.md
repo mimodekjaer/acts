@@ -164,3 +164,20 @@ preserved: `gbts_sort_nodes` detects runs of equal keys (phi within
 so the per-eta-bin node order is the exact phi order as before. Seeds
 identical. Node sort 96 -> 89 us (the one-sweep passes got slower per pass
 with 32-bit keys, 14 -> 20 us, so the gain is smaller than 6/4 would give).
+
+### (rejected) Two small ones
+- `gbts_build_edge_work_list`: writing the work items by all threads with a
+  binary search of the owning pair instead of by the pair's owner thread:
+  20 -> 24 us (the dependent global loads of the search cost more than the
+  serialised stores of the few large pairs).
+- `gbts_compress_graph`: testing the 1-byte kept flag instead of comparing
+  two scan values: no measurable change (+-1 us). Reverted both.
+
+### 5. One static-table upload and one memset per event  -> 0.874 ms/event (-4%)
+All static tables (volume/surface layer maps, layer type/info/geo, tau LUT,
+bin pairs, pair group begins) are packed once into a single pinned host
+blob (16-byte aligned sections) and uploaded with ONE H2D copy per event
+(was 8); the named counters, the eta node counters and the edge CSR share
+one zeroed `unsigned int` buffer (one memset instead of three). No kernel
+change: the gain is purely fewer GPU operations (each memcpy/memset costs
+~2-3 us of launch gap on the timeline). Seeds identical.
