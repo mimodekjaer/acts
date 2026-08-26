@@ -24,6 +24,8 @@ template <concepts::thread_id1 thread_id_t>
 TRACCC_HOST_DEVICE inline void gbts_sort_nodes(
     const thread_id_t& thread_id, const gbts_sort_nodes_payload& payload) {
   const vecmem::device_vector<const float4> d_reducedSP(payload.reducedSP);
+  const vecmem::device_vector<const gbts_sort_key_t> d_sort_keys(
+      payload.sort_keys);
   const vecmem::device_vector<const unsigned int> d_sort_values(
       payload.sort_values);
   vecmem::device_vector<float4> d_node_params(payload.node_params);
@@ -77,9 +79,40 @@ TRACCC_HOST_DEVICE inline void gbts_sort_nodes(
       }
     }
 
-    d_node_params[globalIndex] = float4{min_tau, max_tau, r, z};
-    d_node_phi[globalIndex] = Phi;
-    d_node_index[globalIndex] = srcIdx;
+    // The keys order the nodes by quantised phi; inside a run of equal keys
+    // the exact (phi, spacepoint index) rank decides the slot, so the nodes
+    // of an eta bin end up exactly sorted by phi (deterministically).
+    unsigned int pos = globalIndex;
+    const gbts_sort_key_t key = d_sort_keys[globalIndex];
+    const bool in_run =
+        ((globalIndex > 0u) && (d_sort_keys[globalIndex - 1u] == key)) ||
+        ((globalIndex + 1u < nNodes) && (d_sort_keys[globalIndex + 1u] == key));
+    if (in_run) {
+      unsigned int start = globalIndex;
+      while ((start > 0u) && (d_sort_keys[start - 1u] == key)) {
+        --start;
+      }
+      unsigned int end = globalIndex + 1u;
+      while ((end < nNodes) && (d_sort_keys[end] == key)) {
+        ++end;
+      }
+      unsigned int rank = 0u;
+      for (unsigned int j = start; j < end; j++) {
+        if (j == globalIndex) {
+          continue;
+        }
+        const unsigned int otherIdx = d_sort_values[j];
+        const float4 other = d_reducedSP[otherIdx];
+        const float otherPhi = math::atan2(other.y, other.x);
+        if ((otherPhi < Phi) || ((otherPhi == Phi) && (otherIdx < srcIdx))) {
+          ++rank;
+        }
+      }
+      pos = start + rank;
+    }
+    d_node_params[pos] = float4{min_tau, max_tau, r, z};
+    d_node_phi[pos] = Phi;
+    d_node_index[pos] = srcIdx;
   }
 }
 

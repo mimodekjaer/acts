@@ -145,3 +145,22 @@ Cut selectivity measured in the count pass (event 0, 7.2M candidates):
 dr 6%, tau bounds 24%, z0 47%, zouter 0%, dphi ~0% (window pre-selection),
 curvature 5%; ~17% accepted. Reordering the cuts cannot buy much: everything
 after dr needs the tau division anyway.
+
+### (rejected) Per-eta-bin segmented node sort
+Scatter the nodes into their eta-bin segments (eta counters used as
+cursors) and `cub::DeviceSegmentedSort` the segments by a unique
+(phi bits, spacepoint index) key. Result: the scatter kernel alone costs
+65 us (consecutive spacepoints share an eta bin -> same-address atomic
+contention) and the segmented sort falls back to per-segment radix sorts for
+the large inner-layer bins (70 us): 136 us vs 96 us for the 44-bit global
+radix sort. Reverted.
+
+### 4. 32-bit node sort keys  -> 0.910 ms/event (-0.7%)
+Node sort key = (eta bin << 20) | 20-bit quantised phi, sorted with
+`cub::DeviceRadixSort` on the significant bits (4 one-sweep passes instead
+of 6; keys and key traffic halved). Determinism and the exact phi order are
+preserved: `gbts_sort_nodes` detects runs of equal keys (phi within
+2*pi/2^20) and places their nodes by the exact (phi, spacepoint index) rank,
+so the per-eta-bin node order is the exact phi order as before. Seeds
+identical. Node sort 96 -> 89 us (the one-sweep passes got slower per pass
+with 32-bit keys, 14 -> 20 us, so the gain is smaller than 6/4 would give).

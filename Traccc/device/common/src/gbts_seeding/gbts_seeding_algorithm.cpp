@@ -98,8 +98,7 @@ auto gbts_seeding_algorithm::make_nodes(
   vecmem::data::vector_buffer<float4> reducedSP_buf(nSp, mr().main);
   copy().setup(reducedSP_buf)->ignore();
 
-  vecmem::data::vector_buffer<unsigned long long int> sort_keys_buf(nSp,
-                                                                    mr().main);
+  vecmem::data::vector_buffer<gbts_sort_key_t> sort_keys_buf(nSp, mr().main);
   copy().setup(sort_keys_buf)->ignore();
   vecmem::data::vector_buffer<unsigned int> sort_values_buf(nSp, mr().main);
   copy().setup(sort_values_buf)->ignore();

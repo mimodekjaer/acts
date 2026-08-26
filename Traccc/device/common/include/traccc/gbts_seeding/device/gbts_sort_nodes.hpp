@@ -10,6 +10,7 @@
 // Project include(s).
 #include "traccc/definitions/qualifiers.hpp"
 #include "traccc/device/concepts/thread_id.hpp"
+#include "traccc/gbts_seeding/device/gbts_bin_spacepoints.hpp"
 #include "traccc/gbts_seeding/gbts_seeding_config.hpp"
 #include "traccc/gbts_seeding/gbts_types.hpp"
 
@@ -32,7 +33,7 @@ struct gbts_sort_nodes_payload {
   /// In/out: the nNodes node sort keys from gbts_bin_spacepoints; the kernel
   /// launcher sorts them (with @c sort_values as the values) before this
   /// kernel runs
-  vecmem::data::vector_view<unsigned long long int> sort_keys;
+  vecmem::data::vector_view<gbts_sort_key_t> sort_keys;
   /// In/out: the spacepoint index belonging to each key, sorted alongside
   /// @c sort_keys by the kernel launcher
   vecmem::data::vector_view<unsigned int> sort_values;

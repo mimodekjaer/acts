@@ -45,7 +45,7 @@ TRACCC_HOST_DEVICE inline bool gbts_bin_one_spacepoint(
     const vecmem::device_vector<const std::pair<float, float>>& d_layer_geo,
     vecmem::device_vector<float4>& reducedSP,
     vecmem::device_vector<unsigned int>& d_eta_node_counter,
-    const unsigned int globalIndex, unsigned long long int& key) {
+    const unsigned int globalIndex, gbts_sort_key_t& key) {
   // --- Stage 1: layer assignment -----------
   const auto spacepoint = spacepoints.at(globalIndex);
   const auto measurement = measurements.at(spacepoint.measurement_index_1());
@@ -121,12 +121,7 @@ TRACCC_HOST_DEVICE inline bool gbts_bin_one_spacepoint(
   // Concatenate the eta bin, order-preserving phi bits, and the spacepoint
   // index into a single 64-bit integer, used to sort the nodes.
   const float Phi = math::atan2(pos[1], pos[0]);
-  key = (static_cast<unsigned long long int>(eta_index)
-         << gbts_sort_key_eta_shift) |
-        (static_cast<unsigned long long int>(phi_ordered_bits(Phi))
-         << gbts_sort_key_phi_shift) |
-        (static_cast<unsigned long long int>(globalIndex) &
-         gbts_sort_key_index_mask);
+  key = (eta_index << gbts_sort_key_eta_shift) | gbts_quantised_phi(Phi);
   return true;
 }
 
@@ -152,7 +147,7 @@ TRACCC_HOST_DEVICE inline void gbts_bin_spacepoints(
   vecmem::device_vector<float4> reducedSP(payload.reducedSP);
   vecmem::device_vector<unsigned int> d_eta_node_counter(
       payload.eta_node_counter);
-  vecmem::device_vector<unsigned long long int> d_sort_keys(payload.sort_keys);
+  vecmem::device_vector<gbts_sort_key_t> d_sort_keys(payload.sort_keys);
   vecmem::device_vector<unsigned int> d_sort_values(payload.sort_values);
 
   const unsigned int nSp = spacepoints.size();
@@ -163,9 +158,9 @@ TRACCC_HOST_DEVICE inline void gbts_bin_spacepoints(
   // Every key slot of the capacity gets written: the unused tail sorts last.
   for (unsigned int globalIndex = globalIdx; globalIndex < payload.nSp;
        globalIndex += stride) {
-    unsigned long long int key = gbts_sort_key_rejected;
+    gbts_sort_key_t key = gbts_sort_key_rejected;
     if (globalIndex < nSp) {
-      unsigned long long int node_key = 0ull;
+      gbts_sort_key_t node_key = 0u;
       if (detail::gbts_bin_one_spacepoint(
               payload, spacepoints, measurements, volumeToLayerMap,
               surfaceToLayerMap, layerType, d_layer_info, d_layer_geo,

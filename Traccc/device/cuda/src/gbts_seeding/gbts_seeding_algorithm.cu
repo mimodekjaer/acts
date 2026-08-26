@@ -478,25 +478,23 @@ void gbts_seeding_algorithm::gbts_sort_nodes_kernel(
     const device::gbts_sort_nodes_payload& payload) const {
   // Order the nodes by their (eta bin, phi, spacepoint index bits) keys,
   // carrying the full spacepoint index along as the value.
-  // Stable radix sort of the significant key bits only (the eta bin and phi
-  // fields; the keys are written in spacepoint order, so the low index bits
-  // are redundant for a stable sort): fewer radix passes than a full 64-bit
-  // sort.
+  // Stable radix sort of the 32-bit keys (quantised phi | eta bin), on the
+  // significant bits only: 4 one-sweep passes at most.
   unsigned int eta_bits = 0u;
   while ((1u << eta_bits) <= payload.nEtaBins) {
     ++eta_bits;
   }
-  const int begin_bit = static_cast<int>(device::gbts_sort_key_phi_shift);
+  const int begin_bit = 0;
   const int end_bit =
       static_cast<int>(device::gbts_sort_key_eta_shift + eta_bits);
 
   cudaStream_t cuda_stream = details::get_stream(stream());
-  vecmem::data::vector_buffer<unsigned long long int> keys_alt(payload.nKeys,
-                                                               mr().main);
+  vecmem::data::vector_buffer<device::gbts_sort_key_t> keys_alt(payload.nKeys,
+                                                                mr().main);
   vecmem::data::vector_buffer<unsigned int> values_alt(payload.nKeys,
                                                        mr().main);
-  cub::DoubleBuffer<unsigned long long int> d_keys(payload.sort_keys.ptr(),
-                                                   keys_alt.ptr());
+  cub::DoubleBuffer<device::gbts_sort_key_t> d_keys(payload.sort_keys.ptr(),
+                                                    keys_alt.ptr());
   cub::DoubleBuffer<unsigned int> d_values(payload.sort_values.ptr(),
                                            values_alt.ptr());
   std::size_t temp_bytes = 0u;
@@ -509,6 +507,14 @@ void gbts_seeding_algorithm::gbts_sort_nodes_kernel(
   TRACCC_CUDA_ERROR_CHECK(cub::DeviceRadixSort::SortPairs(
       temp.ptr(), temp_bytes, d_keys, d_values, static_cast<int>(payload.nKeys),
       begin_bit, end_bit, cuda_stream));
+  if (d_keys.Current() != payload.sort_keys.ptr()) {
+    // The sorted keys ended up in the alternate buffer (gbts_sort_nodes
+    // reads them to find runs of equal keys).
+    TRACCC_CUDA_ERROR_CHECK(
+        cudaMemcpyAsync(payload.sort_keys.ptr(), d_keys.Current(),
+                        payload.nKeys * sizeof(device::gbts_sort_key_t),
+                        cudaMemcpyDeviceToDevice, cuda_stream));
+  }
   if (d_values.Current() != payload.sort_values.ptr()) {
     // The sorted values ended up in the alternate buffer.
     TRACCC_CUDA_ERROR_CHECK(
