@@ -82,6 +82,7 @@ traccc_add_library( traccc_device_common device_common
    "include/traccc/gbts_seeding/device/gbts_compress_graph.hpp"
    "include/traccc/gbts_seeding/device/impl/gbts_compress_graph.ipp"
    "include/traccc/gbts_seeding/device/gbts_run_cca_iteration.hpp"
+   "include/traccc/gbts_seeding/device/gbts_seed_bidding.hpp"
    "include/traccc/gbts_seeding/device/impl/gbts_run_cca_iteration.ipp"
    "include/traccc/gbts_seeding/device/gbts_count_terminus_edges.hpp"
    "include/traccc/gbts_seeding/device/impl/gbts_count_terminus_edges.ipp"

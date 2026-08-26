@@ -41,6 +41,10 @@ struct gbts_run_cca_iteration_payload {
   vecmem::data::vector_view<int2> outgoing_paths;
   /// Iteration index (0-based)
   unsigned char iter;
+  /// Scratch for fused implementations: gbts_consts::max_cca_iter + 1
+  /// counters of the edges still active after each iteration (unused by the
+  /// per-iteration function)
+  unsigned int* active_counters;
 };
 
 /// @brief One iteration of the cellular-automaton "longest path" relaxation.

@@ -362,6 +362,8 @@ auto gbts_seeding_algorithm::extract_seeds(
     -> edm::seed_collection::buffer {
   const gbts_seedfinder_config& cfg = m_config;
   unsigned int* d_counters = counters_buf.ptr();
+  // The device counters of this stage are only used by the kernels.
+  static_cast<void>(h_counters);
 
   // 6. Find longest segments with CCA.
   // active_edges is the per-edge "next iter index" flag: it holds `iter`
@@ -378,12 +380,15 @@ auto gbts_seeding_algorithm::extract_seeds(
                                                        mr().main);
   copy().setup(outgoing_paths_buf)->ignore();
 
-  for (unsigned char iter = 0; iter < traccc::device::gbts_consts::max_cca_iter;
-       ++iter) {
-    gbts_run_cca_iteration_kernel({nConnectedEdges, cfg.max_num_neighbours,
-                                   cfg.minLevel, output_graph, levels_buf,
-                                   active_edges_buf, outgoing_paths_buf, iter});
-  }
+  // Per-iteration active-edge counters for fused CCA implementations
+  // (initialised by the kernel itself).
+  vecmem::data::vector_buffer<unsigned int> cca_active_buf(
+      traccc::device::gbts_consts::max_cca_iter + 1u, mr().main);
+  copy().setup(cca_active_buf)->ignore();
+
+  gbts_run_cca_kernel({nConnectedEdges, cfg.max_num_neighbours, cfg.minLevel,
+                       output_graph, levels_buf, active_edges_buf,
+                       outgoing_paths_buf, 0u, cca_active_buf.ptr()});
 
   vecmem::data::vector_buffer<unsigned int> row_sizes_buf(nConnectedEdges,
                                                           mr().main);
@@ -429,52 +434,17 @@ auto gbts_seeding_algorithm::extract_seeds(
        path_store_buf, seed_proposals_buf, d_counters + gbts_counter::nProps,
        cfg.gbts_fit_segments_params, cfg.gbts_make_graph_edges_params.max_z0});
 
-  copy()(counters_buf, h_counters)->wait();
+  // 7. Disambiguate seeds through the initial bid and repeated seed-vs-edge
+  //    bidding rounds. The proposal / rejection counts are not read back:
+  //    every later kernel loops over the rows and the seed output is sized
+  //    by the (upper bound) row count, which saves two synchronisations.
+  gbts_bid_seeds_kernel({nRows, nConnectedEdges, cfg.edge_bidding_rounds,
+                         path_store_buf, seed_proposals_buf, seed_ambiguity_buf,
+                         edge_bids_buf, d_counters + gbts_counter::nRejected});
 
-  const unsigned int nProps = h_counters[gbts_counter::nProps];
-  TRACCC_DEBUG("nProps " << nProps);
-  if (nProps == 0) {
-    TRACCC_WARNING("No seed proposals were found");
-    return {0, mr().main};
-  }
-
-  const auto edge_bids_half = [&](const unsigned int half) {
-    return vecmem::data::vector_view<unsigned long long int>(
-        nConnectedEdges, edge_bids_buf.ptr() + half * nConnectedEdges);
-  };
-
-  gbts_bid_seeds_for_edges_kernel({nRows, seed_proposals_buf,
-                                   seed_ambiguity_buf, edge_bids_half(0u),
-                                   path_store_buf});
-
-  // 7. Disambiguate seeds through repeated seed-vs-edge bidding rounds.
-  for (unsigned int round = 0; round < cfg.edge_bidding_rounds; ++round) {
-    const unsigned int half = (round + 1u) % 2u;
-
-    gbts_rebid_seeds_for_edges_kernel(
-        {nRows, path_store_buf, seed_proposals_buf, edge_bids_half(half),
-         seed_ambiguity_buf, d_counters + gbts_counter::nRejected,
-         round == 0u});
-
-    gbts_reset_edge_bids_kernel({nRows, nConnectedEdges, path_store_buf,
-                                 seed_proposals_buf, edge_bids_half(half),
-                                 edge_bids_half(1u - half), seed_ambiguity_buf,
-                                 d_counters + gbts_counter::nRejected});
-  }
-
-  copy()(counters_buf, h_counters)->wait();
-  const unsigned int nRejectedProps = h_counters[gbts_counter::nRejected];
-  const unsigned int nSeeds =
-      (nRejectedProps >= nProps) ? 0u : nProps - nRejectedProps;
-
-  TRACCC_DEBUG("Rejected " << nRejectedProps << " out of " << nProps
-                           << " seed proposals");
-  if (nSeeds == 0) {
-    TRACCC_WARNING("All seed proposals were rejected");
-    return {0, mr().main};
-  }
-
-  // 8. Convert to 3sp seeds and make output buffer.
+  // 8. Convert to 3sp seeds and make output buffer (at most two seeds per
+  //    proposal, at most one proposal per row).
+  const unsigned int nSeeds = nRows;
   edm::seed_collection::buffer output_seeds(
       2 * nSeeds, mr().main, vecmem::data::buffer_type::resizable);
   copy().setup(output_seeds)->ignore();
@@ -497,6 +467,28 @@ auto gbts_seeding_algorithm::extract_seeds(
   const unsigned int outputSeeds = copy().get_size(output_seeds);
   TRACCC_DEBUG("GBTS found " << outputSeeds << " seeds");
   return output_seeds;
+}
+
+void gbts_seeding_algorithm::gbts_run_cca_kernel(
+    const gbts_run_cca_iteration_payload& payload) const {
+  gbts_run_cca_iteration_payload iteration = payload;
+  for (unsigned char iter = 0; iter < traccc::device::gbts_consts::max_cca_iter;
+       ++iter) {
+    iteration.iter = iter;
+    gbts_run_cca_iteration_kernel(iteration);
+  }
+}
+
+void gbts_seeding_algorithm::gbts_bid_seeds_kernel(
+    const gbts_seed_bidding_payload& payload) const {
+  gbts_bid_seeds_for_edges_kernel(
+      gbts_make_bid_seeds_for_edges_payload(payload));
+  for (unsigned int round = 0; round < payload.nRounds; ++round) {
+    gbts_rebid_seeds_for_edges_kernel(
+        gbts_make_rebid_seeds_for_edges_payload(payload, round));
+    gbts_reset_edge_bids_kernel(
+        gbts_make_reset_edge_bids_payload(payload, round));
+  }
 }
 
 gbts_seeding_algorithm::gbts_seeding_algorithm(

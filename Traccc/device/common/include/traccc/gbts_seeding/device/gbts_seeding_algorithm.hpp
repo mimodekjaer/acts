@@ -25,6 +25,7 @@
 #include "traccc/gbts_seeding/device/gbts_reindex_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_reset_edge_bids.hpp"
 #include "traccc/gbts_seeding/device/gbts_run_cca_iteration.hpp"
+#include "traccc/gbts_seeding/device/gbts_seed_bidding.hpp"
 #include "traccc/gbts_seeding/device/gbts_sort_nodes.hpp"
 
 // Project include(s).
@@ -172,6 +173,27 @@ class gbts_seeding_algorithm
   ///
   virtual void gbts_run_cca_iteration_kernel(
       const gbts_run_cca_iteration_payload& payload) const = 0;
+
+  /// Launcher of the complete CCA (gbts_consts::max_cca_iter iterations)
+  ///
+  /// The default implementation launches gbts_run_cca_iteration_kernel once
+  /// per iteration; backends may fuse the iterations into one kernel.
+  ///
+  /// @param payload The payload of the first iteration (payload.iter == 0)
+  ///
+  virtual void gbts_run_cca_kernel(
+      const gbts_run_cca_iteration_payload& payload) const;
+
+  /// Launcher of the complete seed-vs-edge bidding sequence (initial bid +
+  /// payload.nRounds rebid / reset rounds)
+  ///
+  /// The default implementation launches the three per-round kernels;
+  /// backends may fuse the sequence into one kernel.
+  ///
+  /// @param payload The payload of the bidding sequence
+  ///
+  virtual void gbts_bid_seeds_kernel(
+      const gbts_seed_bidding_payload& payload) const;
 
   /// Terminus-edge counting / path-store layout kernel launcher
   ///
