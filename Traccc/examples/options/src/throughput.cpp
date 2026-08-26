@@ -26,7 +26,11 @@ static const char* stage_option = "reco-stage";
 throughput::throughput() : interface("Throughput Measurement Options") {
   m_desc.add_options()(stage_option,
                        po::value<stage_type>()->default_value("full"),
-                       "Reconstruction stage to run (\"seeding\" or \"full\")");
+                       "Reconstruction stage to run (\"seeding\", "
+                       "\"seeding-only\" or \"full\"). \"seeding-only\" "
+                       "runs clusterization and spacepoint formation once "
+                       "per input event outside of the timed loop and "
+                       "times only the seeding itself");
   m_desc.add_options()(
       "processed-events",
       po::value(&processed_events)->default_value(processed_events),
@@ -55,6 +59,8 @@ void throughput::read(const po::variables_map& vm) {
       reco_stage = stage::full;
     } else if (stage_string == "seeding") {
       reco_stage = stage::seeding;
+    } else if (stage_string == "seeding-only") {
+      reco_stage = stage::seeding_only;
     } else {
       throw std::invalid_argument("Unknown reconstruction stage");
     }
@@ -68,6 +74,9 @@ std::unique_ptr<configuration_printable> throughput::as_printable() const {
   switch (reco_stage) {
     case stage::seeding:
       reco_stage_string = "seeding";
+      break;
+    case stage::seeding_only:
+      reco_stage_string = "seeding-only";
       break;
     case stage::full:
       reco_stage_string = "full";
