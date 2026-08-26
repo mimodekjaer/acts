@@ -25,7 +25,6 @@
 #include "traccc/gbts_seeding/device/gbts_convert_seeds.hpp"
 #include "traccc/gbts_seeding/device/gbts_count_terminus_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_fill_path_store.hpp"
-#include "traccc/gbts_seeding/device/gbts_find_minmax_radius.hpp"
 #include "traccc/gbts_seeding/device/gbts_fit_segments.hpp"
 #include "traccc/gbts_seeding/device/gbts_make_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_match_graph_edges.hpp"
@@ -56,10 +55,6 @@ class gbts_bin_spacepoints;
 
 /// Class identifying the kernel running @c traccc::device::gbts_sort_nodes
 class gbts_sort_nodes;
-
-/// Class identifying the kernel running @c
-/// traccc::device::gbts_find_minmax_radius
-class gbts_find_minmax_radius;
 
 /// Class identifying the kernel running @c
 /// traccc::device::gbts_build_edge_work_list
@@ -184,82 +179,22 @@ void gbts_seeding_algorithm::gbts_sort_nodes_kernel(
   ::sycl::queue& squeue = details::get_queue(queue());
   squeue.throw_asynchronous();
 
-  const unsigned int n_threads = 256;
+  const unsigned int n_threads = device::gbts_sort_nodes_block_size;
   squeue.submit([&](::sycl::handler& h) {
+    vecmem::sycl::local_accessor<unsigned int> min_bits(
+        device::gbts_sort_nodes_block_size, h);
+    vecmem::sycl::local_accessor<unsigned int> max_bits(
+        device::gbts_sort_nodes_block_size, h);
     h.parallel_for<kernels::gbts_sort_nodes>(
         details::calculate1DimNdRange(payload.nKeys, n_threads),
-        [payload](::sycl::nd_item<1> item) {
-          device::gbts_sort_nodes(details::thread_id<1>{item}, payload);
-        });
-  });
-}
-
-void gbts_seeding_algorithm::gbts_find_minmax_radius_kernel(
-    const device::gbts_find_minmax_radius_payload& payload) const {
-  ::sycl::queue& squeue = details::get_queue(queue());
-  squeue.throw_asynchronous();
-
-  // One block per eta bin.
-  const unsigned int n_threads = device::gbts_find_minmax_radius_block_size;
-  const unsigned int n_blocks = payload.nEtaBins;
-  squeue.submit([&](::sycl::handler& h) {
-    vecmem::sycl::local_accessor<float> shared_min(
-        device::gbts_find_minmax_radius_block_size, h);
-    vecmem::sycl::local_accessor<float> shared_max(
-        device::gbts_find_minmax_radius_block_size, h);
-
-    h.parallel_for<kernels::gbts_find_minmax_radius>(
-        details::calculate1DimNdRange(n_blocks * n_threads, n_threads),
-        [payload, shared_min, shared_max](::sycl::nd_item<1> item) {
+        [payload, min_bits, max_bits](::sycl::nd_item<1> item) {
           const details::barrier<1> barrier{item};
-          device::gbts_find_minmax_radius(
+          device::gbts_sort_nodes(
               details::thread_id<1>{item}, barrier, payload,
-              {vecmem::data::vector_view<float>(
-                   device::gbts_find_minmax_radius_block_size, &shared_min[0]),
-               vecmem::data::vector_view<float>(
-                   device::gbts_find_minmax_radius_block_size,
-                   &shared_max[0])});
-        });
-  });
-}
-
-namespace {
-
-/// Launch @c traccc::device::gbts_make_graph_edges<fill> on the queue.
-template <bool fill, typename kernel_name_t>
-void submit_gbts_make_graph_edges(
-    ::sycl::queue& squeue,
-    const device::gbts_make_graph_edges_payload& payload) {
-  // One thread per inner node of a chunk: the block size must equal the
-  // chunk size.
-  const unsigned int n_threads =
-      traccc::device::gbts_consts::node_buffer_length;
-  // The blocks stride over the device-side work list.
-  const unsigned int n_blocks =
-      std::min(payload.nWorkMax, device::gbts_make_graph_edges_max_blocks);
-  squeue.submit([&](::sycl::handler& h) {
-    // Shared-memory scratch: one slab of outer nodes.
-    vecmem::sycl::local_accessor<float> phi(
-        traccc::device::gbts_consts::node_buffer_length, h);
-    vecmem::sycl::local_accessor<traccc::float4> node_pack(
-        traccc::device::gbts_consts::node_buffer_length, h);
-    vecmem::sycl::local_accessor<unsigned int> work_slot(
-        traccc::device::gbts_make_graph_edges_scratch_size, h);
-
-    h.parallel_for<kernel_name_t>(
-        details::calculate1DimNdRange(n_blocks * n_threads, n_threads),
-        [payload, phi, node_pack, work_slot](::sycl::nd_item<1> item) {
-          const details::barrier<1> barrier{item};
-          device::gbts_make_graph_edges<fill>(
-              details::thread_id<1>{item}, barrier, payload,
-              {vecmem::data::vector_view<float>(
-                   traccc::device::gbts_consts::node_buffer_length, &phi[0]),
-               vecmem::data::vector_view<traccc::float4>(
-                   traccc::device::gbts_consts::node_buffer_length,
-                   &node_pack[0]),
+              {vecmem::data::vector_view<unsigned int>(
+                   device::gbts_sort_nodes_block_size, &min_bits[0]),
                vecmem::data::vector_view<unsigned int>(
-                   traccc::device::gbts_make_graph_edges_scratch_size,
-                   &work_slot[0])});
+                   device::gbts_sort_nodes_block_size, &max_bits[0])});
         });
   });
 }

@@ -17,105 +17,171 @@
 
 // VecMem include(s).
 #include <vecmem/containers/device_vector.hpp>
+#include <vecmem/memory/device_atomic_ref.hpp>
 
 namespace traccc::device {
 
-template <concepts::thread_id1 thread_id_t>
+template <concepts::thread_id1 thread_id_t, concepts::barrier barrier_t>
 TRACCC_HOST_DEVICE inline void gbts_sort_nodes(
-    const thread_id_t& thread_id, const gbts_sort_nodes_payload& payload) {
+    const thread_id_t& thread_id, const barrier_t& barrier,
+    const gbts_sort_nodes_payload& payload,
+    const gbts_sort_nodes_shared_payload& shared_payload) {
   const vecmem::device_vector<const float4> d_reducedSP(payload.reducedSP);
   const vecmem::device_vector<const gbts_sort_key_t> d_sort_keys(
       payload.sort_keys);
   vecmem::device_vector<float4> d_node_params(payload.node_params);
   vecmem::device_vector<float> d_node_phi(payload.node_phi);
   vecmem::device_vector<unsigned int> d_node_index(payload.node_index);
+  vecmem::device_vector<unsigned int> d_bin_rads_bits(payload.bin_rads_bits);
   const vecmem::device_vector<const float> d_tau_lut(payload.tau_lut);
+  vecmem::device_vector<unsigned int> shared_min(shared_payload.min_bits);
+  vecmem::device_vector<unsigned int> shared_max(shared_payload.max_bits);
 
   const gbts_sort_nodes_params& ap = payload.gbts_sort_nodes_params;
 
-  const unsigned int globalIdx = thread_id.getGlobalThreadIdX();
-  const unsigned int blockDimX = thread_id.getBlockDimX();
-  const unsigned int gridDimX = thread_id.getGridDimX();
-
+  const unsigned int threadIndex = thread_id.getLocalThreadIdX();
+  const unsigned int blockSize = thread_id.getBlockDimX();
+  const unsigned int stride = blockSize * thread_id.getGridDimX();
   const unsigned int nNodes = *payload.nNodes;
-  for (unsigned int globalIndex = globalIdx; globalIndex < nNodes;
-       globalIndex += blockDimX * gridDimX) {
-    const gbts_sort_key_t key = d_sort_keys[globalIndex];
-    const unsigned int srcIdx = gbts_sort_key_index(key);
-    const unsigned int bin_phi = gbts_sort_key_bin_phi(key);
-    const float4 sp = d_reducedSP[srcIdx];
 
-    const float Phi = math::atan2(sp.y, sp.x);
-    const float r = math::sqrt(sp.x * sp.x + sp.y * sp.y);
-    const float z = sp.z;
+  // Block-uniform loop (the barriers below must be reached by every thread).
+  for (unsigned int base = thread_id.getBlockIdX() * blockSize; base < nNodes;
+       base += stride) {
+    const unsigned int globalIndex = base + threadIndex;
+    const bool active = globalIndex < nNodes;
 
-    // Default to the full |tau| acceptance for nodes that carry no usable
-    // cluster width (sp.w <= 0); the per-edge cuts then rely on these
-    // bounds.
-    float min_tau = 0.0f;
-    float max_tau = ap.maxTau;
+    // The eta bins spanned by the block's nodes: [bin_first, bin_last].
+    const unsigned int last =
+        (base + blockSize <= nNodes) ? base + blockSize - 1u : nNodes - 1u;
+    const unsigned int bin_first =
+        gbts_sort_key_bin_phi(d_sort_keys[base]) >> gbts_sort_key_phi_bits;
+    const unsigned int bin_last =
+        gbts_sort_key_bin_phi(d_sort_keys[last]) >> gbts_sort_key_phi_bits;
+    const unsigned int n_bins = bin_last - bin_first + 1u;
+    // Shared reduction only when the spanned bins fit the scratch arrays.
+    const bool use_shared = n_bins <= blockSize;
+    if (use_shared && (threadIndex < n_bins)) {
+      shared_min[threadIndex] = gbts_float_bits(1e8f);
+      shared_max[threadIndex] = gbts_float_bits(0.0f);
+    }
+    barrier.blockBarrier();
 
-    if (sp.w > 0) {  // type 0 only
-      if (ap.useTauLUT) {
-        // LUT is laid out as [w_bin_edge, min_tau_0, max_tau_0,
-        // min_tau_1, max_tau_1] per bin.
-        const int tau_bin =
-            5 * static_cast<int>(math::floor(ap.tau_lut_inv_bin * sp.w) - 1.0f);
-        if (tau_bin > -1 && tau_bin < static_cast<int>(ap.tauLutSize)) {
-          min_tau = d_tau_lut[static_cast<unsigned int>(tau_bin) + 1u];
-          max_tau = d_tau_lut[static_cast<unsigned int>(tau_bin) + 2u];
+    unsigned int bin = 0u;
+    unsigned int r_bits = 0u;
+    if (active) {
+      const gbts_sort_key_t key = d_sort_keys[globalIndex];
+      const unsigned int srcIdx = gbts_sort_key_index(key);
+      const unsigned int bin_phi = gbts_sort_key_bin_phi(key);
+      bin = bin_phi >> gbts_sort_key_phi_bits;
+      const float4 sp = d_reducedSP[srcIdx];
+
+      const float Phi = math::atan2(sp.y, sp.x);
+      const float r = math::sqrt(sp.x * sp.x + sp.y * sp.y);
+      const float z = sp.z;
+      r_bits = gbts_float_bits(r);
+
+      // Default to the full |tau| acceptance for nodes that carry no usable
+      // cluster width (sp.w <= 0); the per-edge cuts then rely on these
+      // bounds.
+      float min_tau = 0.0f;
+      float max_tau = ap.maxTau;
+
+      if (sp.w > 0) {  // type 0 only
+        if (ap.useTauLUT) {
+          // LUT is laid out as [w_bin_edge, min_tau_0, max_tau_0,
+          // min_tau_1, max_tau_1] per bin.
+          const int tau_bin =
+              5 *
+              static_cast<int>(math::floor(ap.tau_lut_inv_bin * sp.w) - 1.0f);
+          if (tau_bin > -1 && tau_bin < static_cast<int>(ap.tauLutSize)) {
+            min_tau = d_tau_lut[static_cast<unsigned int>(tau_bin) + 1u];
+            max_tau = d_tau_lut[static_cast<unsigned int>(tau_bin) + 2u];
+          }
+          if (max_tau < 0.0f) {
+            max_tau = ap.maxTau;
+          }
+          if (min_tau < 0.0f) {
+            min_tau = 0.0f;
+          }
+        } else {
+          // linear fit + correction for short clusters
+          min_tau = ap.tMin_slope * (sp.w - ap.offset);
+          max_tau = ap.tMax_min + ap.tMax_correction / (sp.w + ap.offset) +
+                    ap.tMax_slope * (sp.w - ap.offset);
         }
-        if (max_tau < 0.0f) {
-          max_tau = ap.maxTau;
+      }
+
+      // The keys order the nodes by quantised phi; inside a run of equal
+      // (eta bin, quantised phi) the exact (phi, spacepoint index) rank
+      // decides the slot, so the nodes of an eta bin end up exactly sorted
+      // by phi (deterministically).
+      unsigned int pos = globalIndex;
+      const bool in_run =
+          ((globalIndex > 0u) &&
+           (gbts_sort_key_bin_phi(d_sort_keys[globalIndex - 1u]) == bin_phi)) ||
+          ((globalIndex + 1u < nNodes) &&
+           (gbts_sort_key_bin_phi(d_sort_keys[globalIndex + 1u]) == bin_phi));
+      if (in_run) {
+        unsigned int start = globalIndex;
+        while ((start > 0u) &&
+               (gbts_sort_key_bin_phi(d_sort_keys[start - 1u]) == bin_phi)) {
+          --start;
         }
-        if (min_tau < 0.0f) {
-          min_tau = 0.0f;
+        unsigned int end = globalIndex + 1u;
+        while ((end < nNodes) &&
+               (gbts_sort_key_bin_phi(d_sort_keys[end]) == bin_phi)) {
+          ++end;
         }
+        unsigned int rank = 0u;
+        for (unsigned int j = start; j < end; j++) {
+          if (j == globalIndex) {
+            continue;
+          }
+          const unsigned int otherIdx = gbts_sort_key_index(d_sort_keys[j]);
+          const float4 other = d_reducedSP[otherIdx];
+          const float otherPhi = math::atan2(other.y, other.x);
+          if ((otherPhi < Phi) || ((otherPhi == Phi) && (otherIdx < srcIdx))) {
+            ++rank;
+          }
+        }
+        pos = start + rank;
+      }
+      d_node_params[pos] = float4{min_tau, max_tau, r, z};
+      d_node_phi[pos] = Phi;
+      d_node_index[pos] = srcIdx;
+
+      if (use_shared) {
+        vecmem::device_atomic_ref<unsigned int,
+                                  vecmem::device_address_space::local>(
+            shared_min[bin - bin_first])
+            .fetch_min(r_bits);
+        vecmem::device_atomic_ref<unsigned int,
+                                  vecmem::device_address_space::local>(
+            shared_max[bin - bin_first])
+            .fetch_max(r_bits);
       } else {
-        // linear fit + correction for short clusters
-        min_tau = ap.tMin_slope * (sp.w - ap.offset);
-        max_tau = ap.tMax_min + ap.tMax_correction / (sp.w + ap.offset) +
-                  ap.tMax_slope * (sp.w - ap.offset);
+        vecmem::device_atomic_ref<unsigned int>(d_bin_rads_bits[2u * bin])
+            .fetch_min(r_bits);
+        vecmem::device_atomic_ref<unsigned int>(d_bin_rads_bits[2u * bin + 1u])
+            .fetch_max(r_bits);
       }
     }
-
-    // The keys order the nodes by quantised phi; inside a run of equal keys
-    // the exact (phi, spacepoint index) rank decides the slot, so the nodes
-    // of an eta bin end up exactly sorted by phi (deterministically).
-    unsigned int pos = globalIndex;
-    const bool in_run =
-        ((globalIndex > 0u) &&
-         (gbts_sort_key_bin_phi(d_sort_keys[globalIndex - 1u]) == bin_phi)) ||
-        ((globalIndex + 1u < nNodes) &&
-         (gbts_sort_key_bin_phi(d_sort_keys[globalIndex + 1u]) == bin_phi));
-    if (in_run) {
-      unsigned int start = globalIndex;
-      while ((start > 0u) &&
-             (gbts_sort_key_bin_phi(d_sort_keys[start - 1u]) == bin_phi)) {
-        --start;
+    barrier.blockBarrier();
+    // Merge the block's per-bin ranges into the global ones.
+    if (use_shared && (threadIndex < n_bins)) {
+      const unsigned int lo = shared_min[threadIndex];
+      const unsigned int hi = shared_max[threadIndex];
+      if (lo <= hi) {  // the bin got at least one node of this block
+        vecmem::device_atomic_ref<unsigned int>(
+            d_bin_rads_bits[2u * (bin_first + threadIndex)])
+            .fetch_min(lo);
+        vecmem::device_atomic_ref<unsigned int>(
+            d_bin_rads_bits[2u * (bin_first + threadIndex) + 1u])
+            .fetch_max(hi);
       }
-      unsigned int end = globalIndex + 1u;
-      while ((end < nNodes) &&
-             (gbts_sort_key_bin_phi(d_sort_keys[end]) == bin_phi)) {
-        ++end;
-      }
-      unsigned int rank = 0u;
-      for (unsigned int j = start; j < end; j++) {
-        if (j == globalIndex) {
-          continue;
-        }
-        const unsigned int otherIdx = gbts_sort_key_index(d_sort_keys[j]);
-        const float4 other = d_reducedSP[otherIdx];
-        const float otherPhi = math::atan2(other.y, other.x);
-        if ((otherPhi < Phi) || ((otherPhi == Phi) && (otherIdx < srcIdx))) {
-          ++rank;
-        }
-      }
-      pos = start + rank;
     }
-    d_node_params[pos] = float4{min_tau, max_tau, r, z};
-    d_node_phi[pos] = Phi;
-    d_node_index[pos] = srcIdx;
+    // The shared arrays are rewritten by the next iteration.
+    barrier.blockBarrier();
   }
 }
 

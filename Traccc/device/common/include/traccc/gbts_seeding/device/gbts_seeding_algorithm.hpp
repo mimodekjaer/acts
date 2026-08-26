@@ -17,7 +17,6 @@
 #include "traccc/gbts_seeding/device/gbts_convert_seeds.hpp"
 #include "traccc/gbts_seeding/device/gbts_count_terminus_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_fill_path_store.hpp"
-#include "traccc/gbts_seeding/device/gbts_find_minmax_radius.hpp"
 #include "traccc/gbts_seeding/device/gbts_fit_segments.hpp"
 #include "traccc/gbts_seeding/device/gbts_make_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_match_graph_edges.hpp"
@@ -129,13 +128,6 @@ class gbts_seeding_algorithm
   ///
   virtual void gbts_build_edge_work_list_kernel(
       const gbts_build_edge_work_list_payload& payload) const = 0;
-
-  /// Min/max radius per eta-bin kernel launcher
-  ///
-  /// @param payload The payload for the kernel
-  ///
-  virtual void gbts_find_minmax_radius_kernel(
-      const gbts_find_minmax_radius_payload& payload) const = 0;
 
   /// Graph edge-counting kernel launcher (gbts_make_graph_edges<false>)
   ///

@@ -271,3 +271,12 @@ sorting 15% faster than 32/32 pairs at equal pass count). Runs of equal
 (eta bin, quantised phi) are longer with 12 phi bits (a few nodes, more in
 jets), and `gbts_sort_nodes` orders them by exact (phi, index): 7 -> 10.5 us.
 Node sort 89 -> 46 us; no sort_values array any more. Seeds identical.
+
+### 11. Min/max radius fused into gbts_sort_nodes (block reduction)  -> 0.761 ms/event
+Second attempt, this time without the same-address atomics: every block of
+256 consecutive sorted nodes spans a handful of eta bins, so the (min r,
+max r) are reduced in shared memory per block (atomic min/max on the float
+bits, local address space) and merged with a few global atomic min/max per
+block; the work-list kernel initialises the accumulators. Deterministic
+(min/max are order independent). sort_nodes 10.5 -> 12.3 us, the 8 us
+`gbts_find_minmax_radius` kernel and its launch gap are gone. Seeds identical.

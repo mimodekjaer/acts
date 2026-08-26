@@ -70,6 +70,7 @@ TRACCC_HOST_DEVICE inline void gbts_build_edge_work_list(
   vecmem::device_vector<unsigned int> d_pair_work_begin(
       payload.pair_work_begin);
   vecmem::device_vector<uint2> d_work_items(payload.work_items);
+  vecmem::device_vector<unsigned int> d_bin_rads_bits(payload.bin_rads_bits);
   vecmem::device_vector<unsigned int> scratch(shared_payload.scratch);
 
   const unsigned int threadIndex = thread_id.getLocalThreadIdX();
@@ -89,6 +90,10 @@ TRACCC_HOST_DEVICE inline void gbts_build_edge_work_list(
       d_eta_bin_views[2u * bin] = detail::gbts_key_lower_bound(
           d_sort_keys, nKeys,
           static_cast<gbts_sort_key_t>(bin) << gbts_sort_key_eta_shift);
+      // (min r, max r) accumulators of the bin (radii are >= 0, so their
+      // float bits order like the values)
+      d_bin_rads_bits[2u * bin] = gbts_float_bits(1e8f);
+      d_bin_rads_bits[2u * bin + 1u] = gbts_float_bits(0.0f);
     }
     if (threadIndex == 0u) {
       *payload.nNodes = detail::gbts_key_lower_bound(

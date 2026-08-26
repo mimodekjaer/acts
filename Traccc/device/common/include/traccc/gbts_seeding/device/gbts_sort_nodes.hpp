@@ -9,6 +9,7 @@
 
 // Project include(s).
 #include "traccc/definitions/qualifiers.hpp"
+#include "traccc/device/concepts/barrier.hpp"
 #include "traccc/device/concepts/thread_id.hpp"
 #include "traccc/gbts_seeding/device/gbts_bin_spacepoints.hpp"
 #include "traccc/gbts_seeding/gbts_seeding_config.hpp"
@@ -28,6 +29,9 @@ struct gbts_sort_nodes_payload {
   unsigned int nEtaBins;
   /// Number of GBTS nodes (accepted spacepoints), on the device
   const unsigned int* nNodes;
+  /// In/out: per eta bin (min r, max r) as float bits, initialised by
+  /// gbts_build_edge_work_list to (1e8, 0) and accumulated here
+  vecmem::data::vector_view<unsigned int> bin_rads_bits;
   /// Reduced (x, y, z, cluster width) per spacepoint, in original order
   vecmem::data::vector_view<const float4> reducedSP;
   /// In/out: the node sort keys from gbts_bin_spacepoints (the spacepoint
@@ -45,21 +49,42 @@ struct gbts_sort_nodes_payload {
   traccc::gbts_sort_nodes_params gbts_sort_nodes_params;
 };
 
-/// @brief Gather nodes into their (eta bin, phi, spacepoint)-sorted slots and
-/// pack their geometry tuple.
+/// Block size of the gbts_sort_nodes kernel (also the size of the shared
+/// min / max arrays)
+inline constexpr unsigned int gbts_sort_nodes_block_size = 256u;
+
+/// (Shared Event Data) Payload for the @c traccc::device::gbts_sort_nodes
+/// function
+struct gbts_sort_nodes_shared_payload {
+  /// Per-block min radius bits of the eta bins the block spans
+  vecmem::data::vector_view<unsigned int> min_bits;
+  /// Per-block max radius bits of the eta bins the block spans
+  vecmem::data::vector_view<unsigned int> max_bits;
+};
+
+/// @brief Gather nodes into their (eta bin, phi, spacepoint)-sorted slots,
+/// pack their geometry tuple and accumulate the per-eta-bin radius range.
 ///
-/// The kernel launcher first sorts the (@c sort_keys, @c sort_values) pairs
-/// built in gbts_bin_spacepoints; thread i then reads the spacepoint index
-/// at sort_values[i] and writes that spacepoint's node data at rank i
-/// directly -- no atomics, and the resulting node order is deterministic
-/// because the keys are unique up to the index tie-break.
+/// The keys were sorted on their (eta bin, quantised phi) bits (stable in
+/// the spacepoint index); thread i reads the spacepoint index of key i and
+/// writes that spacepoint's node data at rank i, except inside a run of
+/// equal (eta bin, quantised phi) where the exact (phi, index) rank is used
+/// -- no atomics, deterministic node order.
 ///
-/// @param[in] thread_id Thread identifier for the kernel launch
-/// @param[in] payload   The global memory payload
+/// The (min r, max r) of every eta bin is reduced in shared memory per block
+/// (consecutive sorted nodes share their bins) and merged with a few global
+/// atomic min / max per block.
 ///
-template <concepts::thread_id1 thread_id_t>
+/// @param[in] thread_id      Thread identifier for the kernel launch
+/// @param[in] barrier        Block-wide barrier
+/// @param[in] payload        The global memory payload
+/// @param[in] shared_payload The shared memory payload
+///
+template <concepts::thread_id1 thread_id_t, concepts::barrier barrier_t>
 TRACCC_HOST_DEVICE inline void gbts_sort_nodes(
-    const thread_id_t& thread_id, const gbts_sort_nodes_payload& payload);
+    const thread_id_t& thread_id, const barrier_t& barrier,
+    const gbts_sort_nodes_payload& payload,
+    const gbts_sort_nodes_shared_payload& shared_payload);
 
 }  // namespace traccc::device
 

@@ -109,10 +109,19 @@ auto gbts_seeding_algorithm::make_nodes(
   copy().setup(node_index_buf)->ignore();
 
   // 2. Sort the node keys (rejected keys last), in place.
+  // Per-eta-bin (min r, max r): initialised by the work-list kernel,
+  // accumulated by the node gathering kernel (float bits, atomic min / max).
+  vecmem::data::vector_buffer<float> bin_rads_buf(2 * cfg.n_eta_bins,
+                                                  mr().main);
+  copy().setup(bin_rads_buf)->ignore();
+  const vecmem::data::vector_view<unsigned int> bin_rads_bits(
+      2 * cfg.n_eta_bins, reinterpret_cast<unsigned int*>(bin_rads_buf.ptr()));
+
   const gbts_sort_nodes_payload sort_nodes_payload{
       nSp,
       cfg.n_eta_bins,
       d_counters + gbts_counter::nNodes,
+      bin_rads_bits,
       reducedSP_buf,
       sort_keys_buf,
       node_params_buf,
@@ -143,18 +152,11 @@ auto gbts_seeding_algorithm::make_nodes(
   gbts_build_edge_work_list_kernel(
       {cfg.n_eta_bins, m_nBinPairs, gbts_consts::node_buffer_length,
        sort_keys_buf, bin_pairs_buf, eta_bin_views_buf, pair_work_begin_buf,
-       work_items_buf, d_counters + gbts_counter::nNodes,
+       work_items_buf, bin_rads_bits, d_counters + gbts_counter::nNodes,
        d_counters + gbts_counter::nWork});
 
   // 3. Gather the nodes into their sorted slots and pack their parameters.
   gbts_sort_nodes_kernel(sort_nodes_payload);
-
-  vecmem::data::vector_buffer<float> bin_rads_buf(2 * cfg.n_eta_bins,
-                                                  mr().main);
-  copy().setup(bin_rads_buf)->ignore();
-
-  gbts_find_minmax_radius_kernel(
-      {cfg.n_eta_bins, eta_bin_views_buf, node_params_buf, bin_rads_buf});
 
   return node_making_output{std::move(reducedSP_buf),
                             std::move(node_params_buf),

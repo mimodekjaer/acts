@@ -14,10 +14,21 @@
 #include "traccc/gbts_seeding/device/gbts_bin_spacepoints.hpp"
 #include "traccc/gbts_seeding/gbts_types.hpp"
 
+// System include(s).
+#include <cstring>
+
 // VecMem include(s).
 #include <vecmem/containers/data/vector_view.hpp>
 
 namespace traccc::device {
+
+/// Bit pattern of a float (for atomic min / max on non-negative floats)
+TRACCC_HOST_DEVICE inline unsigned int gbts_float_bits(const float f) {
+  static_assert(sizeof(float) == sizeof(unsigned int));
+  unsigned int bits = 0u;
+  std::memcpy(&bits, &f, sizeof(float));
+  return bits;
+}
 
 /// Block size of the (single block) gbts_build_edge_work_list kernel; must
 /// be a power of two.
@@ -44,6 +55,10 @@ struct gbts_build_edge_work_list_payload {
   /// Output: per work item (bin pair, chunk of the inner bin); sized for the
   /// host-side upper bound of the work item count
   vecmem::data::vector_view<uint2> work_items;
+  /// Output: per eta bin (min r, max r) as float bits, initialised to
+  /// (1e8, 0) so that gbts_sort_nodes can accumulate them with atomic
+  /// min / max
+  vecmem::data::vector_view<unsigned int> bin_rads_bits;
   /// Output: total number of nodes
   unsigned int* nNodes;
   /// Output: total number of graph-making work items
