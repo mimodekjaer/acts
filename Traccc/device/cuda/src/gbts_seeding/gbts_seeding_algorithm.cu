@@ -90,7 +90,16 @@ __global__ void gbts_sort_nodes(const device::gbts_sort_nodes_payload payload) {
 /// CUDA kernel for running @c traccc::device::gbts_find_minmax_radius
 __global__ void gbts_find_minmax_radius(
     const device::gbts_find_minmax_radius_payload payload) {
-  device::gbts_find_minmax_radius(details::thread_id1{}, payload);
+  __shared__ float shared_min[device::gbts_find_minmax_radius_block_size];
+  __shared__ float shared_max[device::gbts_find_minmax_radius_block_size];
+  const traccc::cuda::barrier barrier;
+
+  device::gbts_find_minmax_radius(
+      details::thread_id1{}, barrier, payload,
+      {vecmem::data::vector_view<float>(
+           device::gbts_find_minmax_radius_block_size, shared_min),
+       vecmem::data::vector_view<float>(
+           device::gbts_find_minmax_radius_block_size, shared_max)});
 }
 
 // ---------------------------------------------------------------------------
@@ -275,8 +284,9 @@ void gbts_seeding_algorithm::gbts_sort_nodes_kernel(
 
 void gbts_seeding_algorithm::gbts_find_minmax_radius_kernel(
     const device::gbts_find_minmax_radius_payload& payload) const {
-  const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nEtaBins - 1) / n_threads;
+  // One block per eta bin.
+  const unsigned int n_threads = device::gbts_find_minmax_radius_block_size;
+  const unsigned int n_blocks = payload.nEtaBins;
   kernels::gbts_find_minmax_radius<<<n_blocks, n_threads, 0,
                                      details::get_stream(stream())>>>(payload);
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());  //

@@ -239,12 +239,26 @@ void gbts_seeding_algorithm::gbts_find_minmax_radius_kernel(
   ::sycl::queue& squeue = details::get_queue(queue());
   squeue.throw_asynchronous();
 
-  const unsigned int n_threads = 128;
+  // One block per eta bin.
+  const unsigned int n_threads = device::gbts_find_minmax_radius_block_size;
+  const unsigned int n_blocks = payload.nEtaBins;
   squeue.submit([&](::sycl::handler& h) {
+    vecmem::sycl::local_accessor<float> shared_min(
+        device::gbts_find_minmax_radius_block_size, h);
+    vecmem::sycl::local_accessor<float> shared_max(
+        device::gbts_find_minmax_radius_block_size, h);
+
     h.parallel_for<kernels::gbts_find_minmax_radius>(
-        details::calculate1DimNdRange(payload.nEtaBins, n_threads),
-        [payload](::sycl::nd_item<1> item) {
-          device::gbts_find_minmax_radius(details::thread_id<1>{item}, payload);
+        details::calculate1DimNdRange(n_blocks * n_threads, n_threads),
+        [payload, shared_min, shared_max](::sycl::nd_item<1> item) {
+          const details::barrier<1> barrier{item};
+          device::gbts_find_minmax_radius(
+              details::thread_id<1>{item}, barrier, payload,
+              {vecmem::data::vector_view<float>(
+                   device::gbts_find_minmax_radius_block_size, &shared_min[0]),
+               vecmem::data::vector_view<float>(
+                   device::gbts_find_minmax_radius_block_size,
+                   &shared_max[0])});
         });
   });
 }
