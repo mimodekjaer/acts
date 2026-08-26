@@ -23,8 +23,8 @@ namespace traccc::device {
 /// (Global Event Data) Payload for the @c
 /// traccc::device::gbts_bid_seeds_for_hits function
 struct gbts_bid_seeds_for_hits_payload {
-  /// Number of seed proposals
-  unsigned int nProps;
+  /// Number of path-store rows (proposals are indexed by row)
+  unsigned int nRows;
   /// Number of accepted seeds (nProps - nRejectedProps)
   unsigned int nSeeds;
   /// Per-edge row stride in the output graph (= 2 + 1 +

@@ -9,7 +9,6 @@
 
 // Project include(s).
 #include "traccc/definitions/qualifiers.hpp"
-#include "traccc/device/concepts/barrier.hpp"
 #include "traccc/device/concepts/thread_id.hpp"
 #include "traccc/gbts_seeding/gbts_types.hpp"
 
@@ -21,53 +20,43 @@ namespace traccc::device {
 /// (Global Event Data) Payload for the @c traccc::device::gbts_fill_path_store
 /// function
 struct gbts_fill_path_store_payload {
-  /// Number of terminus edges
-  unsigned int nTerminusEdges;
+  /// Number of path-store rows
+  unsigned int nRows;
+  /// Number of edges in the compacted graph
+  unsigned int nConnectedEdges;
   /// Maximum number of neighbours retained per edge
   unsigned int max_num_neighbours;
-  /// Total number of paths
-  unsigned int nPaths;
-  /// In/out: per-path (edge index, parent path-store index or -1) entries
+  /// Output: per-row (edge index, parent row or -1) entries
   vecmem::data::vector_view<int2> path_store;
   /// Compacted graph (read for per-edge neighbour lookup)
   vecmem::data::vector_view<const unsigned int> output_graph;
   /// Per-edge CCA level array
   vecmem::data::vector_view<const unsigned char> levels;
-  /// In/out: global atomic write cursor into path_store
-  unsigned int* nPathStoreSizeCounter;
+  /// Per-edge (subtree row count, terminus flag) from CCA
+  vecmem::data::vector_view<const int2> outgoing_paths;
+  /// Inclusive prefix sum of the per-edge row counts (see
+  /// gbts_count_terminus_edges_payload)
+  vecmem::data::vector_view<const unsigned int> row_sizes;
 };
 
-/// (Shared Event Data) Payload for the @c traccc::device::gbts_fill_path_store
-/// function
-///
-/// Shared-memory scratch for gbts_fill_path_store: the block-local stack of
-/// live paths being walked and its running length.
-struct gbts_fill_path_store_shared_payload {
-  /// Shared-mem frontier of in-flight paths
-  vecmem::data::vector_view<traccc::uint2> live_paths;
-  /// Shared-mem frontier size
-  int& n_live_paths;
-};
-
-/// @brief Walk each terminus edge backwards along live levels, growing the path
+/// @brief Enumerate every path below every terminus edge into the path
 /// store.
 ///
-/// One block expands a fixed number of terminus seeds at once using a shared
-/// "live paths" frontier.  At each step the block reads neighbour edges that
-/// match the next-lower level, atomically reserves slots in the path store,
-/// and continues until all paths reach the graph boundary or until the
-/// frontier is empty.
+/// The rows of a terminus edge hold its subtree in preorder: the edge
+/// itself, then for each child (a neighbour exactly one level down, in
+/// neighbour-list order) the child's own subtree, whose size CCA already
+/// computed. One thread per row locates its terminus by binary search on
+/// the row prefix sums and descends the preorder layout to the edge sitting
+/// at its row, writing (edge, parent row). The row of an edge is therefore
+/// a pure function of the graph: no atomics, no shared frontier, no
+/// truncation, and full parallelism over rows.
 ///
-/// @param[in] thread_id          Thread/block identifier (one block/task)
-/// @param[in] barrier            Block-wide barrier
-/// @param[in,out] payload        The global memory payload
-/// @param[in,out] shared_payload The shared memory payload
+/// @param[in] thread_id Thread identifier for the kernel launch
+/// @param[in] payload   The global memory payload
 ///
-template <concepts::thread_id1 thread_id_t, concepts::barrier barrier_t>
+template <concepts::thread_id1 thread_id_t>
 TRACCC_HOST_DEVICE inline void gbts_fill_path_store(
-    const thread_id_t& thread_id, const barrier_t& barrier,
-    const gbts_fill_path_store_payload& payload,
-    const gbts_fill_path_store_shared_payload& shared_payload);
+    const thread_id_t& thread_id, const gbts_fill_path_store_payload& payload);
 
 }  // namespace traccc::device
 

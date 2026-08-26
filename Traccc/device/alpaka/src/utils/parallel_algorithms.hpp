@@ -54,6 +54,18 @@ inline auto getExecutionPolicy([[maybe_unused]] Queue &q,
 #endif
 }
 
+template <typename RandomAccessIterator>
+void sort(Queue &q, const memory_resource &mr, RandomAccessIterator first,
+          RandomAccessIterator last) {
+  auto execPolicy = getExecutionPolicy(q, mr);
+
+#if defined(ALPAKA_ACC_SYCL_ENABLED)
+  oneapi::dpl::sort(execPolicy, first, last);
+#else
+  thrust::sort(execPolicy, first, last);
+#endif
+}
+
 template <typename RandomAccessIterator, typename Compare>
 void sort(Queue &q, const memory_resource mr, RandomAccessIterator first,
           RandomAccessIterator last, Compare comp) {

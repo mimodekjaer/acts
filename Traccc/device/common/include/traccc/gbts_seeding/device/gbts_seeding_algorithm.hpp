@@ -9,13 +9,11 @@
 
 // Local include(s).
 #include "traccc/device/algorithm_base.hpp"
-#include "traccc/gbts_seeding/device/gbts_add_terminus_to_path_store.hpp"
+#include "traccc/gbts_seeding/device/gbts_bid_seeds_for_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_bid_seeds_for_hits.hpp"
 #include "traccc/gbts_seeding/device/gbts_bin_spacepoints.hpp"
 #include "traccc/gbts_seeding/device/gbts_compress_graph.hpp"
 #include "traccc/gbts_seeding/device/gbts_convert_seeds.hpp"
-#include "traccc/gbts_seeding/device/gbts_count_eta_phi_bins.hpp"
-#include "traccc/gbts_seeding/device/gbts_count_spacepoints_by_layer.hpp"
 #include "traccc/gbts_seeding/device/gbts_count_terminus_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_fill_path_store.hpp"
 #include "traccc/gbts_seeding/device/gbts_find_minmax_radius.hpp"
@@ -23,11 +21,11 @@
 #include "traccc/gbts_seeding/device/gbts_link_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_make_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_match_graph_edges.hpp"
-#include "traccc/gbts_seeding/device/gbts_prefix_sum_eta_phi_bins.hpp"
 #include "traccc/gbts_seeding/device/gbts_rebid_seeds_for_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_reindex_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_reset_edge_bids.hpp"
 #include "traccc/gbts_seeding/device/gbts_run_cca_iteration.hpp"
+#include "traccc/gbts_seeding/device/gbts_sort_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_sort_nodes.hpp"
 
 // Project include(s).
@@ -102,33 +100,12 @@ class gbts_seeding_algorithm
   /// the payload types are defined in the per-function device headers.
   /// @{
 
-  /// Spacepoint-by-layer counting kernel launcher
-  ///
-  /// @param payload The payload for the kernel
-  ///
-  virtual void gbts_count_spacepoints_by_layer_kernel(
-      const gbts_count_spacepoints_by_layer_payload& payload) const = 0;
-
   /// Spacepoint-binning kernel launcher
   ///
   /// @param payload The payload for the kernel
   ///
   virtual void gbts_bin_spacepoints_kernel(
       const gbts_bin_spacepoints_payload& payload) const = 0;
-
-  /// Eta-phi counting kernel launcher
-  ///
-  /// @param payload The payload for the kernel
-  ///
-  virtual void gbts_count_eta_phi_bins_kernel(
-      const gbts_count_eta_phi_bins_payload& payload) const = 0;
-
-  /// Eta-phi prefix-sum kernel launcher
-  ///
-  /// @param payload The payload for the kernel
-  ///
-  virtual void gbts_prefix_sum_eta_phi_bins_kernel(
-      const gbts_prefix_sum_eta_phi_bins_payload& payload) const = 0;
 
   /// Node sorting kernel launcher
   ///
@@ -158,6 +135,13 @@ class gbts_seeding_algorithm
   virtual void gbts_link_graph_edges_kernel(
       const gbts_link_graph_edges_payload& payload) const = 0;
 
+  /// Canonical edge-ordering kernel launcher
+  ///
+  /// @param payload The payload for the kernel
+  ///
+  virtual void gbts_sort_graph_edges_kernel(
+      const gbts_sort_graph_edges_payload& payload) const = 0;
+
   /// Graph edge-matching kernel launcher
   ///
   /// @param payload The payload for the kernel
@@ -165,7 +149,7 @@ class gbts_seeding_algorithm
   virtual void gbts_match_graph_edges_kernel(
       const gbts_match_graph_edges_payload& payload) const = 0;
 
-  /// Edge re-indexing kernel launcher
+  /// Edge re-indexing launcher (in-place inclusive scan of the kept flags)
   ///
   /// @param payload The payload for the kernel
   ///
@@ -186,19 +170,15 @@ class gbts_seeding_algorithm
   virtual void gbts_run_cca_iteration_kernel(
       const gbts_run_cca_iteration_payload& payload) const = 0;
 
-  /// Terminus-edge counting kernel launcher
+  /// Terminus-edge counting / path-store layout kernel launcher
+  ///
+  /// The implementation runs an inclusive prefix sum over the per-edge row
+  /// counts after the kernel.
   ///
   /// @param payload The payload for the kernel
   ///
   virtual void gbts_count_terminus_edges_kernel(
       const gbts_count_terminus_edges_payload& payload) const = 0;
-
-  /// Terminus-to-path-store seeding kernel launcher
-  ///
-  /// @param payload The payload for the kernel
-  ///
-  virtual void gbts_add_terminus_to_path_store_kernel(
-      const gbts_add_terminus_to_path_store_payload& payload) const = 0;
 
   /// Path-store-filling kernel launcher
   ///
@@ -213,6 +193,13 @@ class gbts_seeding_algorithm
   ///
   virtual void gbts_fit_segments_kernel(
       const gbts_fit_segments_payload& payload) const = 0;
+
+  /// Initial edge-bid kernel launcher
+  ///
+  /// @param payload The payload for the kernel
+  ///
+  virtual void gbts_bid_seeds_for_edges_kernel(
+      const gbts_bid_seeds_for_edges_payload& payload) const = 0;
 
   /// Edge-bid reset kernel launcher
   ///

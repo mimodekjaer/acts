@@ -32,7 +32,8 @@ struct gbts_compress_graph_payload {
   vecmem::data::vector_view<const unsigned char> num_neighbours;
   /// Neighbour edge indices per edge (nMaxNei per edge, flat)
   vecmem::data::vector_view<const unsigned int> neighbours;
-  /// Old-edge to compacted-edge index map
+  /// Inclusive prefix sum of the per-edge "kept" flags (see
+  /// gbts_reindex_edges_payload); compact index = value - 1
   vecmem::data::vector_view<const int> reIndexer;
   /// Output: compacted graph in row-major layout; each edge owns a block
   /// of edge_size = 2 + 1 + nMaxNei ints (node1, node2, nNei,

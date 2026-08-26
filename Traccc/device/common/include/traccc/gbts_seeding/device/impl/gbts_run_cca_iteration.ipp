@@ -27,7 +27,7 @@ TRACCC_HOST_DEVICE inline void gbts_run_cca_iteration(
       payload.output_graph);
   vecmem::device_vector<unsigned char> d_levels(payload.levels);
   vecmem::device_vector<char> d_active_edges(payload.active_edges);
-  vecmem::device_vector<short2> d_outgoing_paths(payload.outgoing_paths);
+  vecmem::device_vector<int2> d_outgoing_paths(payload.outgoing_paths);
 
   const unsigned char iter = payload.iter;
 
@@ -76,20 +76,19 @@ TRACCC_HOST_DEVICE inline void gbts_run_cca_iteration(
       }
     } else {
       d_active_edges[globalIndex] = -1;
-      short out_paths = 0;
+      int out_paths = 0;
       for (unsigned int nIdx = 0; nIdx < nNeighbours; ++nIdx) {
         const unsigned int nextglobalIndex =
             d_output_graph[edge_pos + gbts_consts::nei_start + nIdx];
-        if (next_level == 1 + d_levels[nextglobalIndex]) {
-          out_paths = static_cast<short>(out_paths + 1 +
-                                         d_outgoing_paths[nextglobalIndex].x);
+        if (next_level == 1 + d_levels[levelLoad + nextglobalIndex]) {
+          out_paths += 1 + d_outgoing_paths[nextglobalIndex].x;
         }
         // flag as not terminus edge
         d_outgoing_paths[nextglobalIndex].y = -1;
       }
       // flag as long enough segement to become a seed
-      d_outgoing_paths[globalIndex] = short2{
-          out_paths, static_cast<short>((next_level >= payload.minLevel) - 1)};
+      d_outgoing_paths[globalIndex] =
+          int2{out_paths, static_cast<int>(next_level >= payload.minLevel) - 1};
     }
     // store new level
     d_levels[levelStore + globalIndex] = next_level;

@@ -22,8 +22,8 @@ namespace traccc::device {
 /// (Global Event Data) Payload for the @c traccc::device::gbts_convert_seeds
 /// function
 struct gbts_convert_seeds_payload {
-  /// Number of seed proposals
-  unsigned int nProps;
+  /// Number of path-store rows (proposals are indexed by row)
+  unsigned int nRows;
   /// Number of accepted seeds (nProps - nRejectedProps)
   unsigned int nSeeds;
   /// Maximum number of neighbours retained per edge

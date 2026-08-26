@@ -30,8 +30,12 @@ TRACCC_HOST_DEVICE inline void gbts_rebid_seeds_for_edges(
   const unsigned int blockDimX = thread_id.getBlockDimX();
   const unsigned int gridDimX = thread_id.getGridDimX();
 
-  for (unsigned int prop_idx = globalIdx; prop_idx < payload.nProps;
+  for (unsigned int prop_idx = globalIdx; prop_idx < payload.nRows;
        prop_idx += blockDimX * gridDimX) {
+    const int2 prop = d_seed_proposals[prop_idx];
+    if (prop.y < 0) {
+      continue;
+    }
     const char ambi = d_seed_ambiguity[prop_idx];
 
     if (payload.first_round) {
@@ -50,8 +54,6 @@ TRACCC_HOST_DEVICE inline void gbts_rebid_seeds_for_edges(
       // only rebid for maybes
       continue;
     }
-    const int2 prop = d_seed_proposals[prop_idx];
-
     details::gbts_create_seed_candidate(
         prop.x, prop.y, prop_idx, payload.seed_ambiguity,
         payload.seed_proposals, payload.edge_bids, payload.path_store, -1);
