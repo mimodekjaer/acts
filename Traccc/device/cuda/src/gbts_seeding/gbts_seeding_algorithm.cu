@@ -22,14 +22,12 @@
 #include "traccc/gbts_seeding/device/gbts_fill_path_store.hpp"
 #include "traccc/gbts_seeding/device/gbts_find_minmax_radius.hpp"
 #include "traccc/gbts_seeding/device/gbts_fit_segments.hpp"
-#include "traccc/gbts_seeding/device/gbts_link_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_make_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_match_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_rebid_seeds_for_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_reindex_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_reset_edge_bids.hpp"
 #include "traccc/gbts_seeding/device/gbts_run_cca_iteration.hpp"
-#include "traccc/gbts_seeding/device/gbts_sort_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_sort_nodes.hpp"
 #include "traccc/gbts_seeding/gbts_types.hpp"
 
@@ -88,46 +86,21 @@ __global__ void gbts_find_minmax_radius(
 // ---------------------------------------------------------------------------
 
 /// CUDA kernel for running @c traccc::device::gbts_make_graph_edges
+///
+/// @tparam fill false: count the edges, true: write them
+template <bool fill>
 __global__ void gbts_make_graph_edges(
     const device::gbts_make_graph_edges_payload payload) {
   __shared__ float phi[traccc::device::gbts_consts::node_buffer_length];
   __shared__ float4 node_pack[traccc::device::gbts_consts::node_buffer_length];
   const traccc::cuda::barrier barrier;
 
-  device::gbts_make_graph_edges(
+  device::gbts_make_graph_edges<fill>(
       details::thread_id1{}, barrier, payload,
       {vecmem::data::vector_view<float>(
            traccc::device::gbts_consts::node_buffer_length, phi),
        vecmem::data::vector_view<float4>(
            traccc::device::gbts_consts::node_buffer_length, node_pack)});
-}
-
-/// CUDA kernel for running @c traccc::device::gbts_link_graph_edges
-__global__ void gbts_link_graph_edges(
-    const device::gbts_link_graph_edges_payload payload) {
-  device::gbts_link_graph_edges(details::thread_id1{}, payload);
-}
-
-/// CUDA kernel for running @c traccc::device::gbts_sort_graph_edges_small
-__global__ void gbts_sort_graph_edges_small(
-    const device::gbts_sort_graph_edges_payload payload) {
-  device::gbts_sort_graph_edges_small(details::thread_id1{}, payload);
-}
-
-/// CUDA kernel for running @c traccc::device::gbts_sort_graph_edges_large
-__global__ void gbts_sort_graph_edges_large(
-    const device::gbts_sort_graph_edges_payload payload) {
-  __shared__ unsigned int
-      bucket_cache[device::gbts_sort_graph_edges_cache_size];
-  __shared__ unsigned int large_flags[device::gbts_sort_graph_edges_block_size];
-  const traccc::cuda::barrier barrier;
-
-  device::gbts_sort_graph_edges_large(
-      details::thread_id1{}, barrier, payload,
-      {vecmem::data::vector_view<unsigned int>(
-           device::gbts_sort_graph_edges_cache_size, bucket_cache),
-       vecmem::data::vector_view<unsigned int>(
-           device::gbts_sort_graph_edges_block_size, large_flags)});
 }
 
 /// CUDA kernel for running @c traccc::device::gbts_match_graph_edges
@@ -252,13 +225,17 @@ void gbts_seeding_algorithm::gbts_find_minmax_radius_kernel(
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());  //
 }
 
-void gbts_seeding_algorithm::gbts_make_graph_edges_kernel(
+void gbts_seeding_algorithm::gbts_count_graph_edges_kernel(
     const device::gbts_make_graph_edges_payload& payload) const {
-  const unsigned int n_threads = 128;
-  const unsigned int n_blocks = payload.nUsedBinPairs;
-  kernels::gbts_make_graph_edges<<<n_blocks, n_threads, 0,
-                                   details::get_stream(stream())>>>(payload);
+  // One thread per inner node of a chunk: the block size must equal the
+  // chunk size.
+  const unsigned int n_threads =
+      traccc::device::gbts_consts::node_buffer_length;
+  const unsigned int n_blocks = payload.nWork;
+  kernels::gbts_make_graph_edges<false>
+      <<<n_blocks, n_threads, 0, details::get_stream(stream())>>>(payload);
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
+  // Turn the per-node edge counts into the bucket begin/end offsets.
   vecmem::device_vector<unsigned int> d_num_outgoing_edges(
       payload.num_outgoing_edges);
   thrust::inclusive_scan(
@@ -268,31 +245,13 @@ void gbts_seeding_algorithm::gbts_make_graph_edges_kernel(
       d_num_outgoing_edges.begin());
 }
 
-void gbts_seeding_algorithm::gbts_link_graph_edges_kernel(
-    const device::gbts_link_graph_edges_payload& payload) const {
-  const unsigned int n_threads = 256;
-  const unsigned int n_blocks = 1 + (payload.nEdges - 1) / n_threads;
-  kernels::gbts_link_graph_edges<<<n_blocks, n_threads, 0,
-                                   details::get_stream(stream())>>>(payload);
-  TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
-}
-
-void gbts_seeding_algorithm::gbts_sort_graph_edges_kernel(
-    const device::gbts_sort_graph_edges_payload& payload) const {
-  // Small buckets: one thread per edge.
-  const unsigned int n_threads = 128;
-  const unsigned int n_blocks_small = 1 + (payload.nEdges - 1) / n_threads;
-  kernels::gbts_sort_graph_edges_small<<<n_blocks_small, n_threads, 0,
-                                         details::get_stream(stream())>>>(
-      payload);
-  TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
-  // Large buckets: blocks stride over the nodes a block's worth at a time.
-  const unsigned int n_blocks_large =
-      std::min(1 + (payload.nNodes - 1) / device::gbts_sort_graph_edges_block_size,
-               4096u);
-  kernels::gbts_sort_graph_edges_large<<<
-      n_blocks_large, device::gbts_sort_graph_edges_block_size, 0,
-      details::get_stream(stream())>>>(payload);
+void gbts_seeding_algorithm::gbts_make_graph_edges_kernel(
+    const device::gbts_make_graph_edges_payload& payload) const {
+  const unsigned int n_threads =
+      traccc::device::gbts_consts::node_buffer_length;
+  const unsigned int n_blocks = payload.nWork;
+  kernels::gbts_make_graph_edges<true>
+      <<<n_blocks, n_threads, 0, details::get_stream(stream())>>>(payload);
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
 }
 

@@ -18,14 +18,12 @@
 #include "traccc/gbts_seeding/device/gbts_fill_path_store.hpp"
 #include "traccc/gbts_seeding/device/gbts_find_minmax_radius.hpp"
 #include "traccc/gbts_seeding/device/gbts_fit_segments.hpp"
-#include "traccc/gbts_seeding/device/gbts_link_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_make_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_match_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_rebid_seeds_for_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_reindex_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_reset_edge_bids.hpp"
 #include "traccc/gbts_seeding/device/gbts_run_cca_iteration.hpp"
-#include "traccc/gbts_seeding/device/gbts_sort_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_sort_nodes.hpp"
 
 // Project include(s).
@@ -121,26 +119,22 @@ class gbts_seeding_algorithm
   virtual void gbts_find_minmax_radius_kernel(
       const gbts_find_minmax_radius_payload& payload) const = 0;
 
-  /// Graph edge-making kernel launcher
+  /// Graph edge-counting kernel launcher (gbts_make_graph_edges<false>)
+  ///
+  /// The implementation runs an inclusive prefix sum over
+  /// payload.num_outgoing_edges after the kernel.
+  ///
+  /// @param payload The payload for the kernel
+  ///
+  virtual void gbts_count_graph_edges_kernel(
+      const gbts_make_graph_edges_payload& payload) const = 0;
+
+  /// Graph edge-making kernel launcher (gbts_make_graph_edges<true>)
   ///
   /// @param payload The payload for the kernel
   ///
   virtual void gbts_make_graph_edges_kernel(
       const gbts_make_graph_edges_payload& payload) const = 0;
-
-  /// Graph edge-linking kernel launcher
-  ///
-  /// @param payload The payload for the kernel
-  ///
-  virtual void gbts_link_graph_edges_kernel(
-      const gbts_link_graph_edges_payload& payload) const = 0;
-
-  /// Canonical edge-ordering kernel launcher
-  ///
-  /// @param payload The payload for the kernel
-  ///
-  virtual void gbts_sort_graph_edges_kernel(
-      const gbts_sort_graph_edges_payload& payload) const = 0;
 
   /// Graph edge-matching kernel launcher
   ///
@@ -250,9 +244,12 @@ class gbts_seeding_algorithm
     vecmem::data::vector_buffer<float> node_phi;
     /// Per-sorted-slot original spacepoint index (used by graph making)
     vecmem::data::vector_buffer<unsigned int> node_index;
-    /// Per-eta (rmin, rmax) pair, host (used by graph making)
-    vecmem::vector<float> bin_rads;
-    /// Per-eta (begin, end) node ranges, host (used by graph making)
+    /// Per-eta (rmin, rmax) pair, device (used by graph making)
+    vecmem::data::vector_buffer<float> bin_rads;
+    /// Per-eta (begin, end) node ranges, device (used by graph making)
+    vecmem::data::vector_buffer<unsigned int> eta_bin_views_buf;
+    /// Per-eta (begin, end) node ranges, host (used for the graph-making
+    /// work list)
     vecmem::vector<unsigned int> eta_bin_views;
     /// Number of GBTS nodes (0 == nothing to do)
     unsigned int nNodes = 0;
@@ -277,7 +274,8 @@ class gbts_seeding_algorithm
       vecmem::data::vector_buffer<float4> node_params,
       vecmem::data::vector_buffer<float> node_phi,
       vecmem::data::vector_buffer<unsigned int> node_index,
-      const vecmem::vector<float>& bin_rads,
+      const vecmem::data::vector_buffer<float>& bin_rads,
+      const vecmem::data::vector_buffer<unsigned int>& eta_bin_views_buf,
       const vecmem::vector<unsigned int>& eta_bin_views,
       const unsigned int nNodes,
       vecmem::data::vector_buffer<unsigned int>& counters_buf,
@@ -293,8 +291,15 @@ class gbts_seeding_algorithm
 
   /// @}
 
-  /// GBTS seed-finding configuration.
+  /// GBTS seed-finding configuration (binTables sorted by (bin1, bin2) and
+  /// de-duplicated by the constructor).
   gbts_seedfinder_config m_config;
+  /// Number of bin pairs in m_config.binTables
+  unsigned int m_nBinPairs = 0;
+  /// Device copy of m_config.binTables as (bin1, bin2), uploaded once
+  vecmem::data::vector_buffer<uint2> m_bin_pairs_buf;
+  /// Per bin pair: index of the first pair with the same bin1, uploaded once
+  vecmem::data::vector_buffer<unsigned int> m_pair_group_begin_buf;
 
 };  // class gbts_seeding_algorithm
 

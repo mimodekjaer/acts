@@ -33,11 +33,6 @@ track_gbts_seeding::track_gbts_seeding() : interface("GBTS Options") {
   m_desc.add_options()(
       "min_pt", po::value(&min_pt)->default_value(min_pt),
       "min_pt to scale other cuts by with refrence to 900 MeV [MeV]");
-  m_desc.add_options()("max_edges_factor",
-                       po::value(&gbts_config.max_edges_factor)
-                           ->default_value(gbts_config.max_edges_factor),
-                       "number of edges allocated for per node ");
-
   m_desc.add_options()(
       "min_delta_phi",
       po::value(&gbts_config.gbts_dphi_window_params.min_delta_phi)
@@ -239,8 +234,6 @@ std::unique_ptr<configuration_printable> track_gbts_seeding::as_printable()
   cat->add_child(std::make_unique<configuration_kv_pair>(
       "gbts config directory ", config_dir));
   // Graph building flags
-  cat->add_child(std::make_unique<configuration_kv_pair>(
-      "max edges factor ", std::format("{}", gbts_config.max_edges_factor)));
   cat->add_child(std::make_unique<configuration_kv_pair>(
       "min_delta_phi ",
       std::format("{:.5f} ",

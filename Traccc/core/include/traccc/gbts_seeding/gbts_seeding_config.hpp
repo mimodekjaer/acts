@@ -284,9 +284,6 @@ struct gbts_seedfinder_config {
   //   nSP_seed = minLevel + 1
   unsigned char minLevel = 3;
 
-  // nMaxEdges = max_edges_factor * nNodes  (fixed buffer size).
-  unsigned int max_edges_factor = 13;
-
   // number of seed-vs-edge bidding rounds during disambiguation.
   unsigned int edge_bidding_rounds = 5;
 };

@@ -24,14 +24,12 @@
 #include "traccc/gbts_seeding/device/gbts_fill_path_store.hpp"
 #include "traccc/gbts_seeding/device/gbts_find_minmax_radius.hpp"
 #include "traccc/gbts_seeding/device/gbts_fit_segments.hpp"
-#include "traccc/gbts_seeding/device/gbts_link_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_make_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_match_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_rebid_seeds_for_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_reindex_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_reset_edge_bids.hpp"
 #include "traccc/gbts_seeding/device/gbts_run_cca_iteration.hpp"
-#include "traccc/gbts_seeding/device/gbts_sort_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_sort_nodes.hpp"
 #include "traccc/gbts_seeding/gbts_types.hpp"
 
@@ -95,6 +93,9 @@ struct gbts_find_minmax_radius {
 // ---------------------------------------------------------------------------
 
 /// Alpaka kernel for running @c traccc::device::gbts_make_graph_edges
+///
+/// @tparam fill false: count the edges, true: write them
+template <bool fill>
 struct gbts_make_graph_edges {
   template <typename TAcc>
   ALPAKA_FN_ACC void operator()(
@@ -108,55 +109,12 @@ struct gbts_make_graph_edges {
         __COUNTER__>(acc);
     const alpaka::barrier<TAcc> barrier(&acc);
 
-    device::gbts_make_graph_edges(
+    device::gbts_make_graph_edges<fill>(
         details::thread_id1{acc}, barrier, payload,
         {vecmem::data::vector_view<float>(
              traccc::device::gbts_consts::node_buffer_length, &phi[0]),
          vecmem::data::vector_view<traccc::float4>(
              traccc::device::gbts_consts::node_buffer_length, &node_pack[0])});
-  }
-};
-
-/// Alpaka kernel for running @c traccc::device::gbts_link_graph_edges
-struct gbts_link_graph_edges {
-  template <typename TAcc>
-  ALPAKA_FN_ACC void operator()(
-      TAcc const& acc,
-      const device::gbts_link_graph_edges_payload payload) const {
-    device::gbts_link_graph_edges(details::thread_id1{acc}, payload);
-  }
-};
-
-/// Alpaka kernel for running @c traccc::device::gbts_sort_graph_edges_small
-struct gbts_sort_graph_edges_small {
-  template <typename TAcc>
-  ALPAKA_FN_ACC void operator()(
-      TAcc const& acc,
-      const device::gbts_sort_graph_edges_payload payload) const {
-    device::gbts_sort_graph_edges_small(details::thread_id1{acc}, payload);
-  }
-};
-
-/// Alpaka kernel for running @c traccc::device::gbts_sort_graph_edges_large
-struct gbts_sort_graph_edges_large {
-  template <typename TAcc>
-  ALPAKA_FN_ACC void operator()(
-      TAcc const& acc,
-      const device::gbts_sort_graph_edges_payload payload) const {
-    auto& bucket_cache = ::alpaka::declareSharedVar<
-        unsigned int[device::gbts_sort_graph_edges_cache_size], __COUNTER__>(
-        acc);
-    auto& large_flags = ::alpaka::declareSharedVar<
-        unsigned int[device::gbts_sort_graph_edges_block_size], __COUNTER__>(
-        acc);
-    const alpaka::barrier<TAcc> barrier(&acc);
-
-    device::gbts_sort_graph_edges_large(
-        details::thread_id1{acc}, barrier, payload,
-        {vecmem::data::vector_view<unsigned int>(
-             device::gbts_sort_graph_edges_cache_size, &bucket_cache[0]),
-         vecmem::data::vector_view<unsigned int>(
-             device::gbts_sort_graph_edges_block_size, &large_flags[0])});
   }
 };
 
@@ -298,10 +256,9 @@ void gbts_seeding_algorithm::gbts_sort_nodes_kernel(
     const device::gbts_sort_nodes_payload& payload) const {
   // Order the nodes by their (eta bin, phi, spacepoint index bits) keys,
   // carrying the full spacepoint index along as the value.
-  details::sort_by_key(details::get_queue(queue()), mr(),
-                       payload.sort_keys.ptr(),
-                       payload.sort_keys.ptr() + payload.nNodes,
-                       payload.sort_values.ptr());
+  details::sort_by_key(
+      details::get_queue(queue()), mr(), payload.sort_keys.ptr(),
+      payload.sort_keys.ptr() + payload.nNodes, payload.sort_values.ptr());
 
   const unsigned int n_threads = 256;
   const unsigned int n_blocks = 1 + (payload.nNodes - 1) / n_threads;
@@ -320,13 +277,17 @@ void gbts_seeding_algorithm::gbts_find_minmax_radius_kernel(
                       kernels::gbts_find_minmax_radius{}, payload);
 }
 
-void gbts_seeding_algorithm::gbts_make_graph_edges_kernel(
+void gbts_seeding_algorithm::gbts_count_graph_edges_kernel(
     const device::gbts_make_graph_edges_payload& payload) const {
-  const unsigned int n_threads = 128;
-  const unsigned int n_blocks = payload.nUsedBinPairs;
+  // One thread per inner node of a chunk: the block size must equal the
+  // chunk size.
+  const unsigned int n_threads =
+      traccc::device::gbts_consts::node_buffer_length;
+  const unsigned int n_blocks = payload.nWork;
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),
-                      kernels::gbts_make_graph_edges{}, payload);
+                      kernels::gbts_make_graph_edges<false>{}, payload);
+  // Turn the per-node edge counts into the bucket begin/end offsets.
   vecmem::device_vector<unsigned int> d_num_outgoing_edges(
       payload.num_outgoing_edges);
   details::inclusive_scan(
@@ -334,32 +295,14 @@ void gbts_seeding_algorithm::gbts_make_graph_edges_kernel(
       d_num_outgoing_edges.end(), d_num_outgoing_edges.begin());
 }
 
-void gbts_seeding_algorithm::gbts_link_graph_edges_kernel(
-    const device::gbts_link_graph_edges_payload& payload) const {
-  const unsigned int n_threads = 256;
-  const unsigned int n_blocks = 1 + (payload.nEdges - 1) / n_threads;
+void gbts_seeding_algorithm::gbts_make_graph_edges_kernel(
+    const device::gbts_make_graph_edges_payload& payload) const {
+  const unsigned int n_threads =
+      traccc::device::gbts_consts::node_buffer_length;
+  const unsigned int n_blocks = payload.nWork;
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),
-                      kernels::gbts_link_graph_edges{}, payload);
-}
-
-void gbts_seeding_algorithm::gbts_sort_graph_edges_kernel(
-    const device::gbts_sort_graph_edges_payload& payload) const {
-  const unsigned int n_threads = 128;
-  // Small buckets: one thread per edge.
-  const unsigned int n_blocks_small = 1 + (payload.nEdges - 1) / n_threads;
-  ::alpaka::exec<Acc>(details::get_queue(queue()),
-                      makeWorkDiv<Acc>(n_blocks_small, n_threads),
-                      kernels::gbts_sort_graph_edges_small{}, payload);
-  // Large buckets: blocks stride over the nodes a block's worth at a time.
-  const unsigned int n_blocks_large =
-      std::min(1 + (payload.nNodes - 1) / device::gbts_sort_graph_edges_block_size,
-               4096u);
-  ::alpaka::exec<Acc>(
-      details::get_queue(queue()),
-      makeWorkDiv<Acc>(n_blocks_large,
-                       device::gbts_sort_graph_edges_block_size),
-      kernels::gbts_sort_graph_edges_large{}, payload);
+                      kernels::gbts_make_graph_edges<true>{}, payload);
 }
 
 void gbts_seeding_algorithm::gbts_match_graph_edges_kernel(
@@ -375,10 +318,9 @@ void gbts_seeding_algorithm::gbts_reindex_edges_kernel(
     const device::gbts_reindex_edges_payload& payload) const {
   // Compact the kept edges with a prefix sum over their 0/1 flags.
   vecmem::device_vector<int> d_reIndexer(payload.reIndexer);
-  details::inclusive_scan(details::get_queue(queue()), mr(),
-                          d_reIndexer.begin(),
-                          d_reIndexer.begin() + payload.nEdges,
-                          d_reIndexer.begin());
+  details::inclusive_scan(
+      details::get_queue(queue()), mr(), d_reIndexer.begin(),
+      d_reIndexer.begin() + payload.nEdges, d_reIndexer.begin());
 }
 
 void gbts_seeding_algorithm::gbts_compress_graph_kernel(
@@ -408,10 +350,9 @@ void gbts_seeding_algorithm::gbts_count_terminus_edges_kernel(
                       kernels::gbts_count_terminus_edges{}, payload);
   // Lay out the path store: each terminus edge gets a contiguous row range.
   vecmem::device_vector<unsigned int> d_row_sizes(payload.row_sizes);
-  details::inclusive_scan(details::get_queue(queue()), mr(),
-                          d_row_sizes.begin(),
-                          d_row_sizes.begin() + payload.nConnectedEdges,
-                          d_row_sizes.begin());
+  details::inclusive_scan(
+      details::get_queue(queue()), mr(), d_row_sizes.begin(),
+      d_row_sizes.begin() + payload.nConnectedEdges, d_row_sizes.begin());
 }
 
 void gbts_seeding_algorithm::gbts_fill_path_store_kernel(

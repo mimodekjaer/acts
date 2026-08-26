@@ -20,42 +20,50 @@
 namespace traccc::device {
 
 /// (Global Event Data) Payload for the @c traccc::device::gbts_make_graph_edges
-/// function
+/// function (shared by the counting and the filling pass).
 struct gbts_make_graph_edges_payload {
-  /// Number of bin-pair tasks (also the CUDA block count)
-  unsigned int nUsedBinPairs;
-  /// Upper bound on the number of edges to write
-  unsigned int nMaxEdges;
-  /// Number of phi bins per eta slice
-  unsigned int nPhiBins;
-  /// Per-bin-pair (begin1, end1, begin2, end2) node ranges, flat
-  vecmem::data::vector_view<const unsigned int> bin_pair_views;
-  /// Per-bin-pair max delta-phi window for edge candidates
-  vecmem::data::vector_view<const float> bin_pair_dphi;
+  /// Number of work items (also the block count)
+  unsigned int nWork;
+  /// Per work item: (bin-pair index, chunk index within bin 1)
+  vecmem::data::vector_view<const uint2> work_items;
+  /// Per bin pair: first work item of the pair (nPairs + 1 entries, equal to
+  /// the next entry when the pair has no work)
+  vecmem::data::vector_view<const unsigned int> pair_work_begin;
+  /// Per bin pair: (bin1, bin2), sorted by (bin1, bin2)
+  vecmem::data::vector_view<const uint2> bin_pairs;
+  /// Per bin pair: index of the first pair with the same bin1
+  vecmem::data::vector_view<const unsigned int> pair_group_begin;
+  /// Per eta bin: (begin, end) node ranges, flat
+  vecmem::data::vector_view<const unsigned int> eta_bin_views;
+  /// Per eta bin: (min r, max r), flat
+  vecmem::data::vector_view<const float> bin_rads;
   /// Per-node (tau_min, tau_max, r, z)
   vecmem::data::vector_view<const float4> node_params;
-  /// Per-node phi
+  /// Per-node phi (sorted ascending within every eta bin)
   vecmem::data::vector_view<const float> node_phi;
+  /// Per-bin-pair delta-phi window parameters
+  traccc::gbts_dphi_window_params gbts_dphi_window_params;
   /// Edge-making geometric / kinematic cuts
   traccc::gbts_make_graph_edges_params gbts_make_graph_edges_params;
-  /// In/out: global atomic counter for the next edge slot to write
-  unsigned int* nEdgesCounter;
-  /// Output: (src, dst) node indices per edge
-  vecmem::data::vector_view<uint2> edge_nodes;
-  /// Output: packed per-edge [eta, curv, phi_z, phi_w] used by
-  /// matching
-  vecmem::data::vector_view<short4> edge_params;
   /// class for compressing edge params to short4
   edge_params_converter edge_params_maker;
-  /// Output: per-destination-node incoming-edge count (atomic)
+  /// Count pass output / fill pass input: edges per (work item, thread)
+  vecmem::data::vector_view<unsigned int> edge_counts;
+  /// Count pass output: edges per inner node written at [node + 1]; after
+  /// the inclusive scan run by the launcher [node] / [node + 1] are the
+  /// begin / end of the node's edge bucket and [nNodes] is the edge count
   vecmem::data::vector_view<unsigned int> num_outgoing_edges;
+  /// Fill pass output: (outer node, inner node) per edge
+  vecmem::data::vector_view<uint2> edge_nodes;
+  /// Fill pass output: packed per-edge [eta, curv, phi_z, phi_w] used by
+  /// matching
+  vecmem::data::vector_view<short4> edge_params;
 };
 
 /// (Shared Event Data) Payload for the @c traccc::device::gbts_make_graph_edges
 /// function
 ///
-/// Shared-memory scratch for gbts_make_graph_edges: a block-local copy of the
-/// current node1 chunk (phi values and packed node params).
+/// Shared-memory scratch: one slab of bin-2 (outer) nodes.
 struct gbts_make_graph_edges_shared_payload {
   /// Shared-mem cache: phi / node
   vecmem::data::vector_view<float> phi;
@@ -63,22 +71,32 @@ struct gbts_make_graph_edges_shared_payload {
   vecmem::data::vector_view<float4> node_pack;
 };
 
-/// @brief Create candidate edges between node pairs in compatible (eta, phi)
-/// bins.
+/// @brief Create candidate edges between node pairs in compatible eta bins.
 ///
-/// One CUDA block handles one bin-pair task.  Threads stage a chunk of bin-1
-/// nodes into shared-memory caches (phi as a separate float array, and the
-/// (tau_min, tau_max, r, z) float4 per node), then for every bin-2 node test
-/// the cached chunk against geometric and kinematic cuts
-/// (gbts_check_edge_candidate), atomically reserving a slot in the output via
-/// the edge counter.
+/// One block handles one work item: a bin pair and one
+/// gbts_consts::node_buffer_length-sized chunk of the pair's inner bin. Every
+/// thread owns one inner node of the chunk and walks the phi-sorted outer bin,
+/// which is streamed through shared memory in slabs, testing the nodes inside
+/// its delta-phi window against the geometric and kinematic cuts.
 ///
-/// @param[in] thread_id          Thread/block identifier (one block/task)
+/// The function is run twice with the same decomposition:
+/// - @c fill == false counts the edges of every thread (edge_counts) and
+///   accumulates them per inner node (num_outgoing_edges[node + 1]);
+/// - @c fill == true writes the edges. The write cursor of a thread is the
+///   scanned bucket begin of its inner node plus the counts of the preceding
+///   pairs of the same inner bin, so the edges come out directly in the
+///   canonical (inner node bucket, outer node ascending) order without any
+///   atomics: pairs are sorted by (bin1, bin2), outer bins are visited in
+///   ascending node index and so are the nodes inside them.
+///
+/// @tparam fill                  false: counting pass, true: filling pass
+/// @param[in] thread_id          Thread/block identifier (one block/work item)
 /// @param[in] barrier            Block-wide barrier
 /// @param[in,out] payload        The global memory payload
 /// @param[in,out] shared_payload The shared memory payload
 ///
-template <concepts::thread_id1 thread_id_t, concepts::barrier barrier_t>
+template <bool fill, concepts::thread_id1 thread_id_t,
+          concepts::barrier barrier_t>
 TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
     const thread_id_t& thread_id, const barrier_t& barrier,
     const gbts_make_graph_edges_payload& payload,

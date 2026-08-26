@@ -28,7 +28,7 @@ struct gbts_match_graph_edges_payload {
   /// Edge-matching pair cuts
   traccc::gbts_match_graph_edges_params gbts_match_graph_edges_params;
   /// Packed per-edge [exp_eta, curv, phi_z, phi_w], in canonical edge
-  /// order (from gbts_sort_graph_edges)
+  /// order (from gbts_make_graph_edges)
   vecmem::data::vector_view<const short4> edge_params;
   /// (outer, inner) node indices per edge, in canonical edge order
   vecmem::data::vector_view<const uint2> edge_nodes;
