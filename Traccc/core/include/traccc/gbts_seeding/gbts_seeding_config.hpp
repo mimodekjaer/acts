@@ -299,6 +299,11 @@ struct gbts_seedfinder_config {
 
   // number of seed-vs-edge bidding rounds during disambiguation.
   unsigned int edge_bidding_rounds = 5;
+
+  // Capacity of the seed path store, in rows per connected edge. Rows beyond
+  // the capacity are dropped (typical events need ~0.8 rows per edge); the
+  // count is not read back to the host so the tail kernels stay asynchronous.
+  unsigned int max_rows_per_connected_edge = 4;
 };
 
 }  // namespace traccc

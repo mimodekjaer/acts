@@ -408,7 +408,7 @@ void gbts_seeding_algorithm::gbts_count_terminus_edges_kernel(
 void gbts_seeding_algorithm::gbts_fill_path_store_kernel(
     const device::gbts_fill_path_store_payload& payload) const {
   const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nRows - 1) / n_threads;
+  const unsigned int n_blocks = 1 + (payload.nRowsGrid - 1) / n_threads;
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),
                       kernels::gbts_fill_path_store{}, payload);
@@ -417,7 +417,7 @@ void gbts_seeding_algorithm::gbts_fill_path_store_kernel(
 void gbts_seeding_algorithm::gbts_fit_segments_kernel(
     const device::gbts_fit_segments_payload& payload) const {
   const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nRows - 1) / n_threads;
+  const unsigned int n_blocks = 1 + (payload.nRowsGrid - 1) / n_threads;
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),
                       kernels::gbts_fit_segments{}, payload);
@@ -426,7 +426,7 @@ void gbts_seeding_algorithm::gbts_fit_segments_kernel(
 void gbts_seeding_algorithm::gbts_bid_seeds_for_edges_kernel(
     const device::gbts_bid_seeds_for_edges_payload& payload) const {
   const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nRows - 1) / n_threads;
+  const unsigned int n_blocks = 1 + (payload.nRowsGrid - 1) / n_threads;
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),
                       kernels::gbts_bid_seeds_for_edges{}, payload);
@@ -435,7 +435,7 @@ void gbts_seeding_algorithm::gbts_bid_seeds_for_edges_kernel(
 void gbts_seeding_algorithm::gbts_reset_edge_bids_kernel(
     const device::gbts_reset_edge_bids_payload& payload) const {
   const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nRows - 1) / n_threads;
+  const unsigned int n_blocks = 1 + (payload.nRowsGrid - 1) / n_threads;
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),
                       kernels::gbts_reset_edge_bids{}, payload);
@@ -444,7 +444,7 @@ void gbts_seeding_algorithm::gbts_reset_edge_bids_kernel(
 void gbts_seeding_algorithm::gbts_rebid_seeds_for_edges_kernel(
     const device::gbts_rebid_seeds_for_edges_payload& payload) const {
   const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nRows - 1) / n_threads;
+  const unsigned int n_blocks = 1 + (payload.nRowsGrid - 1) / n_threads;
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),
                       kernels::gbts_rebid_seeds_for_edges{}, payload);
@@ -453,7 +453,7 @@ void gbts_seeding_algorithm::gbts_rebid_seeds_for_edges_kernel(
 void gbts_seeding_algorithm::gbts_bid_seeds_for_hits_kernel(
     const device::gbts_bid_seeds_for_hits_payload& payload) const {
   const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nRows - 1) / n_threads;
+  const unsigned int n_blocks = 1 + (payload.nRowsGrid - 1) / n_threads;
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),
                       kernels::gbts_bid_seeds_for_hits{}, payload);
@@ -462,7 +462,7 @@ void gbts_seeding_algorithm::gbts_bid_seeds_for_hits_kernel(
 void gbts_seeding_algorithm::gbts_convert_seeds_kernel(
     const device::gbts_convert_seeds_payload& payload) const {
   const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nRows - 1) / n_threads;
+  const unsigned int n_blocks = 1 + (payload.nRowsGrid - 1) / n_threads;
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),
                       kernels::gbts_convert_seeds{}, payload);

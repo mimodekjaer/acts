@@ -24,8 +24,12 @@ namespace traccc::device {
 /// (Global Event Data) Payload for the @c traccc::device::gbts_fit_segments
 /// function
 struct gbts_fit_segments_payload {
-  /// Number of path-store rows
+  /// Capacity of the path store (maximum number of rows)
   unsigned int nRows;
+  /// Expected number of rows, only used to size the kernel launch
+  unsigned int nRowsGrid;
+  /// Device-side number of rows (clamped to nRows by the kernel)
+  const unsigned int* row_count;
   /// Maximum number of neighbours retained per edge
   unsigned int max_num_neighbours;
   /// Minimum number of edges a path must have to be fit

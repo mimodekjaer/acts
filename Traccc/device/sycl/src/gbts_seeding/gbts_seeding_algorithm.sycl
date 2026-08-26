@@ -378,7 +378,7 @@ void gbts_seeding_algorithm::gbts_fill_path_store_kernel(
   const unsigned int n_threads = 128;
   squeue.submit([&](::sycl::handler& h) {
     h.parallel_for<kernels::gbts_fill_path_store>(
-        details::calculate1DimNdRange(payload.nRows, n_threads),
+        details::calculate1DimNdRange(payload.nRowsGrid, n_threads),
         [payload](::sycl::nd_item<1> item) {
           device::gbts_fill_path_store(details::thread_id<1>{item}, payload);
         });
@@ -393,7 +393,7 @@ void gbts_seeding_algorithm::gbts_fit_segments_kernel(
   const unsigned int n_threads = 128;
   squeue.submit([&](::sycl::handler& h) {
     h.parallel_for<kernels::gbts_fit_segments>(
-        details::calculate1DimNdRange(payload.nRows, n_threads),
+        details::calculate1DimNdRange(payload.nRowsGrid, n_threads),
         [payload](::sycl::nd_item<1> item) {
           device::gbts_fit_segments(details::thread_id<1>{item}, payload);
         });
@@ -408,7 +408,7 @@ void gbts_seeding_algorithm::gbts_bid_seeds_for_edges_kernel(
   const unsigned int n_threads = 128;
   squeue.submit([&](::sycl::handler& h) {
     h.parallel_for<kernels::gbts_bid_seeds_for_edges>(
-        details::calculate1DimNdRange(payload.nRows, n_threads),
+        details::calculate1DimNdRange(payload.nRowsGrid, n_threads),
         [payload](::sycl::nd_item<1> item) {
           device::gbts_bid_seeds_for_edges(details::thread_id<1>{item},
                                            payload);
@@ -424,7 +424,7 @@ void gbts_seeding_algorithm::gbts_reset_edge_bids_kernel(
   const unsigned int n_threads = 128;
   squeue.submit([&](::sycl::handler& h) {
     h.parallel_for<kernels::gbts_reset_edge_bids>(
-        details::calculate1DimNdRange(payload.nRows, n_threads),
+        details::calculate1DimNdRange(payload.nRowsGrid, n_threads),
         [payload](::sycl::nd_item<1> item) {
           device::gbts_reset_edge_bids(details::thread_id<1>{item}, payload);
         });
@@ -439,7 +439,7 @@ void gbts_seeding_algorithm::gbts_rebid_seeds_for_edges_kernel(
   const unsigned int n_threads = 128;
   squeue.submit([&](::sycl::handler& h) {
     h.parallel_for<kernels::gbts_rebid_seeds_for_edges>(
-        details::calculate1DimNdRange(payload.nRows, n_threads),
+        details::calculate1DimNdRange(payload.nRowsGrid, n_threads),
         [payload](::sycl::nd_item<1> item) {
           device::gbts_rebid_seeds_for_edges(details::thread_id<1>{item},
                                              payload);
@@ -455,7 +455,7 @@ void gbts_seeding_algorithm::gbts_bid_seeds_for_hits_kernel(
   const unsigned int n_threads = 128;
   squeue.submit([&](::sycl::handler& h) {
     h.parallel_for<kernels::gbts_bid_seeds_for_hits>(
-        details::calculate1DimNdRange(payload.nRows, n_threads),
+        details::calculate1DimNdRange(payload.nRowsGrid, n_threads),
         [payload](::sycl::nd_item<1> item) {
           device::gbts_bid_seeds_for_hits(details::thread_id<1>{item}, payload);
         });
@@ -470,7 +470,7 @@ void gbts_seeding_algorithm::gbts_convert_seeds_kernel(
   const unsigned int n_threads = 128;
   squeue.submit([&](::sycl::handler& h) {
     h.parallel_for<kernels::gbts_convert_seeds>(
-        details::calculate1DimNdRange(payload.nRows, n_threads),
+        details::calculate1DimNdRange(payload.nRowsGrid, n_threads),
         [payload](::sycl::nd_item<1> item) {
           device::gbts_convert_seeds(details::thread_id<1>{item}, payload);
         });

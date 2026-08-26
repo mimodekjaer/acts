@@ -377,22 +377,19 @@ auto gbts_seeding_algorithm::extract_seeds(
   vecmem::data::vector_buffer<unsigned long long int> edge_bids_buf(
       2 * nConnectedEdges, mr().main);
   copy().setup(edge_bids_buf)->ignore();
+  vecmem::data::vector_buffer<unsigned long long int> hit_bids_buf(nSp,
+                                                                   mr().main);
+  copy().setup(hit_bids_buf)->ignore();
 
-  gbts_count_terminus_edges_kernel(
-      {nConnectedEdges, outgoing_paths_buf, row_sizes_buf, edge_bids_buf});
+  gbts_count_terminus_edges_kernel({nConnectedEdges, outgoing_paths_buf,
+                                    row_sizes_buf, edge_bids_buf,
+                                    hit_bids_buf});
 
-  unsigned int nRows = 0;
-  copy()(vecmem::data::vector_view<const unsigned int>(
-             1u, row_sizes_buf.ptr() + nConnectedEdges - 1),
-         vecmem::data::vector_view<unsigned int>(1u, &nRows))
-      ->wait();
-
-  if (nRows == 0) {
-    TRACCC_WARNING("No terminus edges were found");
-    return {0, mr().main};
-  }
-
-  TRACCC_DEBUG(nRows << " size of path store");
+  // The row count stays on the device (last entry of the scanned row
+  // sizes); the path store gets a fixed capacity instead of a readback.
+  const unsigned int* row_count = row_sizes_buf.ptr() + nConnectedEdges - 1;
+  const unsigned int nRows = cfg.max_rows_per_connected_edge * nConnectedEdges;
+  const unsigned int nRowsGrid = nConnectedEdges;
 
   vecmem::data::vector_buffer<int2> path_store_buf(nRows, mr().main);
   copy().setup(path_store_buf)->ignore();
@@ -401,23 +398,25 @@ auto gbts_seeding_algorithm::extract_seeds(
   vecmem::data::vector_buffer<char> seed_ambiguity_buf(nRows, mr().main);
   copy().setup(seed_ambiguity_buf)->ignore();
 
-  gbts_fill_path_store_kernel({nRows, nConnectedEdges, cfg.max_num_neighbours,
-                               path_store_buf, output_graph, levels_buf,
-                               outgoing_paths_buf, row_sizes_buf,
-                               seed_proposals_buf, seed_ambiguity_buf});
+  gbts_fill_path_store_kernel(
+      {nRows, nRowsGrid, row_count, nConnectedEdges, cfg.max_num_neighbours,
+       path_store_buf, output_graph, levels_buf, outgoing_paths_buf,
+       row_sizes_buf, seed_proposals_buf, seed_ambiguity_buf});
 
   gbts_fit_segments_kernel(
-      {nRows, cfg.max_num_neighbours, cfg.minLevel, reducedSP, output_graph,
-       path_store_buf, seed_proposals_buf, d_counters + gbts_counter::nProps,
-       cfg.gbts_fit_segments_params, cfg.gbts_make_graph_edges_params.max_z0});
+      {nRows, nRowsGrid, row_count, cfg.max_num_neighbours, cfg.minLevel,
+       reducedSP, output_graph, path_store_buf, seed_proposals_buf,
+       d_counters + gbts_counter::nProps, cfg.gbts_fit_segments_params,
+       cfg.gbts_make_graph_edges_params.max_z0});
 
   // 7. Disambiguate seeds through the initial bid and repeated seed-vs-edge
   //    bidding rounds. The proposal / rejection counts are not read back:
   //    every later kernel loops over the rows and the seed output is sized
   //    by the (upper bound) row count, which saves two synchronisations.
-  gbts_bid_seeds_kernel({nRows, nConnectedEdges, cfg.edge_bidding_rounds,
-                         path_store_buf, seed_proposals_buf, seed_ambiguity_buf,
-                         edge_bids_buf, d_counters + gbts_counter::nRejected});
+  gbts_bid_seeds_kernel({nRows, nRowsGrid, row_count, nConnectedEdges,
+                         cfg.edge_bidding_rounds, path_store_buf,
+                         seed_proposals_buf, seed_ambiguity_buf, edge_bids_buf,
+                         d_counters + gbts_counter::nRejected});
 
   // 8. Convert to 3sp seeds and make output buffer (at most two seeds per
   //    proposal, at most one proposal per row).
@@ -426,20 +425,15 @@ auto gbts_seeding_algorithm::extract_seeds(
       2 * nSeeds, mr().main, vecmem::data::buffer_type::resizable);
   copy().setup(output_seeds)->ignore();
 
-  vecmem::data::vector_buffer<unsigned long long int> hit_bids_buf(nSp,
-                                                                   mr().main);
-  copy().setup(hit_bids_buf)->ignore();
-  copy().memset(hit_bids_buf, 0)->ignore();
-
   const unsigned int edge_size = 1u + 2u + cfg.max_num_neighbours;
-  gbts_bid_seeds_for_hits_kernel({nRows, nSeeds, edge_size, output_graph,
-                                  seed_proposals_buf, path_store_buf,
-                                  seed_ambiguity_buf, hit_bids_buf});
+  gbts_bid_seeds_for_hits_kernel(
+      {nRows, nRowsGrid, row_count, nSeeds, edge_size, output_graph,
+       seed_proposals_buf, path_store_buf, seed_ambiguity_buf, hit_bids_buf});
 
   gbts_convert_seeds_kernel(
-      {nRows, nSeeds, cfg.max_num_neighbours, seed_proposals_buf,
-       seed_ambiguity_buf, path_store_buf, output_graph, reducedSP,
-       output_seeds, hit_bids_buf, cfg.gbts_convert_seeds_params});
+      {nRows, nRowsGrid, row_count, nSeeds, cfg.max_num_neighbours,
+       seed_proposals_buf, seed_ambiguity_buf, path_store_buf, output_graph,
+       reducedSP, output_seeds, hit_bids_buf, cfg.gbts_convert_seeds_params});
 
   // No synchronisation here: the caller reads the seed count.
   return output_seeds;

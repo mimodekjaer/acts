@@ -25,8 +25,12 @@ namespace traccc::device {
 /// double buffered: the initial bid uses half 0, round r uses half
 /// (r + 1) % 2 and its reset zeroes the other half for the next round.
 struct gbts_seed_bidding_payload {
-  /// Number of path-store rows (proposals are indexed by row)
+  /// Capacity of the path store (maximum number of rows)
   unsigned int nRows;
+  /// Expected number of rows, only used to size the kernel launch
+  unsigned int nRowsGrid;
+  /// Device-side number of rows (clamped to nRows by the kernels)
+  const unsigned int* row_count;
   /// Number of connected edges (size of one edge-bid buffer)
   unsigned int nConnectedEdges;
   /// Number of rebid / reset rounds
@@ -55,15 +59,17 @@ gbts_edge_bids_half(const gbts_seed_bidding_payload& p,
 /// Payload of the initial bid
 TRACCC_HOST_DEVICE inline gbts_bid_seeds_for_edges_payload
 gbts_make_bid_seeds_for_edges_payload(const gbts_seed_bidding_payload& p) {
-  return {p.nRows, p.seed_proposals, p.seed_ambiguity,
-          gbts_edge_bids_half(p, 0u), p.path_store};
+  return {p.nRows,          p.nRowsGrid,      p.row_count,
+          p.seed_proposals, p.seed_ambiguity, gbts_edge_bids_half(p, 0u),
+          p.path_store};
 }
 
 /// Payload of the rebid of round @c round
 TRACCC_HOST_DEVICE inline gbts_rebid_seeds_for_edges_payload
 gbts_make_rebid_seeds_for_edges_payload(const gbts_seed_bidding_payload& p,
                                         const unsigned int round) {
-  return {p.nRows,          p.path_store,
+  return {p.nRows,          p.nRowsGrid,
+          p.row_count,      p.path_store,
           p.seed_proposals, gbts_edge_bids_half(p, (round + 1u) % 2u),
           p.seed_ambiguity, p.nRejectedPropsCounter,
           round == 0u};
@@ -75,6 +81,8 @@ gbts_make_reset_edge_bids_payload(const gbts_seed_bidding_payload& p,
                                   const unsigned int round) {
   const unsigned int half = (round + 1u) % 2u;
   return {p.nRows,
+          p.nRowsGrid,
+          p.row_count,
           p.nConnectedEdges,
           p.path_store,
           p.seed_proposals,

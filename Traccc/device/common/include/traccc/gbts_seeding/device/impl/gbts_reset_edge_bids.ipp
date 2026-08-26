@@ -40,7 +40,9 @@ TRACCC_HOST_DEVICE inline void gbts_reset_edge_bids(
     d_edge_bids_next[idx] = 0ull;
   }
 
-  for (unsigned int prop_idx = globalIdx; prop_idx < payload.nRows;
+  const unsigned int nRows =
+      (*payload.row_count < payload.nRows) ? *payload.row_count : payload.nRows;
+  for (unsigned int prop_idx = globalIdx; prop_idx < nRows;
        prop_idx += blockDimX * gridDimX) {
     const int2 prop = d_seed_proposals[prop_idx];
     if (prop.y < 0) {

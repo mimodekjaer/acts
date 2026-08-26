@@ -206,3 +206,31 @@ Atomic min/max on the radius bits per eta bin from the node sorting kernel
 (to drop the gbts_find_minmax_radius launch): the nodes are sorted by eta
 bin, so all lanes of a warp hit the same two addresses -> sort_nodes 7 ->
 86 us. Reverted (the separate 8 us block-reduction kernel stays).
+
+### B5. Debug seed-count readback removed (FASTER)
+0.917 -> 0.907 ms/event: copy().get_size(output_seeds) at the end of
+extract_seeds was a full synchronisation used only for a debug message.
+
+### B6. Device-side path-store row count (FASTER)
+0.865 -> 0.852 ms/event (on the peer's 46955cdd8/47280b79a). The nRows
+readback (and the ~15 us launch gap after it) is gone: the path store /
+proposals / seed output get a capacity of max_rows_per_connected_edge (4) x
+nConnectedEdges (typical events need ~0.8 rows per edge), the tail kernels
+grid-stride to a device-side row count and are launched with grids sized for
+nConnectedEdges. hit_bids zeroing moved into the terminus kernel (one memset
+less). Rows beyond the capacity would be dropped (documented in the config).
+The fused bidding kernel caches one row per thread and processes rows beyond
+the grid uncached, so it stays correct for any row count (66 us).
+Tried on the way: 2 or 4 cached rows per thread with the grid sized for the
+capacity -> chains spill to local memory and rows serialise: 80 us, i.e.
+SLOWER than the uncached fused kernel (70 us); dropped.
+
+### B7. Other things that did NOT help (kept out)
+- 512-node outer slabs in make_graph_edges (fewer barriers): no change.
+- Shift instead of the 64-bit multiply/divide for the probe positions of the
+  cooperative search: no measurable change (the kernel is not purely
+  instruction bound after B4).
+- Bare cost of the 15 grid barriers in the fused CCA is 30 us (measured with
+  the iteration body disabled); the remaining ~55 us are the level loads of
+  the first iterations, i.e. the CCA is close to its floor with this
+  algorithm.

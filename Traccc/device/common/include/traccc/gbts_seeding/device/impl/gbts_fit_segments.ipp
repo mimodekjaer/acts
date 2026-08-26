@@ -263,7 +263,9 @@ TRACCC_HOST_DEVICE inline void gbts_fit_segments(
   const unsigned int blockDimX = thread_id.getBlockDimX();
   const unsigned int gridDimX = thread_id.getGridDimX();
 
-  for (unsigned int path_idx = globalIdx; path_idx < payload.nRows;
+  const unsigned int nRows =
+      (*payload.row_count < payload.nRows) ? *payload.row_count : payload.nRows;
+  for (unsigned int path_idx = globalIdx; path_idx < nRows;
        path_idx += blockDimX * gridDimX) {
     int2 path = d_path_store[path_idx];
     // Terminus rows are single-edge paths and never long enough to fit.

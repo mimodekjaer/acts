@@ -40,8 +40,9 @@ TRACCC_HOST_DEVICE inline void gbts_fill_path_store(
   const unsigned int blockDimX = thread_id.getBlockDimX();
   const unsigned int gridDimX = thread_id.getGridDimX();
 
-  for (unsigned int row = globalIdx; row < payload.nRows;
-       row += blockDimX * gridDimX) {
+  const unsigned int nRows =
+      (*payload.row_count < payload.nRows) ? *payload.row_count : payload.nRows;
+  for (unsigned int row = globalIdx; row < nRows; row += blockDimX * gridDimX) {
     unsigned int lo = 0u;
     unsigned int hi = payload.nConnectedEdges;
     while (lo < hi) {

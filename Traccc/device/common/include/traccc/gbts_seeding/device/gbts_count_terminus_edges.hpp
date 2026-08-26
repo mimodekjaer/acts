@@ -32,6 +32,8 @@ struct gbts_count_terminus_edges_payload {
   vecmem::data::vector_view<unsigned int> row_sizes;
   /// Output: edge bids (both halves of the double buffer), zeroed
   vecmem::data::vector_view<unsigned long long int> edge_bids;
+  /// Output: per-spacepoint hit bids, zeroed
+  vecmem::data::vector_view<unsigned long long int> hit_bids;
 };
 
 /// @brief Count terminus edges and lay out the path store.

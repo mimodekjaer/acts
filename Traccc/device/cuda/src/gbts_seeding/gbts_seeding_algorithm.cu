@@ -271,6 +271,40 @@ __global__ void gbts_run_cca_cached(
 /// proposal is walked once and kept in registers across the rounds. Same
 /// per-step semantics as gbts_bid_seeds_for_edges / gbts_rebid_seeds_for_edges
 /// / gbts_reset_edge_bids.
+/// Bid of one proposal for the first @c depth edges of its path (walked on
+/// the fly), see traccc::device::details::gbts_create_seed_candidate.
+__device__ inline void gbts_bid_uncached(
+    const unsigned int prop_idx, const int2 prop, const unsigned int depth,
+    unsigned long long int* bids,
+    const vecmem::device_vector<const int2>& d_path_store,
+    vecmem::device_vector<int2>& d_seed_proposals,
+    vecmem::device_vector<char>& d_seed_ambiguity) {
+  d_seed_proposals[prop_idx] = prop;
+  const unsigned long long int seed_bid =
+      (static_cast<unsigned long long int>(prop.x) << 32) |
+      static_cast<unsigned long long int>(prop_idx);
+  int2 path = int2{0, prop.y};
+  unsigned int k = 0u;
+  while (path.y >= 0 && k < depth) {
+    path = d_path_store[static_cast<unsigned int>(path.y)];
+    ++k;
+    const unsigned long long int competing_offer =
+        atomicMax(bids + static_cast<unsigned int>(path.x), seed_bid);
+    if (competing_offer > seed_bid) {
+      d_seed_ambiguity[prop_idx] = -1;
+    } else if (competing_offer != 0ull) {
+      d_seed_ambiguity[static_cast<unsigned int>(competing_offer &
+                                                 0xFFFFFFFFull)] = -1;
+    }
+  }
+}
+
+/// Fused seed-vs-edge bidding: rows [0, nThreads) have their proposal's
+/// edge chain walked once and kept in registers across the rounds; rows
+/// beyond the grid (rare: the grid is sized for the expected row count) are
+/// processed uncached by the same threads. Same per-step semantics as
+/// gbts_bid_seeds_for_edges / gbts_rebid_seeds_for_edges /
+/// gbts_reset_edge_bids.
 template <unsigned int MAX_LEN>
 __global__ void gbts_bid_seeds_cached(
     const device::gbts_seed_bidding_payload payload) {
@@ -280,16 +314,17 @@ __global__ void gbts_bid_seeds_cached(
   vecmem::device_vector<char> d_seed_ambiguity(payload.seed_ambiguity);
   vecmem::device_vector<unsigned long long int> d_edge_bids(payload.edge_bids);
   const unsigned int n = payload.nConnectedEdges;
-
-  const unsigned int prop_idx = blockIdx.x * blockDim.x + threadIdx.x;
+  const unsigned int nRows =
+      (*payload.row_count < payload.nRows) ? *payload.row_count : payload.nRows;
   const unsigned int nThreads = gridDim.x * blockDim.x;
+  const unsigned int prop_idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+  // The cached row of this thread.
   int2 prop = int2{0, -1};
-  if (prop_idx < payload.nRows) {
+  if (prop_idx < nRows) {
     prop = d_seed_proposals[prop_idx];
   }
   const bool has_prop = prop.y >= 0;
-
-  // Walk the chain once: edges of the path in bidding order.
   unsigned int chain[MAX_LEN];
   unsigned int length = 0u;
   if (has_prop) {
@@ -303,7 +338,7 @@ __global__ void gbts_bid_seeds_cached(
       (static_cast<unsigned long long int>(prop.x) << 32) |
       static_cast<unsigned long long int>(prop_idx);
 
-  // Bid for the first @c depth edges of the chain into @c bids.
+  // Bid for the first @c depth edges of the cached chain into @c bids.
   const auto bid = [&](unsigned long long int* bids, const unsigned int depth) {
     d_seed_proposals[prop_idx] = prop;
     for (unsigned int k = 0u; k < depth; ++k) {
@@ -317,10 +352,21 @@ __global__ void gbts_bid_seeds_cached(
       }
     }
   };
+  // Proposal of an uncached extra row (rows beyond the grid).
+  const auto extra_prop = [&](const unsigned int row) {
+    return d_seed_proposals[row];
+  };
 
   // Initial bid: terminus edge only.
   if (has_prop) {
     bid(d_edge_bids.data(), (length > 0u) ? 1u : 0u);
+  }
+  for (unsigned int row = prop_idx + nThreads; row < nRows; row += nThreads) {
+    const int2 p = extra_prop(row);
+    if (p.y >= 0) {
+      gbts_bid_uncached(row, p, 1u, d_edge_bids.data(), d_path_store,
+                        d_seed_proposals, d_seed_ambiguity);
+    }
   }
 
   for (unsigned int round = 0u; round < payload.nRounds; ++round) {
@@ -330,24 +376,29 @@ __global__ void gbts_bid_seeds_cached(
     grid.sync();
 
     // --- rebid ---
-    if (has_prop) {
-      const char ambi = d_seed_ambiguity[prop_idx];
-      bool do_bid = true;
+    const auto rebid_decision = [&](const unsigned int row) {
+      const char ambi = d_seed_ambiguity[row];
       if (round == 0u) {
         if (ambi == 0) {
           // rebid 'best seed from edge' in later rounds
-          d_seed_ambiguity[prop_idx] = 1;
-        } else {
-          d_seed_ambiguity[prop_idx] = -2;
-          atomicAdd(payload.nRejectedPropsCounter, 1u);
-          do_bid = false;
+          d_seed_ambiguity[row] = 1;
+          return true;
         }
-      } else if ((ambi == -2) | (ambi == 0)) {
-        // only rebid for maybes
-        do_bid = false;
+        d_seed_ambiguity[row] = -2;
+        atomicAdd(payload.nRejectedPropsCounter, 1u);
+        return false;
       }
-      if (do_bid) {
-        bid(bids, length);
+      // only rebid for maybes
+      return !((ambi == -2) | (ambi == 0));
+    };
+    if (has_prop && rebid_decision(prop_idx)) {
+      bid(bids, length);
+    }
+    for (unsigned int row = prop_idx + nThreads; row < nRows; row += nThreads) {
+      const int2 p = extra_prop(row);
+      if (p.y >= 0 && rebid_decision(row)) {
+        gbts_bid_uncached(row, p, 0xFFFFFFFFu, bids, d_path_store,
+                          d_seed_proposals, d_seed_ambiguity);
       }
     }
     grid.sync();
@@ -356,25 +407,48 @@ __global__ void gbts_bid_seeds_cached(
     for (unsigned int idx = prop_idx; idx < n; idx += nThreads) {
       bids_next[idx] = 0ull;
     }
-    if (has_prop) {
-      const char ambi = d_seed_ambiguity[prop_idx];
-      if (!((ambi == -2) | (ambi == 0))) {
-        bool isgood = true;
-        for (unsigned int k = 0u; k < length; ++k) {
-          const unsigned long long int best_bid = bids[chain[k]];
-          if (d_seed_ambiguity[static_cast<unsigned int>(best_bid &
-                                                         0xFFFFFFFFull)] == 0) {
-            isgood = false;
-            break;
-          }
-        }
-        if (isgood) {
-          d_seed_ambiguity[prop_idx] = 1;
-        } else {
-          d_seed_ambiguity[prop_idx] = -2;
-          atomicAdd(payload.nRejectedPropsCounter, 1u);
+    const auto reset_row = [&](const unsigned int row, const bool isgood) {
+      if (isgood) {
+        d_seed_ambiguity[row] = 1;
+      } else {
+        d_seed_ambiguity[row] = -2;
+        atomicAdd(payload.nRejectedPropsCounter, 1u);
+      }
+    };
+    const auto is_maybe = [&](const unsigned int row) {
+      const char ambi = d_seed_ambiguity[row];
+      return !((ambi == -2) | (ambi == 0));
+    };
+    if (has_prop && is_maybe(prop_idx)) {
+      bool isgood = true;
+      for (unsigned int k = 0u; k < length; ++k) {
+        const unsigned long long int best_bid = bids[chain[k]];
+        if (d_seed_ambiguity[static_cast<unsigned int>(best_bid &
+                                                       0xFFFFFFFFull)] == 0) {
+          isgood = false;
+          break;
         }
       }
+      reset_row(prop_idx, isgood);
+    }
+    for (unsigned int row = prop_idx + nThreads; row < nRows; row += nThreads) {
+      const int2 p = extra_prop(row);
+      if (p.y < 0 || !is_maybe(row)) {
+        continue;
+      }
+      bool isgood = true;
+      int2 path = int2{0, p.y};
+      while (path.y >= 0) {
+        path = d_path_store[static_cast<unsigned int>(path.y)];
+        const unsigned long long int best_bid =
+            bids[static_cast<unsigned int>(path.x)];
+        if (d_seed_ambiguity[static_cast<unsigned int>(best_bid &
+                                                       0xFFFFFFFFull)] == 0) {
+          isgood = false;
+          break;
+        }
+      }
+      reset_row(row, isgood);
     }
   }
 }
@@ -680,19 +754,15 @@ void gbts_seeding_algorithm::gbts_run_cca_kernel(
 
 void gbts_seeding_algorithm::gbts_bid_seeds_kernel(
     const device::gbts_seed_bidding_payload& payload) const {
-  // Fast path: one row per thread with the proposal's edge chain cached in
-  // registers (paths have at most max_cca_iter + 1 edges).
+  // One cached row per thread, the grid sized for the expected row count
+  // (rows beyond the grid are handled uncached by the same kernel).
   if (launch_cooperative(kernels::gbts_bid_seeds_cached<
                              traccc::device::gbts_consts::max_cca_iter + 1u>,
-                         payload.nRows, 1024u, payload,
-                         details::get_stream(stream()),
-                         /*require_full_grid=*/true)) {
+                         payload.nRowsGrid, 1024u, payload,
+                         details::get_stream(stream()))) {
     return;
   }
-  if (!launch_cooperative(kernels::gbts_bid_seeds, payload.nRows, 1024u,
-                          payload, details::get_stream(stream()))) {
-    device::gbts_seeding_algorithm::gbts_bid_seeds_kernel(payload);
-  }
+  device::gbts_seeding_algorithm::gbts_bid_seeds_kernel(payload);
 }
 
 void gbts_seeding_algorithm::gbts_run_cca_iteration_kernel(
@@ -725,7 +795,7 @@ void gbts_seeding_algorithm::gbts_count_terminus_edges_kernel(
 void gbts_seeding_algorithm::gbts_fill_path_store_kernel(
     const device::gbts_fill_path_store_payload& payload) const {
   const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nRows - 1) / n_threads;
+  const unsigned int n_blocks = 1 + (payload.nRowsGrid - 1) / n_threads;
   kernels::gbts_fill_path_store<<<n_blocks, n_threads, 0,
                                   details::get_stream(stream())>>>(payload);
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
@@ -734,7 +804,7 @@ void gbts_seeding_algorithm::gbts_fill_path_store_kernel(
 void gbts_seeding_algorithm::gbts_fit_segments_kernel(
     const device::gbts_fit_segments_payload& payload) const {
   const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nRows - 1) / n_threads;
+  const unsigned int n_blocks = 1 + (payload.nRowsGrid - 1) / n_threads;
   kernels::gbts_fit_segments<<<n_blocks, n_threads, 0,
                                details::get_stream(stream())>>>(payload);
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
@@ -743,7 +813,7 @@ void gbts_seeding_algorithm::gbts_fit_segments_kernel(
 void gbts_seeding_algorithm::gbts_bid_seeds_for_edges_kernel(
     const device::gbts_bid_seeds_for_edges_payload& payload) const {
   const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nRows - 1) / n_threads;
+  const unsigned int n_blocks = 1 + (payload.nRowsGrid - 1) / n_threads;
   kernels::gbts_bid_seeds_for_edges<<<n_blocks, n_threads, 0,
                                       details::get_stream(stream())>>>(payload);
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
@@ -752,7 +822,7 @@ void gbts_seeding_algorithm::gbts_bid_seeds_for_edges_kernel(
 void gbts_seeding_algorithm::gbts_reset_edge_bids_kernel(
     const device::gbts_reset_edge_bids_payload& payload) const {
   const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nRows - 1) / n_threads;
+  const unsigned int n_blocks = 1 + (payload.nRowsGrid - 1) / n_threads;
   kernels::gbts_reset_edge_bids<<<n_blocks, n_threads, 0,
                                   details::get_stream(stream())>>>(payload);
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
@@ -761,7 +831,7 @@ void gbts_seeding_algorithm::gbts_reset_edge_bids_kernel(
 void gbts_seeding_algorithm::gbts_rebid_seeds_for_edges_kernel(
     const device::gbts_rebid_seeds_for_edges_payload& payload) const {
   const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nRows - 1) / n_threads;
+  const unsigned int n_blocks = 1 + (payload.nRowsGrid - 1) / n_threads;
   kernels::gbts_rebid_seeds_for_edges<<<n_blocks, n_threads, 0,
                                         details::get_stream(stream())>>>(
       payload);
@@ -771,7 +841,7 @@ void gbts_seeding_algorithm::gbts_rebid_seeds_for_edges_kernel(
 void gbts_seeding_algorithm::gbts_bid_seeds_for_hits_kernel(
     const device::gbts_bid_seeds_for_hits_payload& payload) const {
   const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nRows - 1) / n_threads;
+  const unsigned int n_blocks = 1 + (payload.nRowsGrid - 1) / n_threads;
   kernels::gbts_bid_seeds_for_hits<<<n_blocks, n_threads, 0,
                                      details::get_stream(stream())>>>(payload);
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
@@ -780,7 +850,7 @@ void gbts_seeding_algorithm::gbts_bid_seeds_for_hits_kernel(
 void gbts_seeding_algorithm::gbts_convert_seeds_kernel(
     const device::gbts_convert_seeds_payload& payload) const {
   const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nRows - 1) / n_threads;
+  const unsigned int n_blocks = 1 + (payload.nRowsGrid - 1) / n_threads;
   kernels::gbts_convert_seeds<<<n_blocks, n_threads, 0,
                                 details::get_stream(stream())>>>(payload);
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());

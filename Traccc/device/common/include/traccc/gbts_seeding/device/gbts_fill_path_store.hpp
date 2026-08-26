@@ -20,8 +20,12 @@ namespace traccc::device {
 /// (Global Event Data) Payload for the @c traccc::device::gbts_fill_path_store
 /// function
 struct gbts_fill_path_store_payload {
-  /// Number of path-store rows
+  /// Capacity of the path store (maximum number of rows)
   unsigned int nRows;
+  /// Expected number of rows, only used to size the kernel launch
+  unsigned int nRowsGrid;
+  /// Device-side number of rows (clamped to nRows by the kernel)
+  const unsigned int* row_count;
   /// Number of edges in the compacted graph
   unsigned int nConnectedEdges;
   /// Maximum number of neighbours retained per edge

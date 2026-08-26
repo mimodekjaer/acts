@@ -30,7 +30,9 @@ TRACCC_HOST_DEVICE inline void gbts_rebid_seeds_for_edges(
   const unsigned int blockDimX = thread_id.getBlockDimX();
   const unsigned int gridDimX = thread_id.getGridDimX();
 
-  for (unsigned int prop_idx = globalIdx; prop_idx < payload.nRows;
+  const unsigned int nRows =
+      (*payload.row_count < payload.nRows) ? *payload.row_count : payload.nRows;
+  for (unsigned int prop_idx = globalIdx; prop_idx < nRows;
        prop_idx += blockDimX * gridDimX) {
     const int2 prop = d_seed_proposals[prop_idx];
     if (prop.y < 0) {
