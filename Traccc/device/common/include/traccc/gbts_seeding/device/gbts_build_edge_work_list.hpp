@@ -21,7 +21,7 @@ namespace traccc::device {
 
 /// Block size of the (single block) gbts_build_edge_work_list kernel; must
 /// be a power of two.
-inline constexpr unsigned int gbts_build_edge_work_list_block_size = 512u;
+inline constexpr unsigned int gbts_build_edge_work_list_block_size = 1024u;
 
 /// (Global Event Data) Payload for the @c
 /// traccc::device::gbts_build_edge_work_list function

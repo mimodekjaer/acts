@@ -257,3 +257,8 @@ work-list kernel (the sort launcher is split into `gbts_sort_node_keys_kernel`
 + `gbts_sort_nodes_kernel`, the work-list kernel runs in between).
 bin_spacepoints 62 -> 8.5 us, work-list kernel 20 -> 36 us (two searches
 per bin, see entry 9), zero buffer without the eta section. Seeds identical.
+
+### 9. Work-list kernel: one key search per eta bin  -> 0.794 ms/event
+Bins are contiguous in the sorted keys, so only the begin of each bin is
+searched (the end is the next bin's begin); block of 1024 threads.
+Work-list kernel 36 -> 26 us. Seeds identical.
