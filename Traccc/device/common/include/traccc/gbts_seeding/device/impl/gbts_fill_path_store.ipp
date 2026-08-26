@@ -29,6 +29,8 @@ TRACCC_HOST_DEVICE inline void gbts_fill_path_store(
       payload.outgoing_paths);
   const vecmem::device_vector<const unsigned int> d_row_sizes(
       payload.row_sizes);
+  vecmem::device_vector<int2> d_seed_proposals(payload.seed_proposals);
+  vecmem::device_vector<char> d_seed_ambiguity(payload.seed_ambiguity);
 
   // Row-major output graph: each edge owns a contiguous block of
   // edge_size = 2 + 1 + max_num_neighbours ints.
@@ -40,7 +42,6 @@ TRACCC_HOST_DEVICE inline void gbts_fill_path_store(
 
   for (unsigned int row = globalIdx; row < payload.nRows;
        row += blockDimX * gridDimX) {
-
     unsigned int lo = 0u;
     unsigned int hi = payload.nConnectedEdges;
     while (lo < hi) {
@@ -88,11 +89,14 @@ TRACCC_HOST_DEVICE inline void gbts_fill_path_store(
         acc += size;
       }
       if (!found) {
-        // This should never happen, but here we guard against a potential out-of-bounds access.
+        // This should never happen, but here we guard against a potential
+        // out-of-bounds access.
         break;
       }
     }
     d_path_store[row] = int2{static_cast<int>(cur_edge), parent_row};
+    d_seed_proposals[row] = int2{-1, -1};
+    d_seed_ambiguity[row] = 0;
   }
 }
 

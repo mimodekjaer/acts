@@ -260,6 +260,8 @@ class gbts_seeding_algorithm
   struct graph_making_output {
     /// Compacted, row-major graph
     vecmem::data::vector_buffer<unsigned int> output_graph;
+    /// CCA levels (2 * nConnectedEdges, initialised to 1)
+    vecmem::data::vector_buffer<unsigned char> levels;
     /// Number of edges that survived re-indexing (0 == nothing to do)
     unsigned int nConnectedEdges = 0;
   };
@@ -278,13 +280,12 @@ class gbts_seeding_algorithm
       const vecmem::data::vector_buffer<float>& bin_rads,
       const vecmem::data::vector_buffer<unsigned int>& eta_bin_views_buf,
       const vecmem::vector<unsigned int>& eta_bin_views,
-      const unsigned int nNodes,
-      vecmem::data::vector_buffer<unsigned int>& counters_buf,
-      vecmem::vector<unsigned int>& h_counters) const;
+      const unsigned int nNodes) const;
 
   /// Stage 3: run the CCA, extract paths, fit and disambiguate into seeds.
   edm::seed_collection::buffer extract_seeds(
       vecmem::data::vector_buffer<unsigned int>& output_graph,
+      vecmem::data::vector_buffer<unsigned char>& levels,
       vecmem::data::vector_buffer<float4>& reducedSP,
       const unsigned int nConnectedEdges, const unsigned int nSp,
       vecmem::data::vector_buffer<unsigned int>& counters_buf,
@@ -297,11 +298,20 @@ class gbts_seeding_algorithm
   gbts_seedfinder_config m_config;
   /// Number of bin pairs in m_config.binTables
   unsigned int m_nBinPairs = 0;
-  /// m_config.binTables as (bin1, bin2), uploaded per event
-  std::vector<uint2> m_bin_pairs;
-  /// Per bin pair: index of the first pair with the same bin1, uploaded per
-  /// event
-  std::vector<unsigned int> m_pair_group_begin;
+  /// @name Static tables, kept in (pinned) host memory and uploaded
+  /// asynchronously per event
+  /// @{
+  vecmem::vector<short> m_h_volumeToLayerMap;
+  vecmem::vector<std::pair<unsigned int, unsigned int>> m_h_surfaceToLayerMap;
+  vecmem::vector<char> m_h_layerType;
+  vecmem::vector<std::pair<unsigned int, unsigned int>> m_h_layer_info;
+  vecmem::vector<std::pair<float, float>> m_h_layer_geo;
+  vecmem::vector<float> m_h_tau_lut;
+  /// m_config.binTables as (bin1, bin2)
+  vecmem::vector<uint2> m_bin_pairs;
+  /// Per bin pair: index of the first pair with the same bin1
+  vecmem::vector<unsigned int> m_pair_group_begin;
+  /// @}
 
 };  // class gbts_seeding_algorithm
 

@@ -43,8 +43,6 @@ struct gbts_match_graph_edges_payload {
   vecmem::data::vector_view<int> reIndexer;
   /// class for decoding short4 edge params to float4, bool
   edge_params_converter edge_params_decoder;
-  /// In/out: global atomic counter of total accepted connections
-  unsigned int* nConnectionsCounter;
 };
 
 /// @brief For each edge, find compatible neighbour edges sharing its outer

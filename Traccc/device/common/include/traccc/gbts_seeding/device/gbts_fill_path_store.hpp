@@ -37,6 +37,10 @@ struct gbts_fill_path_store_payload {
   /// Inclusive prefix sum of the per-edge row counts (see
   /// gbts_count_terminus_edges_payload)
   vecmem::data::vector_view<const unsigned int> row_sizes;
+  /// Output: seed proposals, initialised to (-1, -1) per row
+  vecmem::data::vector_view<int2> seed_proposals;
+  /// Output: seed ambiguity flags, initialised to 0 per row
+  vecmem::data::vector_view<char> seed_ambiguity;
 };
 
 /// @brief Enumerate every path below every terminus edge into the path

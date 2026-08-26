@@ -159,7 +159,8 @@ TRACCC_HOST_DEVICE inline unsigned int gbts_walk_slab_interval(
     const gbts_make_graph_edges_params& ap,
     const edge_params_converter& edge_params_maker,
     vecmem::device_vector<uint2>& d_edge_nodes,
-    vecmem::device_vector<short4>& d_edge_params, unsigned int cursor,
+    vecmem::device_vector<short4>& d_edge_params,
+    vecmem::device_vector<int>& d_reindexer, unsigned int cursor,
     const unsigned int cursor_end) {
   if (hi < shared_phi[0] || lo > shared_phi[slab_size - 1u]) {
     return cursor;
@@ -184,6 +185,7 @@ TRACCC_HOST_DEVICE inline unsigned int gbts_walk_slab_interval(
       const float eta = -1 * math::log(math::sqrt(1.0f + tau * tau) - tau);
       // edge linking order is inside->out
       d_edge_nodes[cursor] = uint2{slab_begin + j, node1};
+      d_reindexer[cursor] = 0;
       const bool inflate_matching_cuts = (ap.long_edge_dz < math::fabs(dz)) ||
                                          (ap.long_edge_dr < math::fabs(dr));
       d_edge_params[cursor] = edge_params_maker.make_edge_params(
@@ -225,6 +227,7 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
       payload.num_outgoing_edges);
   vecmem::device_vector<uint2> d_edge_nodes(payload.edge_nodes);
   vecmem::device_vector<short4> d_edge_params(payload.edge_params);
+  vecmem::device_vector<int> d_reindexer(payload.reindexer);
 
   vecmem::device_vector<float> shared_phi(shared.phi);
   vecmem::device_vector<float4> shared_node_pack(shared.node_pack);
@@ -327,19 +330,19 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
             shared_phi, shared_node_pack, slab_begin, slab_size,
             -traccc::device::PI_F - 1.0f, traccc::device::PI_F + 1.0f, np1,
             phi1, node1, deltaPhi, ap, payload.edge_params_maker, d_edge_nodes,
-            d_edge_params, cursor, cursor_end);
+            d_edge_params, d_reindexer, cursor, cursor_end);
       } else {
         cursor = detail::gbts_walk_slab_interval<fill>(
             shared_phi, shared_node_pack, slab_begin, slab_size, my_window.lo_a,
             my_window.hi_a, np1, phi1, node1, deltaPhi, ap,
-            payload.edge_params_maker, d_edge_nodes, d_edge_params, cursor,
-            cursor_end);
+            payload.edge_params_maker, d_edge_nodes, d_edge_params, d_reindexer,
+            cursor, cursor_end);
         if (my_window.lo_b <= my_window.hi_b) {
           cursor = detail::gbts_walk_slab_interval<fill>(
               shared_phi, shared_node_pack, slab_begin, slab_size,
               my_window.lo_b, my_window.hi_b, np1, phi1, node1, deltaPhi, ap,
-              payload.edge_params_maker, d_edge_nodes, d_edge_params, cursor,
-              cursor_end);
+              payload.edge_params_maker, d_edge_nodes, d_edge_params,
+              d_reindexer, cursor, cursor_end);
         }
       }
     }

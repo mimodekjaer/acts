@@ -58,6 +58,9 @@ struct gbts_make_graph_edges_payload {
   /// Fill pass output: packed per-edge [eta, curv, phi_z, phi_w] used by
   /// matching
   vecmem::data::vector_view<short4> edge_params;
+  /// Fill pass output: per-edge "kept" flag, initialised to 0 (later set by
+  /// gbts_match_graph_edges)
+  vecmem::data::vector_view<int> reindexer;
 };
 
 /// (Shared Event Data) Payload for the @c traccc::device::gbts_make_graph_edges

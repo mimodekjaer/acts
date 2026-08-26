@@ -22,6 +22,8 @@ namespace traccc::device {
 struct gbts_reset_edge_bids_payload {
   /// Number of path-store rows (proposals are indexed by row)
   unsigned int nRows;
+  /// Number of connected edges (size of one edge-bid buffer)
+  unsigned int nConnectedEdges;
   /// Per-path (edge index, parent path-store index or -1) entries
   vecmem::data::vector_view<const int2> path_store;
   /// In/out: per-seed-proposal (path_store index, level)
@@ -29,6 +31,8 @@ struct gbts_reset_edge_bids_payload {
   /// In/out: per-edge highest-bidder seed proposal (cleared between
   /// rounds)
   vecmem::data::vector_view<unsigned long long int> edge_bids;
+  /// Output: the edge bids of the next round, zeroed by this kernel
+  vecmem::data::vector_view<unsigned long long int> edge_bids_next;
   /// In/out: per-seed-proposal ambiguity tag
   vecmem::data::vector_view<char> seed_ambiguity;
   /// In/out: global atomic counter of rejected proposals

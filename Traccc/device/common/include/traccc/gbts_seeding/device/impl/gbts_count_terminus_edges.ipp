@@ -25,10 +25,16 @@ TRACCC_HOST_DEVICE inline void gbts_count_terminus_edges(
   const vecmem::device_vector<const int2> d_outgoing_paths(
       payload.outgoing_paths);
   vecmem::device_vector<unsigned int> d_row_sizes(payload.row_sizes);
+  vecmem::device_vector<unsigned long long int> d_edge_bids(payload.edge_bids);
 
   const unsigned int globalIdx = thread_id.getGlobalThreadIdX();
   const unsigned int blockDimX = thread_id.getBlockDimX();
   const unsigned int gridDimX = thread_id.getGridDimX();
+
+  for (unsigned int globalIndex = globalIdx; globalIndex < d_edge_bids.size();
+       globalIndex += blockDimX * gridDimX) {
+    d_edge_bids[globalIndex] = 0ull;
+  }
 
   for (unsigned int globalIndex = globalIdx;
        globalIndex < payload.nConnectedEdges;
@@ -39,8 +45,6 @@ TRACCC_HOST_DEVICE inline void gbts_count_terminus_edges(
       continue;
     }
     d_row_sizes[globalIndex] = 1u + static_cast<unsigned int>(out_paths.x);
-    vecmem::device_atomic_ref<unsigned int>(*payload.nTerminusEdgesCounter)
-        .fetch_add(1u);
   }
 }
 

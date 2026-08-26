@@ -30,8 +30,8 @@ struct gbts_count_terminus_edges_payload {
   /// of terminus edge e are [row_sizes[e] - (1 + subtree), row_sizes[e]) and
   /// the last entry is the total path-store size.
   vecmem::data::vector_view<unsigned int> row_sizes;
-  /// In/out: global atomic count of terminus edges
-  unsigned int* nTerminusEdgesCounter;
+  /// Output: edge bids (both halves of the double buffer), zeroed
+  vecmem::data::vector_view<unsigned long long int> edge_bids;
 };
 
 /// @brief Count terminus edges and lay out the path store.

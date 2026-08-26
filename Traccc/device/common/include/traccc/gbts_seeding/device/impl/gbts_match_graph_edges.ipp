@@ -65,6 +65,7 @@ TRACCC_HOST_DEVICE inline void gbts_match_graph_edges(
     const unsigned int nLinks =
         d_num_outgoing_edges[sharedNode + 1u] - link_begin;
     if (nLinks == 0u) {
+      d_num_neighbours[globalIndex] = 0u;
       continue;
     }
 
@@ -133,8 +134,6 @@ TRACCC_HOST_DEVICE inline void gbts_match_graph_edges(
 
     if (num_nei != 0) {
       d_reIndexer[globalIndex] = 1;
-      vecmem::device_atomic_ref<unsigned int>(*payload.nConnectionsCounter)
-          .fetch_add(static_cast<unsigned int>(num_nei));
     }
   }
 }

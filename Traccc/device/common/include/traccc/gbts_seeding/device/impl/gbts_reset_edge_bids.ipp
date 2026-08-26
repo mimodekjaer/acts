@@ -26,10 +26,19 @@ TRACCC_HOST_DEVICE inline void gbts_reset_edge_bids(
   const vecmem::device_vector<const unsigned long long int> d_edge_bids(
       payload.edge_bids);
   vecmem::device_vector<char> d_seed_ambiguity(payload.seed_ambiguity);
+  vecmem::device_vector<unsigned long long int> d_edge_bids_next(
+      payload.edge_bids_next);
 
   const unsigned int globalIdx = thread_id.getGlobalThreadIdX();
   const unsigned int blockDimX = thread_id.getBlockDimX();
   const unsigned int gridDimX = thread_id.getGridDimX();
+
+  // Prepare the bids of the next round (the buffer of the previous round
+  // is no longer read by anyone).
+  for (unsigned int idx = globalIdx; idx < payload.nConnectedEdges;
+       idx += blockDimX * gridDimX) {
+    d_edge_bids_next[idx] = 0ull;
+  }
 
   for (unsigned int prop_idx = globalIdx; prop_idx < payload.nRows;
        prop_idx += blockDimX * gridDimX) {

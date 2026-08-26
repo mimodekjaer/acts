@@ -22,6 +22,8 @@ namespace traccc::device {
 struct gbts_compress_graph_payload {
   /// Number of original (uncompressed) edges
   unsigned int nEdges;
+  /// Number of kept edges (size of one CCA levels buffer)
+  unsigned int nConnectedEdges;
   /// Maximum number of neighbours retained per edge
   unsigned int nMaxNei;
   /// Sorted-slot to original spacepoint index map
@@ -39,6 +41,8 @@ struct gbts_compress_graph_payload {
   /// of edge_size = 2 + 1 + nMaxNei ints (node1, node2, nNei,
   /// nei0..neiN-1).
   vecmem::data::vector_view<unsigned int> output_graph;
+  /// Output: CCA levels (2 * nConnectedEdges), initialised to 1
+  vecmem::data::vector_view<unsigned char> levels;
 };
 
 /// @brief Pack kept edges into the compact "output graph" layout.

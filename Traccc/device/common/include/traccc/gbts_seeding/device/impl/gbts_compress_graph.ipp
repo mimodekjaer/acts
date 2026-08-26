@@ -30,6 +30,7 @@ TRACCC_HOST_DEVICE inline void gbts_compress_graph(
       payload.neighbours);
   const vecmem::device_vector<const int> d_reIndexer(payload.reIndexer);
   vecmem::device_vector<unsigned int> d_output_graph(payload.output_graph);
+  vecmem::device_vector<unsigned char> d_levels(payload.levels);
 
   const unsigned int globalIdx = thread_id.getGlobalThreadIdX();
   const unsigned int blockDimX = thread_id.getBlockDimX();
@@ -43,6 +44,9 @@ TRACCC_HOST_DEVICE inline void gbts_compress_graph(
       continue;
     }
     const int newIdx = scan - 1;
+    // Initialise both CCA level buffers of the kept edge to 1.
+    d_levels[static_cast<unsigned int>(newIdx)] = 1u;
+    d_levels[payload.nConnectedEdges + static_cast<unsigned int>(newIdx)] = 1u;
 
     // Row-major output graph: each edge owns a contiguous block of
     // edge_size = 2 + 1 + nMaxNei ints ([node1, node2, nNei,
@@ -60,8 +64,7 @@ TRACCC_HOST_DEVICE inline void gbts_compress_graph(
     for (unsigned int k = 0u; k < nNei; k++) {
       // Every recorded neighbour is itself kept (match flagged it).
       d_output_graph[pos + gbts_consts::nei_start + k] =
-          static_cast<unsigned int>(d_reIndexer[d_neighbours[nei_pos + k]] -
-                                    1);
+          static_cast<unsigned int>(d_reIndexer[d_neighbours[nei_pos + k]] - 1);
     }
   }
 }
