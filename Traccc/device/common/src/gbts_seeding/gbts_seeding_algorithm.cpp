@@ -398,39 +398,34 @@ auto gbts_seeding_algorithm::extract_seeds(
   vecmem::data::vector_buffer<char> seed_ambiguity_buf(nRows, mr().main);
   copy().setup(seed_ambiguity_buf)->ignore();
 
+  // Lays out the path store and fits every path (segment fit fused).
   gbts_fill_path_store_kernel(
       {nRows, nRowsGrid, row_count, nConnectedEdges, cfg.max_num_neighbours,
        path_store_buf, output_graph, levels_buf, outgoing_paths_buf,
-       row_sizes_buf, seed_proposals_buf, seed_ambiguity_buf});
-
-  gbts_fit_segments_kernel(
-      {nRows, nRowsGrid, row_count, cfg.max_num_neighbours, cfg.minLevel,
-       reducedSP, output_graph, path_store_buf, seed_proposals_buf,
-       d_counters + gbts_counter::nProps, cfg.gbts_fit_segments_params,
-       cfg.gbts_make_graph_edges_params.max_z0});
+       row_sizes_buf, seed_proposals_buf, seed_ambiguity_buf, cfg.minLevel,
+       reducedSP, d_counters + gbts_counter::nProps,
+       cfg.gbts_fit_segments_params, cfg.gbts_make_graph_edges_params.max_z0});
 
   // 7. Disambiguate seeds through the initial bid and repeated seed-vs-edge
   //    bidding rounds. The proposal / rejection counts are not read back:
   //    every later kernel loops over the rows and the seed output is sized
   //    by the (upper bound) row count, which saves two synchronisations.
-  gbts_bid_seeds_kernel({nRows, nRowsGrid, row_count, nConnectedEdges,
-                         cfg.edge_bidding_rounds, path_store_buf,
-                         seed_proposals_buf, seed_ambiguity_buf, edge_bids_buf,
-                         d_counters + gbts_counter::nRejected});
-
-  // 8. Convert to 3sp seeds and make output buffer (at most two seeds per
-  //    proposal, at most one proposal per row).
+  // 8. Output buffer (at most two seeds per proposal, at most one proposal
+  //    per row).
   const unsigned int nSeeds = nRows;
   edm::seed_collection::buffer output_seeds(
       2 * nSeeds, mr().main, vecmem::data::buffer_type::resizable);
   copy().setup(output_seeds)->ignore();
 
+  // Bidding rounds, hit bidding and seed conversion (fused by the CUDA
+  // backend into one cooperative kernel).
   const unsigned int edge_size = 1u + 2u + cfg.max_num_neighbours;
-  gbts_bid_seeds_for_hits_kernel(
+  gbts_finish_seeds_kernel(
+      {nRows, nRowsGrid, row_count, nConnectedEdges, cfg.edge_bidding_rounds,
+       path_store_buf, seed_proposals_buf, seed_ambiguity_buf, edge_bids_buf,
+       d_counters + gbts_counter::nRejected},
       {nRows, nRowsGrid, row_count, nSeeds, edge_size, output_graph,
-       seed_proposals_buf, path_store_buf, seed_ambiguity_buf, hit_bids_buf});
-
-  gbts_convert_seeds_kernel(
+       seed_proposals_buf, path_store_buf, seed_ambiguity_buf, hit_bids_buf},
       {nRows, nRowsGrid, row_count, nSeeds, cfg.max_num_neighbours,
        seed_proposals_buf, seed_ambiguity_buf, path_store_buf, output_graph,
        reducedSP, output_seeds, hit_bids_buf, cfg.gbts_convert_seeds_params});
@@ -447,6 +442,15 @@ void gbts_seeding_algorithm::gbts_run_cca_kernel(
     iteration.iter = iter;
     gbts_run_cca_iteration_kernel(iteration);
   }
+}
+
+void gbts_seeding_algorithm::gbts_finish_seeds_kernel(
+    const gbts_seed_bidding_payload& bidding,
+    const gbts_bid_seeds_for_hits_payload& hits,
+    const gbts_convert_seeds_payload& convert) const {
+  gbts_bid_seeds_kernel(bidding);
+  gbts_bid_seeds_for_hits_kernel(hits);
+  gbts_convert_seeds_kernel(convert);
 }
 
 void gbts_seeding_algorithm::gbts_bid_seeds_kernel(

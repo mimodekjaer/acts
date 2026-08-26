@@ -234,3 +234,15 @@ SLOWER than the uncached fused kernel (70 us); dropped.
   the iteration body disabled); the remaining ~55 us are the level loads of
   the first iterations, i.e. the CCA is close to its floor with this
   algorithm.
+
+### B8. Kernel fusions in the seed tail (FASTER, small)
+- Hit bidding and seed conversion appended as two more grid-synchronised
+  phases of the cooperative bidding kernel (gbts_finish_seeds_kernel launcher
+  virtual, CUDA override; other backends keep three launches):
+  0.852 -> 0.848 ms/event (81 us fused vs 66 + 9 + 13 us plus two launch gaps).
+- Segment fit folded into gbts_fill_path_store: the descent that lays out a
+  row already visits its root-to-leaf edge chain, which is the reversed
+  sequence the Kalman fit walks through the parent links, so the fit runs
+  on the chain kept in registers (bit-identical operations). Removes the
+  fit_segments kernel: 0.848 -> ~0.842 ms/event (fill+fit 24.6 us vs 21 + 9).
+Seeds identical (1 953 000) in every step.

@@ -10,6 +10,7 @@
 // Project include(s).
 #include "traccc/definitions/qualifiers.hpp"
 #include "traccc/device/concepts/thread_id.hpp"
+#include "traccc/gbts_seeding/gbts_seeding_config.hpp"
 #include "traccc/gbts_seeding/gbts_types.hpp"
 
 // VecMem include(s).
@@ -45,6 +46,20 @@ struct gbts_fill_path_store_payload {
   vecmem::data::vector_view<int2> seed_proposals;
   /// Output: seed ambiguity flags, initialised to 0 per row
   vecmem::data::vector_view<char> seed_ambiguity;
+  /// @name Segment fit (formerly gbts_fit_segments), run on the row's path
+  /// right after it has been laid out
+  /// @{
+  /// Minimum number of edges a path must have to be fit
+  unsigned char minLevel;
+  /// Reduced (x, y, z, w) per original spacepoint
+  vecmem::data::vector_view<const float4> reducedSP;
+  /// In/out: global atomic count of accepted seed proposals
+  unsigned int* nPropsCounter;
+  /// Curvature / pT / chi-squared cut parameters
+  traccc::gbts_fit_segments_params gbts_fit_segments_params;
+  /// Maximum |z0| at the beamline for extrapolation cuts
+  float max_z0;
+  /// @}
 };
 
 /// @brief Enumerate every path below every terminus edge into the path

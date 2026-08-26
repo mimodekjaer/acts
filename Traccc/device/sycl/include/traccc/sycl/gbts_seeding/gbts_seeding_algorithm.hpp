@@ -66,8 +66,6 @@ class gbts_seeding_algorithm : public device::gbts_seeding_algorithm,
       const device::gbts_count_terminus_edges_payload& payload) const override;
   void gbts_fill_path_store_kernel(
       const device::gbts_fill_path_store_payload& payload) const override;
-  void gbts_fit_segments_kernel(
-      const device::gbts_fit_segments_payload& payload) const override;
   void gbts_bid_seeds_for_edges_kernel(
       const device::gbts_bid_seeds_for_edges_payload& payload) const override;
   void gbts_reset_edge_bids_kernel(

@@ -195,6 +195,22 @@ class gbts_seeding_algorithm
   virtual void gbts_bid_seeds_kernel(
       const gbts_seed_bidding_payload& payload) const;
 
+  /// Launcher of the whole seed finishing sequence: bidding (see
+  /// gbts_bid_seeds_kernel), then gbts_bid_seeds_for_hits, then
+  /// gbts_convert_seeds
+  ///
+  /// The default implementation launches the three steps separately;
+  /// backends may fuse them into one kernel.
+  ///
+  /// @param bidding The payload of the bidding sequence
+  /// @param hits    The payload of the hit bidding
+  /// @param convert The payload of the seed conversion
+  ///
+  virtual void gbts_finish_seeds_kernel(
+      const gbts_seed_bidding_payload& bidding,
+      const gbts_bid_seeds_for_hits_payload& hits,
+      const gbts_convert_seeds_payload& convert) const;
+
   /// Terminus-edge counting / path-store layout kernel launcher
   ///
   /// The implementation runs an inclusive prefix sum over the per-edge row
@@ -211,13 +227,6 @@ class gbts_seeding_algorithm
   ///
   virtual void gbts_fill_path_store_kernel(
       const gbts_fill_path_store_payload& payload) const = 0;
-
-  /// Segment fitting kernel launcher
-  ///
-  /// @param payload The payload for the kernel
-  ///
-  virtual void gbts_fit_segments_kernel(
-      const gbts_fit_segments_payload& payload) const = 0;
 
   /// Initial edge-bid kernel launcher
   ///

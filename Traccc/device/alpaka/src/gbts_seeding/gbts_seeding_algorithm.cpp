@@ -206,15 +206,6 @@ struct gbts_fill_path_store {
   }
 };
 
-/// Alpaka kernel for running @c traccc::device::gbts_fit_segments
-struct gbts_fit_segments {
-  template <typename TAcc>
-  ALPAKA_FN_ACC void operator()(
-      TAcc const& acc, const device::gbts_fit_segments_payload payload) const {
-    device::gbts_fit_segments(details::thread_id1{acc}, payload);
-  }
-};
-
 /// Alpaka kernel for running @c traccc::device::gbts_bid_seeds_for_edges
 struct gbts_bid_seeds_for_edges {
   template <typename TAcc>
@@ -412,15 +403,6 @@ void gbts_seeding_algorithm::gbts_fill_path_store_kernel(
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),
                       kernels::gbts_fill_path_store{}, payload);
-}
-
-void gbts_seeding_algorithm::gbts_fit_segments_kernel(
-    const device::gbts_fit_segments_payload& payload) const {
-  const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nRowsGrid - 1) / n_threads;
-  ::alpaka::exec<Acc>(details::get_queue(queue()),
-                      makeWorkDiv<Acc>(n_blocks, n_threads),
-                      kernels::gbts_fit_segments{}, payload);
 }
 
 void gbts_seeding_algorithm::gbts_bid_seeds_for_edges_kernel(

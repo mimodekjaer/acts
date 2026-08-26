@@ -22,7 +22,6 @@
 #include "traccc/gbts_seeding/device/gbts_count_terminus_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_fill_path_store.hpp"
 #include "traccc/gbts_seeding/device/gbts_find_minmax_radius.hpp"
-#include "traccc/gbts_seeding/device/gbts_fit_segments.hpp"
 #include "traccc/gbts_seeding/device/gbts_make_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_match_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_rebid_seeds_for_edges.hpp"
@@ -306,9 +305,9 @@ __device__ inline void gbts_bid_uncached(
 /// gbts_bid_seeds_for_edges / gbts_rebid_seeds_for_edges /
 /// gbts_reset_edge_bids.
 template <unsigned int MAX_LEN>
-__global__ void gbts_bid_seeds_cached(
-    const device::gbts_seed_bidding_payload payload) {
-  cooperative_groups::grid_group grid = cooperative_groups::this_grid();
+__device__ inline void gbts_bid_seeds_cached_body(
+    cooperative_groups::grid_group& grid,
+    const device::gbts_seed_bidding_payload& payload) {
   const vecmem::device_vector<const int2> d_path_store(payload.path_store);
   vecmem::device_vector<int2> d_seed_proposals(payload.seed_proposals);
   vecmem::device_vector<char> d_seed_ambiguity(payload.seed_ambiguity);
@@ -453,6 +452,26 @@ __global__ void gbts_bid_seeds_cached(
   }
 }
 
+/// Payloads of the fused seed finishing kernel
+struct gbts_finish_seeds_payloads {
+  device::gbts_seed_bidding_payload bidding;
+  device::gbts_bid_seeds_for_hits_payload hits;
+  device::gbts_convert_seeds_payload convert;
+};
+
+/// CUDA kernel running the bidding sequence (register cached), the hit
+/// bidding and the seed conversion in one cooperative launch
+template <unsigned int MAX_LEN>
+__global__ void gbts_finish_seeds_cached(
+    const gbts_finish_seeds_payloads payloads) {
+  cooperative_groups::grid_group grid = cooperative_groups::this_grid();
+  gbts_bid_seeds_cached_body<MAX_LEN>(grid, payloads.bidding);
+  grid.sync();
+  device::gbts_bid_seeds_for_hits(details::thread_id1{}, payloads.hits);
+  grid.sync();
+  device::gbts_convert_seeds(details::thread_id1{}, payloads.convert);
+}
+
 /// CUDA kernel running the whole seed-vs-edge bidding sequence in one
 /// cooperative launch, with grid-wide barriers between the steps
 __global__ void gbts_bid_seeds(
@@ -482,12 +501,6 @@ __global__ void gbts_count_terminus_edges(
 __global__ void gbts_fill_path_store(
     const device::gbts_fill_path_store_payload payload) {
   device::gbts_fill_path_store(details::thread_id1{}, payload);
-}
-
-/// CUDA kernel for running @c traccc::device::gbts_fit_segments
-__global__ void gbts_fit_segments(
-    const device::gbts_fit_segments_payload payload) {
-  device::gbts_fit_segments(details::thread_id1{}, payload);
 }
 
 /// CUDA kernel for running @c traccc::device::gbts_bid_seeds_for_edges
@@ -754,15 +767,28 @@ void gbts_seeding_algorithm::gbts_run_cca_kernel(
 
 void gbts_seeding_algorithm::gbts_bid_seeds_kernel(
     const device::gbts_seed_bidding_payload& payload) const {
-  // One cached row per thread, the grid sized for the expected row count
-  // (rows beyond the grid are handled uncached by the same kernel).
-  if (launch_cooperative(kernels::gbts_bid_seeds_cached<
+  if (!launch_cooperative(kernels::gbts_bid_seeds, payload.nRowsGrid, 1024u,
+                          payload, details::get_stream(stream()))) {
+    device::gbts_seeding_algorithm::gbts_bid_seeds_kernel(payload);
+  }
+}
+
+void gbts_seeding_algorithm::gbts_finish_seeds_kernel(
+    const device::gbts_seed_bidding_payload& bidding,
+    const device::gbts_bid_seeds_for_hits_payload& hits,
+    const device::gbts_convert_seeds_payload& convert) const {
+  // One cooperative kernel: cached bidding rounds, hit bidding, conversion.
+  // The grid is sized for the expected row count (extra rows are handled
+  // uncached / by grid-striding).
+  const kernels::gbts_finish_seeds_payloads payloads{bidding, hits, convert};
+  if (launch_cooperative(kernels::gbts_finish_seeds_cached<
                              traccc::device::gbts_consts::max_cca_iter + 1u>,
-                         payload.nRowsGrid, 1024u, payload,
+                         bidding.nRowsGrid, 1024u, payloads,
                          details::get_stream(stream()))) {
     return;
   }
-  device::gbts_seeding_algorithm::gbts_bid_seeds_kernel(payload);
+  device::gbts_seeding_algorithm::gbts_finish_seeds_kernel(bidding, hits,
+                                                           convert);
 }
 
 void gbts_seeding_algorithm::gbts_run_cca_iteration_kernel(
@@ -798,15 +824,6 @@ void gbts_seeding_algorithm::gbts_fill_path_store_kernel(
   const unsigned int n_blocks = 1 + (payload.nRowsGrid - 1) / n_threads;
   kernels::gbts_fill_path_store<<<n_blocks, n_threads, 0,
                                   details::get_stream(stream())>>>(payload);
-  TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
-}
-
-void gbts_seeding_algorithm::gbts_fit_segments_kernel(
-    const device::gbts_fit_segments_payload& payload) const {
-  const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nRowsGrid - 1) / n_threads;
-  kernels::gbts_fit_segments<<<n_blocks, n_threads, 0,
-                               details::get_stream(stream())>>>(payload);
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
 }
 
