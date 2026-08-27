@@ -82,7 +82,17 @@ totals were themselves schedule-dependent, so there was no well-defined
 previous selection to preserve. Physics owner should re-validate efficiency
 once on the new deterministic baseline.
 
-## Residual seed-bidding nondeterminism (+/-1 seed, OPEN)
+## Residual seed-bidding nondeterminism (+/-1 seed) - RESOLVED (session C, entry 16)
+Not a bidding race: the upstream GPU clusterization/spacepoint formation
+delivers the spacepoints in a run-dependent order, and the node sort broke
+exact-phi ties by spacepoint index. The tie-break now uses (phi, r, z,
+width) before the index; the whole chain is reproducible (verified array by
+array). Note for validation: seeds must be compared by spacepoint
+COORDINATES, the spacepoint indices in the seed output follow the
+non-reproducible upstream order. The original text of the investigation is
+kept below for reference.
+
+## (superseded) Residual seed-bidding nondeterminism (+/-1 seed, OPEN)
 After the fixes above one flip remains: repeated runs give 804 240 vs
 804 200 total track parameters on events 5-9 @ 200 processed (i.e. +/-1
 seed in one event per 40-event cycle) and 782 940 vs 782 960 on events 0-9.

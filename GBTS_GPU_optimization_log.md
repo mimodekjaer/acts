@@ -452,3 +452,35 @@ algorithm is reused across differently-sized events in the throughput run,
 and the instrumented sanitizer was too slow to localise it in the time
 budget. Reverted; not worth the risk for the marginal gain. The dynamic
 grab stays.
+
+## Session C (third session, continuing on feat/gbts-traccc-determinism)
+
+Protocol unchanged; the seed totals are now checked on three input sets:
+events 0-4 @ 200 processed, events 5-9 @ 200 processed and the default
+set (events 0-9 cycled) @ 500 processed, each run several times.
+
+### 16. DETERMINISM: node tie-break by intrinsic data, not spacepoint index  -> fully reproducible
+Root cause of the residual +/-1-seed flip (entry 15 / cut notes): the
+spacepoint order delivered by the upstream GPU clusterization + spacepoint
+formation is NOT reproducible run to run (verified with a dump: the
+compacted graph had identical neighbour lists but different node1/node2
+spacepoint indices in every edge). GBTS itself only depended on that order
+in one place: inside a run of equal (eta bin, quantised phi) sort keys,
+`gbts_sort_nodes` ranked nodes by (exact phi, spacepoint index), so two
+spacepoints with exactly the same phi (same x/y ratio, e.g. strip clusters
+stacked in z) swapped slots between runs; the edge numbering of their
+buckets swapped with them, and the index-based tie-breaks of the CCA row
+layout and the seed bidding (quality << 32 | row) then flipped a seed.
+The rank is now (phi, r, z, cluster width, spacepoint index): only nodes
+with identical parameters still fall back to the index, and those are
+interchangeable for the seeding. Verified with a per-event dump of the CCA
+levels / parent marks / subtree counts / row sizes / path store /
+proposals / ambiguity flags over three runs of events 5-9: all
+bit-identical; the seeds compared by spacepoint coordinates (the indices
+themselves follow the upstream order) are identical.
+Throughput: 0.727 ms/event on the default set (1 953 000 seeds x2),
+0.771 ms/event on events 5-9 (804 240 x4), 0.702 on events 0-4
+(761 680 x3). No cut change (sort_nodes 12.3 -> 12.7 us).
+Lesson: "counters identical, seeds differ" was a relabeling, not a race;
+comparing seeds by coordinates instead of by spacepoint index is the right
+determinism test when the upstream chain is itself non-reproducible.

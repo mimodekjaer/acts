@@ -157,9 +157,15 @@ TRACCC_HOST_DEVICE inline void gbts_sort_nodes(
       }
 
       // The keys order the nodes by quantised phi; inside a run of equal
-      // (eta bin, quantised phi) the exact (phi, spacepoint index) rank
-      // decides the slot, so the nodes of an eta bin end up exactly sorted
-      // by phi (deterministically).
+      // (eta bin, quantised phi) the exact (phi, r, z, width, spacepoint
+      // index) rank decides the slot, so the nodes of an eta bin end up
+      // exactly sorted by phi. The intrinsic node data come before the
+      // spacepoint index on purpose: the spacepoint order produced by the
+      // upstream (GPU) clusterization is not reproducible run to run, so an
+      // index tie-break would make the node order - and through it every
+      // index-based tie-break downstream - schedule dependent. Only nodes
+      // with identical parameters still fall back to the index, and those
+      // are interchangeable for the seeding.
       unsigned int pos = globalIndex;
       const bool in_run =
           ((globalIndex > 0u) &&
@@ -185,7 +191,18 @@ TRACCC_HOST_DEVICE inline void gbts_sort_nodes(
           const unsigned int otherIdx = gbts_sort_key_index(d_sort_keys[j]);
           const float4 other = d_reducedSP[otherIdx];
           const float otherPhi = math::atan2(other.y, other.x);
-          if ((otherPhi < Phi) || ((otherPhi == Phi) && (otherIdx < srcIdx))) {
+          bool before = otherPhi < Phi;
+          if (otherPhi == Phi) {
+            const float otherR =
+                math::sqrt(other.x * other.x + other.y * other.y);
+            before = (otherR < r) ||
+                     ((otherR == r) &&
+                      ((other.z < z) ||
+                       ((other.z == z) &&
+                        ((other.w < sp.w) ||
+                         ((other.w == sp.w) && (otherIdx < srcIdx))))));
+          }
+          if (before) {
             ++rank;
           }
         }
