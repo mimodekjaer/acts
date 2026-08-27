@@ -219,25 +219,21 @@ __device__ inline void gbts_run_cca_cached_body(
   vecmem::device_vector<int2> d_outgoing_paths(payload.outgoing_paths);
   unsigned int* active_counters = payload.active_counters;
 
-  // Edges present, capped by the capacity and by the resident grid (one
-  // cached edge per thread); the rest is reported as dropped.
+  // Edges present, capped by the capacity. The thread's first edge keeps
+  // its neighbour list in registers; edges beyond the grid (events larger
+  // than the resident cooperative grid) are handled uncached, with their
+  // active flags in the global active_edges array -- ALL present edges are
+  // processed.
+  vecmem::device_vector<char> d_active(payload.active_edges);
   const unsigned int nThreads = gridDim.x * blockDim.x;
-  const unsigned int n_present =
-      (*payload.d_nConnectedEdges < payload.nConnectedEdges)
-          ? *payload.d_nConnectedEdges
-          : payload.nConnectedEdges;
-  const unsigned int n = (n_present < nThreads) ? n_present : nThreads;
+  const unsigned int n = (*payload.d_nConnectedEdges < payload.nConnectedEdges)
+                             ? *payload.d_nConnectedEdges
+                             : payload.nConnectedEdges;
   const unsigned int edge_size = 2u + 1u + payload.max_num_neighbours;
   const unsigned int edge = blockIdx.x * blockDim.x + threadIdx.x;
   const bool has_edge = edge < n;
-  if (edge == 0u && n_present > n) {
-    *payload.dropped_counter = n_present - n;
-  }
   constexpr unsigned char max_iter = traccc::device::gbts_consts::max_cca_iter;
 
-  // Cache the neighbour list of the thread's first edge; edges beyond the
-  // grid (rare: the grid is sized for the expected edge count) are handled
-  // uncached below with the per-edge active flags.
   unsigned int nNeighbours = 0u;
   unsigned int nei[MAX_NEI];
   if (has_edge) {
@@ -267,10 +263,30 @@ __device__ inline void gbts_run_cca_cached_body(
                           payload.minLevel, d_levels, d_outgoing_paths);
       active = stays_cached ? static_cast<int>(iter) + 1 : -1;
     }
-    // Count the edges that stay active (block aggregated), zero the next
-    // counter, and stop when nothing is left to do.
+    // Extra edges beyond the grid, uncached (their neighbour lists are
+    // re-read and their active flag lives in global memory).
+    bool any_active = stays_cached;
+    for (unsigned int e = edge + nThreads; e < n; e += nThreads) {
+      if ((iter != 0) && (d_active[e] != static_cast<char>(iter))) {
+        continue;
+      }
+      const unsigned int e_pos = edge_size * e;
+      const unsigned int e_nNei =
+          d_output_graph[e_pos + device::gbts_consts::nNei];
+      // The neighbour list is read straight from the graph (no register
+      // buffer: this path is only taken by events larger than the grid).
+      const unsigned int* e_nei =
+          &d_output_graph[e_pos + device::gbts_consts::nei_start];
+      const bool e_active =
+          gbts_cca_update(e, e_nNei, e_nei, iter, levelLoad, levelStore,
+                          payload.minLevel, d_levels, d_outgoing_paths);
+      d_active[e] = e_active ? static_cast<char>(iter + 1u) : char{-1};
+      any_active |= e_active;
+    }
+    // Count the threads with anything still active (block aggregated), zero
+    // the next counter, and stop when nothing is left to do.
     unsigned int block_active =
-        static_cast<unsigned int>(__syncthreads_count(stays_cached ? 1 : 0));
+        static_cast<unsigned int>(__syncthreads_count(any_active ? 1 : 0));
     if (threadIdx.x == 0u && block_active != 0u) {
       atomicAdd(active_counters + iter, block_active);
     }
@@ -352,12 +368,11 @@ __global__ void gbts_cca_rows_cached(const gbts_cca_rows_payloads payloads) {
   vecmem::device_vector<unsigned long long int> d_hit_bids(t.hit_bids);
   unsigned int* block_sums =
       payloads.cca.active_counters + device::gbts_run_cca_row_count_slot + 1u;
-  // Same edge clamp as the CCA body (present edges, capacity, grid).
+  // All present edges, capped by the capacity (like the CCA body).
   const unsigned int nThreads = gridDim.x * blockDim.x;
-  const unsigned int n_present = (*t.d_nConnectedEdges < t.nConnectedEdges)
-                                     ? *t.d_nConnectedEdges
-                                     : t.nConnectedEdges;
-  const unsigned int n = (n_present < nThreads) ? n_present : nThreads;
+  const unsigned int n = (*t.d_nConnectedEdges < t.nConnectedEdges)
+                             ? *t.d_nConnectedEdges
+                             : t.nConnectedEdges;
   const unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
   // Zero the bids of the edges present in both halves (grid-stride); the

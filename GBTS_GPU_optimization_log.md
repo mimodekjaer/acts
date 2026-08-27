@@ -367,3 +367,17 @@ output ~58 MB per event, which the cached device pool did not absorb (23 ms
 per event in a host gap); a CCA variant that also handled edges beyond the
 grid uncached cost 24 us even when unused (register spills) and was dropped
 in favour of the clamp + warning.
+
+### 14. FIX: fused CCA must process every connected edge  -> 0.727 ms/event
+The fused cooperative CCA (Session B commits 031f9a149/1e660c9d4) clamped
+the edge count to the resident grid and DROPPED the rest: on events 5-9
+(~210k connected edges vs ~176k resident threads) 34 620 edges per event
+were dropped and the seed total changed from 1 608 480 to 1 197 200 - a
+physics change, caught only because the validation was extended beyond
+events 0-4. Fixed: threads grid-stride over the extra edges uncached (their
+neighbour lists are re-read from the graph and their active flags live in
+the existing global active_edges array; settled edges never reactivate,
+identical semantics to the iterative CCA). Costs ~17 us on the fused kernel
+for all events (register pressure of the second code path) - still cheaper
+than the pre-fusion chain, and correct. The bench protocol now always checks
+events 5-9 (expected 1 608 480) in addition to events 0-4 (1 953 000).
