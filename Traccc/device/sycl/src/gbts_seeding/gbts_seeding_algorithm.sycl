@@ -306,6 +306,10 @@ void gbts_seeding_algorithm::gbts_count_terminus_edges_kernel(
                               payload.row_sizes.ptr(),
                               payload.row_sizes.ptr() + payload.nConnectedEdges,
                               payload.row_sizes.ptr());
+  // Publish the total row count (last entry of the scanned row sizes).
+  squeue.memcpy(payload.row_count,
+                d_row_sizes.data() + payload.nConnectedEdges - 1u,
+                sizeof(unsigned int));
 }
 
 void gbts_seeding_algorithm::gbts_fill_path_store_kernel(

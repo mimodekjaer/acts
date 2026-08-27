@@ -397,12 +397,8 @@ auto gbts_seeding_algorithm::extract_seeds(
   // Per-iteration active-edge counters for fused CCA implementations
   // (initialised by the kernel itself).
   vecmem::data::vector_buffer<unsigned int> cca_active_buf(
-      traccc::device::gbts_consts::max_cca_iter + 1u, mr().main);
+      traccc::device::gbts_run_cca_scratch_size, mr().main);
   copy().setup(cca_active_buf)->ignore();
-
-  gbts_run_cca_kernel({nConnectedEdges, cfg.max_num_neighbours, cfg.minLevel,
-                       output_graph, levels_buf, active_edges_buf,
-                       outgoing_paths_buf, 0u, cca_active_buf.ptr()});
 
   vecmem::data::vector_buffer<unsigned int> row_sizes_buf(nConnectedEdges,
                                                           mr().main);
@@ -418,13 +414,20 @@ auto gbts_seeding_algorithm::extract_seeds(
                                                                    mr().main);
   copy().setup(hit_bids_buf)->ignore();
 
-  gbts_count_terminus_edges_kernel({nConnectedEdges, outgoing_paths_buf,
-                                    row_sizes_buf, edge_bids_buf,
-                                    hit_bids_buf});
+  // CCA, terminus counting, row-size scan and bid zeroing (fused by the
+  // CUDA backend into one cooperative kernel).
+  gbts_run_cca_and_count_kernel(
+      {nConnectedEdges, cfg.max_num_neighbours, cfg.minLevel, output_graph,
+       levels_buf, active_edges_buf, outgoing_paths_buf, 0u,
+       cca_active_buf.ptr()},
+      {nConnectedEdges, outgoing_paths_buf, row_sizes_buf, edge_bids_buf,
+       hit_bids_buf,
+       cca_active_buf.ptr() + traccc::device::gbts_run_cca_row_count_slot});
 
-  // The row count stays on the device (last entry of the scanned row
-  // sizes); the path store gets a fixed capacity instead of a readback.
-  const unsigned int* row_count = row_sizes_buf.ptr() + nConnectedEdges - 1;
+  // The row count stays on the device (written by the terminus step); the
+  // path store gets a fixed capacity instead of a readback.
+  const unsigned int* row_count =
+      cca_active_buf.ptr() + traccc::device::gbts_run_cca_row_count_slot;
   const unsigned int nRows = cfg.max_rows_per_connected_edge * nConnectedEdges;
   const unsigned int nRowsGrid = nConnectedEdges;
 
@@ -469,6 +472,13 @@ auto gbts_seeding_algorithm::extract_seeds(
 
   // No synchronisation here: the caller reads the seed count.
   return output_seeds;
+}
+
+void gbts_seeding_algorithm::gbts_run_cca_and_count_kernel(
+    const gbts_run_cca_iteration_payload& cca,
+    const gbts_count_terminus_edges_payload& terminus) const {
+  gbts_run_cca_kernel(cca);
+  gbts_count_terminus_edges_kernel(terminus);
 }
 
 void gbts_seeding_algorithm::gbts_run_cca_kernel(

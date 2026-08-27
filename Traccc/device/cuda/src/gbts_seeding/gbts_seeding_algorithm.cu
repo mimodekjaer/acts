@@ -210,9 +210,9 @@ __device__ inline bool gbts_cca_update(
 }
 
 template <unsigned int MAX_NEI, bool EXTRA_EDGES>
-__global__ void gbts_run_cca_cached(
-    const device::gbts_run_cca_iteration_payload payload) {
-  cooperative_groups::grid_group grid = cooperative_groups::this_grid();
+__device__ inline void gbts_run_cca_cached_body(
+    cooperative_groups::grid_group& grid,
+    const device::gbts_run_cca_iteration_payload& payload) {
   const vecmem::device_vector<const unsigned int> d_output_graph(
       payload.output_graph);
   vecmem::device_vector<unsigned char> d_levels(payload.levels);
@@ -307,6 +307,139 @@ __global__ void gbts_run_cca_cached(
     if (active_counters[iter] == 0u) {
       break;
     }
+  }
+}
+
+/// Cached CCA as a kernel of its own
+template <unsigned int MAX_NEI, bool EXTRA_EDGES>
+__global__ void gbts_run_cca_cached(
+    const device::gbts_run_cca_iteration_payload payload) {
+  cooperative_groups::grid_group grid = cooperative_groups::this_grid();
+  gbts_run_cca_cached_body<MAX_NEI, EXTRA_EDGES>(grid, payload);
+}
+
+/// Block-wide inclusive scan (blockDim.x a multiple of 32, <= 1024).
+/// @c warp_sums is a shared array of 32 entries; returns the inclusive
+/// prefix of @c v and sets @c block_total.
+__device__ inline unsigned int gbts_block_inclusive_scan(
+    unsigned int v, unsigned int* warp_sums, unsigned int& block_total) {
+  const unsigned int lane = threadIdx.x % 32u;
+  const unsigned int warp = threadIdx.x / 32u;
+  const unsigned int nwarps = blockDim.x / 32u;
+  for (unsigned int o = 1u; o < 32u; o *= 2u) {
+    const unsigned int u = __shfl_up_sync(0xffffffffu, v, o);
+    if (lane >= o) {
+      v += u;
+    }
+  }
+  if (lane == 31u) {
+    warp_sums[warp] = v;
+  }
+  __syncthreads();
+  if (warp == 0u) {
+    unsigned int w = (lane < nwarps) ? warp_sums[lane] : 0u;
+    for (unsigned int o = 1u; o < 32u; o *= 2u) {
+      const unsigned int u = __shfl_up_sync(0xffffffffu, w, o);
+      if (lane >= o) {
+        w += u;
+      }
+    }
+    warp_sums[lane] = w;
+  }
+  __syncthreads();
+  block_total = warp_sums[nwarps - 1u];
+  v += (warp > 0u) ? warp_sums[warp - 1u] : 0u;
+  __syncthreads();
+  return v;
+}
+
+/// Payloads of the fused CCA + terminus counting kernel
+struct gbts_cca_rows_payloads {
+  device::gbts_run_cca_iteration_payload cca;
+  device::gbts_count_terminus_edges_payload terminus;
+};
+
+/// CUDA kernel running the cached CCA, then the terminus-edge counting, the
+/// inclusive scan of the row sizes (grid-wide) and the zeroing of the edge
+/// and hit bids, all in one cooperative launch
+template <unsigned int MAX_NEI, bool EXTRA_EDGES>
+__global__ void gbts_cca_rows_cached(const gbts_cca_rows_payloads payloads) {
+  cooperative_groups::grid_group grid = cooperative_groups::this_grid();
+  __shared__ unsigned int warp_sums[32];
+  __shared__ unsigned int block_offset_shared;
+
+  gbts_run_cca_cached_body<MAX_NEI, EXTRA_EDGES>(grid, payloads.cca);
+  grid.sync();
+
+  const device::gbts_count_terminus_edges_payload& t = payloads.terminus;
+  const vecmem::device_vector<const int2> d_outgoing_paths(t.outgoing_paths);
+  vecmem::device_vector<unsigned int> d_row_sizes(t.row_sizes);
+  vecmem::device_vector<unsigned long long int> d_edge_bids(t.edge_bids);
+  vecmem::device_vector<unsigned long long int> d_hit_bids(t.hit_bids);
+  unsigned int* block_sums =
+      payloads.cca.active_counters + device::gbts_run_cca_row_count_slot + 1u;
+  const unsigned int n = t.nConnectedEdges;
+  const unsigned int nThreads = gridDim.x * blockDim.x;
+  const unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+  // Zero the bids (grid-stride).
+  for (unsigned int i = tid; i < d_edge_bids.size(); i += nThreads) {
+    d_edge_bids[i] = 0ull;
+  }
+  for (unsigned int i = tid; i < d_hit_bids.size(); i += nThreads) {
+    d_hit_bids[i] = 0ull;
+  }
+
+  // Phase 1: every block scans a contiguous chunk of the row sizes.
+  const unsigned int chunk =
+      ((n + gridDim.x - 1u) / gridDim.x + blockDim.x - 1u) / blockDim.x *
+      blockDim.x;
+  const unsigned int begin = blockIdx.x * chunk;
+  const unsigned int end = (begin + chunk < n) ? begin + chunk : n;
+  unsigned int carry = 0u;
+  for (unsigned int base = begin; base < end; base += blockDim.x) {
+    const unsigned int e = base + threadIdx.x;
+    unsigned int v = 0u;
+    if (e < end) {
+      const int2 out_paths = d_outgoing_paths[e];
+      v = (out_paths.y == -1) ? 0u
+                              : 1u + static_cast<unsigned int>(out_paths.x);
+    }
+    unsigned int block_total = 0u;
+    const unsigned int p = gbts_block_inclusive_scan(v, warp_sums, block_total);
+    if (e < end) {
+      d_row_sizes[e] = carry + p;
+    }
+    carry += block_total;
+  }
+  if (threadIdx.x == 0u) {
+    block_sums[blockIdx.x] = carry;
+  }
+  grid.sync();
+
+  // Phase 2: add the prefix of the preceding blocks (redundantly per
+  // block), publish the total row count.
+  if (threadIdx.x < 32u) {
+    unsigned int acc = 0u;
+    for (unsigned int b = threadIdx.x; b < blockIdx.x; b += 32u) {
+      acc += block_sums[b];
+    }
+    for (unsigned int o = 16u; o > 0u; o /= 2u) {
+      acc += __shfl_down_sync(0xffffffffu, acc, o);
+    }
+    if (threadIdx.x == 0u) {
+      block_offset_shared = acc;
+    }
+  }
+  __syncthreads();
+  const unsigned int block_offset = block_offset_shared;
+  if (block_offset != 0u) {
+    for (unsigned int e = begin + threadIdx.x; e < end; e += blockDim.x) {
+      d_row_sizes[e] += block_offset;
+    }
+  }
+  if (blockIdx.x == gridDim.x - 1u && threadIdx.x == 0u) {
+    *t.row_count = block_offset + carry;
   }
 }
 
@@ -762,6 +895,28 @@ bool launch_cooperative(void (*kernel)(payload_t), const unsigned int n_items,
 
 }  // namespace
 
+void gbts_seeding_algorithm::gbts_run_cca_and_count_kernel(
+    const device::gbts_run_cca_iteration_payload& cca,
+    const device::gbts_count_terminus_edges_payload& terminus) const {
+  constexpr unsigned int max_cached_nei = 16u;
+  const unsigned int n_threads = 1024u;
+  const kernels::gbts_cca_rows_payloads payloads{cca, terminus};
+  if (cca.max_num_neighbours <= max_cached_nei) {
+    if (launch_cooperative(kernels::gbts_cca_rows_cached<max_cached_nei, false>,
+                           cca.nConnectedEdges, n_threads, payloads,
+                           details::get_stream(stream()),
+                           /*require_full_grid=*/true)) {
+      return;
+    }
+    if (launch_cooperative(kernels::gbts_cca_rows_cached<max_cached_nei, true>,
+                           cca.nConnectedEdges, n_threads, payloads,
+                           details::get_stream(stream()))) {
+      return;
+    }
+  }
+  device::gbts_seeding_algorithm::gbts_run_cca_and_count_kernel(cca, terminus);
+}
+
 void gbts_seeding_algorithm::gbts_run_cca_kernel(
     const device::gbts_run_cca_iteration_payload& payload) const {
   constexpr unsigned int max_cached_nei = 16u;
@@ -842,6 +997,11 @@ void gbts_seeding_algorithm::gbts_count_terminus_edges_kernel(
           .on(details::get_stream(stream())),
       d_row_sizes.begin(), d_row_sizes.begin() + payload.nConnectedEdges,
       d_row_sizes.begin());
+  // Publish the total row count (last entry of the scanned row sizes).
+  TRACCC_CUDA_ERROR_CHECK(cudaMemcpyAsync(
+      payload.row_count, d_row_sizes.data() + payload.nConnectedEdges - 1u,
+      sizeof(unsigned int), cudaMemcpyDeviceToDevice,
+      details::get_stream(stream())));
 }
 
 void gbts_seeding_algorithm::gbts_fill_path_store_kernel(

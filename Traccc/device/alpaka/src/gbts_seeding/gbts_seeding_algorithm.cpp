@@ -374,6 +374,13 @@ void gbts_seeding_algorithm::gbts_count_terminus_edges_kernel(
   details::inclusive_scan(
       details::get_queue(queue()), mr(), d_row_sizes.begin(),
       d_row_sizes.begin() + payload.nConnectedEdges, d_row_sizes.begin());
+  // Publish the total row count (last entry of the scanned row sizes).
+  ::alpaka::memcpy(
+      details::get_queue(queue()),
+      ::alpaka::createView(details::get_device(), payload.row_count, 1u),
+      ::alpaka::createView(details::get_device(),
+                           d_row_sizes.data() + payload.nConnectedEdges - 1u,
+                           1u));
 }
 
 void gbts_seeding_algorithm::gbts_fill_path_store_kernel(

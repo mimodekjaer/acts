@@ -184,6 +184,19 @@ class gbts_seeding_algorithm
   virtual void gbts_run_cca_kernel(
       const gbts_run_cca_iteration_payload& payload) const;
 
+  /// Launcher of the CCA followed by the terminus-edge counting and the
+  /// inclusive scan of the row sizes (see gbts_count_terminus_edges_kernel)
+  ///
+  /// The default implementation calls gbts_run_cca_kernel and
+  /// gbts_count_terminus_edges_kernel; backends may fuse everything.
+  ///
+  /// @param cca      The payload of the first CCA iteration
+  /// @param terminus The payload of the terminus counting
+  ///
+  virtual void gbts_run_cca_and_count_kernel(
+      const gbts_run_cca_iteration_payload& cca,
+      const gbts_count_terminus_edges_payload& terminus) const;
+
   /// Launcher of the complete seed-vs-edge bidding sequence (initial bid +
   /// payload.nRounds rebid / reset rounds)
   ///

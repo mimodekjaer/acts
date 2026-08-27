@@ -22,6 +22,15 @@ namespace traccc::device {
 
 /// (Global Event Data) Payload for the @c
 /// traccc::device::gbts_run_cca_iteration function
+/// Size of the fused-CCA scratch (gbts_run_cca_iteration_payload::
+/// active_counters): per-iteration active counts, the row count, and
+/// per-block partial sums of the row-size scan
+inline constexpr unsigned int gbts_run_cca_max_blocks = 4096u;
+inline constexpr unsigned int gbts_run_cca_row_count_slot =
+    gbts_consts::max_cca_iter + 2u;
+inline constexpr unsigned int gbts_run_cca_scratch_size =
+    gbts_run_cca_row_count_slot + 1u + gbts_run_cca_max_blocks;
+
 struct gbts_run_cca_iteration_payload {
   /// Number of edges in the compacted graph
   unsigned int nConnectedEdges;

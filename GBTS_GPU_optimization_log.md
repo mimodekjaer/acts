@@ -339,3 +339,13 @@ Interim: the seed extraction still reads the kept-edge count on the host
 (one sync, now after the compaction), so this step alone costs ~12 us
 (larger buffers, extra async copies); the gain comes when the extraction
 kernels grid-stride on the device count (Session B).
+### B10. Terminus counting + row-size scan fused into the CCA kernel (FASTER)
+0.738 -> 0.716 ms/event. After the last CCA iteration the same cooperative
+kernel counts the terminus rows, runs a grid-wide inclusive scan (warp
+shuffle block scan + per-block carries, two grid barriers), zeroes the edge
+and hit bids and publishes the row count in a counter slot: 76.5 us for all
+of it versus CCA 87 + terminus 4 + cub scan 5 us plus three launch gaps.
+The row count no longer depends on a host-side edge count (needed for the
+capacity-based graph compaction). Also: the cached CCA gets a variant that
+handles edges beyond a non-resident grid uncached (template flag, no cost
+in the resident case).

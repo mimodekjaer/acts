@@ -64,6 +64,9 @@ class gbts_seeding_algorithm : public device::gbts_seeding_algorithm,
       const device::gbts_run_cca_iteration_payload& payload) const override;
   void gbts_run_cca_kernel(
       const device::gbts_run_cca_iteration_payload& payload) const override;
+  void gbts_run_cca_and_count_kernel(
+      const device::gbts_run_cca_iteration_payload& cca,
+      const device::gbts_count_terminus_edges_payload& terminus) const override;
   void gbts_bid_seeds_kernel(
       const device::gbts_seed_bidding_payload& payload) const override;
   void gbts_finish_seeds_kernel(
