@@ -164,7 +164,52 @@ __global__ void gbts_run_cca(
 /// all edges): the neighbour list of the edge stays in registers across
 /// the iterations and the loop stops as soon as no edge is active any more.
 /// Same per-iteration semantics as @c traccc::device::gbts_run_cca_iteration.
-template <unsigned int MAX_NEI>
+/// One CCA update of @c edge (identical to the body of
+/// traccc::device::gbts_run_cca_iteration). Returns true when the edge is
+/// still active for the next iteration.
+__device__ inline bool gbts_cca_update(
+    const unsigned int edge, const unsigned int nNeighbours,
+    const unsigned int* nei, const unsigned char iter,
+    const unsigned int levelLoad, const unsigned int levelStore,
+    const unsigned char minLevel,
+    vecmem::device_vector<unsigned char>& d_levels,
+    vecmem::device_vector<int2>& d_outgoing_paths) {
+  constexpr unsigned char max_iter = traccc::device::gbts_consts::max_cca_iter;
+  unsigned char next_level = d_levels[levelLoad + edge];
+  bool localChange = false;
+  for (unsigned int k = 0u; k < nNeighbours; ++k) {
+    const unsigned char forward_level = d_levels[levelLoad + nei[k]];
+    if (next_level == forward_level) {
+      next_level = forward_level + 1;
+      localChange = true;
+      break;
+    }
+  }
+  bool stays_active = false;
+  if (localChange) {
+    if (iter == max_iter - 1) {
+      d_outgoing_paths[edge].y = -1;
+    } else {
+      stays_active = true;
+    }
+  } else {
+    int out_paths = 0;
+    for (unsigned int k = 0u; k < nNeighbours; ++k) {
+      if (next_level == 1 + d_levels[levelLoad + nei[k]]) {
+        out_paths += 1 + d_outgoing_paths[nei[k]].x;
+      }
+      // flag as not terminus edge
+      d_outgoing_paths[nei[k]].y = -1;
+    }
+    // flag as long enough segment to become a seed
+    d_outgoing_paths[edge] =
+        int2{out_paths, static_cast<int>(next_level >= minLevel) - 1};
+  }
+  d_levels[levelStore + edge] = next_level;
+  return stays_active;
+}
+
+template <unsigned int MAX_NEI, bool EXTRA_EDGES>
 __global__ void gbts_run_cca_cached(
     const device::gbts_run_cca_iteration_payload payload) {
   cooperative_groups::grid_group grid = cooperative_groups::this_grid();
@@ -172,24 +217,30 @@ __global__ void gbts_run_cca_cached(
       payload.output_graph);
   vecmem::device_vector<unsigned char> d_levels(payload.levels);
   vecmem::device_vector<int2> d_outgoing_paths(payload.outgoing_paths);
+  vecmem::device_vector<char> d_active_edges(payload.active_edges);
   unsigned int* active_counters = payload.active_counters;
+  __shared__ unsigned int block_active_sum;
 
   const unsigned int n = payload.nConnectedEdges;
+  const unsigned int edge_size = 2u + 1u + payload.max_num_neighbours;
+  const unsigned int nThreads = gridDim.x * blockDim.x;
   const unsigned int edge = blockIdx.x * blockDim.x + threadIdx.x;
   const bool has_edge = edge < n;
   constexpr unsigned char max_iter = traccc::device::gbts_consts::max_cca_iter;
 
-  // Cache the neighbour list of the edge.
+  // Cache the neighbour list of the thread's first edge; edges beyond the
+  // grid (rare: the grid is sized for the expected edge count) are handled
+  // uncached below with the per-edge active flags.
   unsigned int nNeighbours = 0u;
   unsigned int nei[MAX_NEI];
   if (has_edge) {
-    const unsigned int edge_pos = (2u + 1u + payload.max_num_neighbours) * edge;
+    const unsigned int edge_pos = edge_size * edge;
     nNeighbours = d_output_graph[edge_pos + device::gbts_consts::nNei];
     for (unsigned int k = 0u; k < nNeighbours; ++k) {
       nei[k] = d_output_graph[edge_pos + device::gbts_consts::nei_start + k];
     }
   }
-  // Iteration in which the edge is (re)visited next; -1 once settled.
+  // Iteration in which the cached edge is (re)visited next; -1 once settled.
   int active = 0;
 
   if (edge == 0u) {
@@ -201,50 +252,53 @@ __global__ void gbts_run_cca_cached(
     const unsigned int toggle = iter % 2u;
     const unsigned int levelLoad = toggle * n;
     const unsigned int levelStore = (1u - toggle) * n;
-    bool stays_active = false;
+    bool stays_cached = false;
+    unsigned int my_extra_active = 0u;
 
     if (has_edge && active == static_cast<int>(iter)) {
-      unsigned char next_level = d_levels[levelLoad + edge];
-      bool localChange = false;
-      for (unsigned int k = 0u; k < nNeighbours; ++k) {
-        const unsigned char forward_level = d_levels[levelLoad + nei[k]];
-        if (next_level == forward_level) {
-          next_level = forward_level + 1;
-          localChange = true;
-          break;
+      stays_cached =
+          gbts_cca_update(edge, nNeighbours, nei, iter, levelLoad, levelStore,
+                          payload.minLevel, d_levels, d_outgoing_paths);
+      active = stays_cached ? static_cast<int>(iter) + 1 : -1;
+    }
+    // Uncached extra edges (only when the grid does not cover all edges).
+    if constexpr (EXTRA_EDGES) {
+      for (unsigned int e = edge + nThreads; e < n; e += nThreads) {
+        if (iter != 0 && d_active_edges[e] != static_cast<char>(iter)) {
+          continue;
         }
+        const unsigned int edge_pos = edge_size * e;
+        const unsigned int nn =
+            d_output_graph[edge_pos + device::gbts_consts::nNei];
+        unsigned int ne[MAX_NEI];
+        for (unsigned int k = 0u; k < nn; ++k) {
+          ne[k] = d_output_graph[edge_pos + device::gbts_consts::nei_start + k];
+        }
+        const bool stays =
+            gbts_cca_update(e, nn, ne, iter, levelLoad, levelStore,
+                            payload.minLevel, d_levels, d_outgoing_paths);
+        d_active_edges[e] = stays ? static_cast<char>(iter + 1u) : -1;
+        my_extra_active += stays ? 1u : 0u;
       }
-      if (localChange) {
-        if (iter == max_iter - 1) {
-          d_outgoing_paths[edge].y = -1;
-          active = -1;
-        } else {
-          active = static_cast<int>(iter) + 1;
-          stays_active = true;
-        }
-      } else {
-        active = -1;
-        int out_paths = 0;
-        for (unsigned int k = 0u; k < nNeighbours; ++k) {
-          if (next_level == 1 + d_levels[levelLoad + nei[k]]) {
-            out_paths += 1 + d_outgoing_paths[nei[k]].x;
-          }
-          // flag as not terminus edge
-          d_outgoing_paths[nei[k]].y = -1;
-        }
-        // flag as long enough segment to become a seed
-        d_outgoing_paths[edge] = int2{
-            out_paths, static_cast<int>(next_level >= payload.minLevel) - 1};
-      }
-      d_levels[levelStore + edge] = next_level;
     }
 
     // Count the edges that stay active (block aggregated), zero the next
     // counter, and stop when nothing is left to do.
-    const int block_active = __syncthreads_count(stays_active ? 1 : 0);
-    if (threadIdx.x == 0u && block_active != 0) {
-      atomicAdd(active_counters + iter,
-                static_cast<unsigned int>(block_active));
+    unsigned int block_active =
+        static_cast<unsigned int>(__syncthreads_count(stays_cached ? 1 : 0));
+    if constexpr (EXTRA_EDGES) {
+      if (threadIdx.x == 0u) {
+        block_active_sum = 0u;
+      }
+      __syncthreads();
+      if (my_extra_active != 0u) {
+        atomicAdd(&block_active_sum, my_extra_active);
+      }
+      __syncthreads();
+      block_active += block_active_sum;
+    }
+    if (threadIdx.x == 0u && block_active != 0u) {
+      atomicAdd(active_counters + iter, block_active);
     }
     if (edge == 0u) {
       active_counters[iter + 1u] = 0u;
@@ -256,11 +310,6 @@ __global__ void gbts_run_cca_cached(
   }
 }
 
-/// Fused seed-vs-edge bidding for the common case of one path-store row
-/// per thread (the grid covers all rows): the edge chain of the row's
-/// proposal is walked once and kept in registers across the rounds. Same
-/// per-step semantics as gbts_bid_seeds_for_edges / gbts_rebid_seeds_for_edges
-/// / gbts_reset_edge_bids.
 /// Bid of one proposal for the first @c depth edges of its path (walked on
 /// the fly), see traccc::device::details::gbts_create_seed_candidate.
 __device__ inline void gbts_bid_uncached(
@@ -722,10 +771,17 @@ void gbts_seeding_algorithm::gbts_run_cca_kernel(
   if (payload.max_num_neighbours <= max_cached_nei) {
     // Fast path: one edge per thread with the neighbour lists cached in
     // registers. Only possible when the whole grid can be resident.
-    if (launch_cooperative(kernels::gbts_run_cca_cached<max_cached_nei>,
+    // Grid covers every edge: one cached edge per thread. Otherwise the
+    // variant that also handles the edges beyond the grid uncached.
+    if (launch_cooperative(kernels::gbts_run_cca_cached<max_cached_nei, false>,
                            payload.nConnectedEdges, n_threads, payload,
                            details::get_stream(stream()),
                            /*require_full_grid=*/true)) {
+      return;
+    }
+    if (launch_cooperative(kernels::gbts_run_cca_cached<max_cached_nei, true>,
+                           payload.nConnectedEdges, n_threads, payload,
+                           details::get_stream(stream()))) {
       return;
     }
   }
