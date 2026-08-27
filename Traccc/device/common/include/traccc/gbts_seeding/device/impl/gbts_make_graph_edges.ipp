@@ -168,11 +168,13 @@ TRACCC_HOST_DEVICE inline gbts_phi_window gbts_make_phi_window(const float lo,
 /// The RZ-doublet + curvature cuts for a candidate edge (node1 -> node2).
 /// Node params are float4 (tau_min, tau_max, r, z). Returns true when the
 /// candidate passes; the derived quantities are then valid.
+/// @c wrap: whether phi2 - phi1 may leave [-pi, pi) (false for candidates
+/// of a non-wrapping window: wrap_phi is then the identity, bit for bit).
 TRACCC_HOST_DEVICE inline bool gbts_edge_passes_cuts(
     const float4 node_params_1, const float4 node_params_2, const float phi1,
     const float phi2, const float deltaPhi,
     const gbts_make_graph_edges_params& ap, float& tau, float& dr, float& dz,
-    float& curv) {
+    float& curv, const bool wrap = true) {
   const float tau_min1 = node_params_1.x;
   const float tau_max1 = node_params_1.y;
   const float r1 = node_params_1.z;
@@ -206,7 +208,8 @@ TRACCC_HOST_DEVICE inline bool gbts_edge_passes_cuts(
     return false;
   }
 
-  const float dphi = traccc::detail::wrap_phi(phi2 - phi1);
+  const float dphi =
+      wrap ? traccc::detail::wrap_phi(phi2 - phi1) : (phi2 - phi1);
   if (math::fabs(dphi) > deltaPhi) {
     return false;
   }
@@ -260,7 +263,7 @@ TRACCC_HOST_DEVICE inline unsigned int gbts_walk_range_interval(
     vecmem::device_vector<short4>& d_edge_params,
     vecmem::device_vector<unsigned char>& d_reindexer, unsigned int cursor,
     const unsigned int cursor_end, unsigned int* scratch,
-    const unsigned int scratch_stride) {
+    const unsigned int scratch_stride, const bool wrap) {
   if (begin >= end || hi < phis[begin] || lo > phis[end - 1u]) {
     return cursor;
   }
@@ -273,7 +276,7 @@ TRACCC_HOST_DEVICE inline unsigned int gbts_walk_range_interval(
     const float4 np2 = packs[j];
     float tau, dr, dz, curv;
     if (!gbts_edge_passes_cuts(np1, np2, phi1, phi2, deltaPhi, ap, tau, dr, dz,
-                               curv)) {
+                               curv, wrap)) {
       continue;
     }
     if constexpr (fill) {
@@ -357,6 +360,9 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
   // (the overflow list is short; every participating block costs one
   // atomic on the cursor).
   const bool grabs = !fill || (blockIndex < gbts_make_graph_edges_max_blocks);
+  // Count pass: static assignment, block b takes the items b, b + grid, ...
+  unsigned int next_static = blockIndex;
+  const unsigned int grid_stride = thread_id.getGridDimX();
   for (;;) {
     unsigned int work = 0u;
     bool replay = false;
@@ -371,6 +377,12 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
         continue;
       }
       replay = true;
+    } else if constexpr (!fill) {
+      work = next_static;
+      next_static += grid_stride;
+      if (work >= nWork) {
+        break;
+      }
     } else {
       if (!grabs) {
         break;
@@ -380,12 +392,8 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
             vecmem::device_atomic_ref<unsigned int>(*payload.work_cursor)
                 .fetch_add(1u);
         unsigned int grabbed = nWork;  // sentinel: nothing left
-        if constexpr (fill) {
-          if (idx < *payload.n_overflow) {
-            grabbed = d_overflow_items[idx];
-          }
-        } else {
-          grabbed = idx;
+        if (idx < *payload.n_overflow) {
+          grabbed = d_overflow_items[idx];
         }
         shared_work_slot[0] = grabbed;
       }
@@ -451,6 +459,8 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
     const float4 np1 = d_node_params[node1];
     const detail::gbts_phi_window my_window =
         detail::gbts_make_phi_window(phi1 - window, phi1 + window);
+    // A window inside [-pi, pi]: phi2 - phi1 never needs wrapping.
+    const bool my_wraps = my_window.whole || (my_window.lo_b <= my_window.hi_b);
 
     unsigned int cursor = 0u;
     unsigned int cursor_end = 0u;
@@ -540,19 +550,19 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
               d_node_phi, d_node_params, rb, re, -traccc::device::PI_F - 1.0f,
               traccc::device::PI_F + 1.0f, np1, phi1, node1, deltaPhi, ap,
               payload.edge_params_maker, d_edge_nodes, d_edge_params,
-              d_reindexer, cursor, cursor_end, scratch, scratch_stride);
+              d_reindexer, cursor, cursor_end, scratch, scratch_stride, true);
         } else {
           cursor = detail::gbts_walk_range_interval<fill>(
               d_node_phi, d_node_params, rb, re, my_window.lo_a, my_window.hi_a,
               np1, phi1, node1, deltaPhi, ap, payload.edge_params_maker,
               d_edge_nodes, d_edge_params, d_reindexer, cursor, cursor_end,
-              scratch, scratch_stride);
+              scratch, scratch_stride, my_wraps);
           if (my_window.lo_b <= my_window.hi_b) {
             cursor = detail::gbts_walk_range_interval<fill>(
                 d_node_phi, d_node_params, rb, re, my_window.lo_b,
                 my_window.hi_b, np1, phi1, node1, deltaPhi, ap,
                 payload.edge_params_maker, d_edge_nodes, d_edge_params,
-                d_reindexer, cursor, cursor_end, scratch, scratch_stride);
+                d_reindexer, cursor, cursor_end, scratch, scratch_stride, true);
           }
         }
       }

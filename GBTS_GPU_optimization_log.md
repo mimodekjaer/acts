@@ -538,3 +538,11 @@ lines, L1 resident); no barrier from the search to the end of the item.
 The per-thread evaluation order is unchanged, the result bit-identical.
 Count 134 -> 105 us (the same code path serves the overflow re-walk of the
 fill pass). Seeds identical on all three sets.
+
+### 21. Count pass: static item assignment, no wrap_phi for non-wrapping windows  -> 0.593 ms/event
+Block b takes the work items b, b + grid, ... (no cursor atomic, no grab
+barrier; the items are similar in size, ~2.6 per block). Candidates of a
+thread whose phi window lies inside [-pi, pi] skip the wrap_phi call
+(`wrap_periodic` returns its input unchanged whenever value + pi is in
+[0, 2pi), which holds for |phi2 - phi1| <= window < pi: bit-identical).
+Count 105 -> 104 us. Seeds identical on all three sets.
