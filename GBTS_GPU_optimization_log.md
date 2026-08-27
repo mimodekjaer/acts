@@ -29,6 +29,27 @@ differences caused by reordering float arithmetic are documented per entry).
   single-address atomic cursor) and CCA (issue 11%, 0.4 waves) are latency /
   launch bound.
 
+## Summary (Session A commits on feat/gbts-traccc-determinism, seeding-only ms/event, H100 NVL, compute_75 JIT)
+
+| step | commit | ms/event | note |
+|---|---|---|---|
+| baseline | 26f710ead | 1.060 | 844 us GBTS kernels, ~11 host syncs |
+| 1 | 03ba68885 | 1.016 | debug counters / memset removed |
+| 2 | b582597c3 | 0.995 | async node stage, device work list, 44-bit sort |
+| 3 | 0b35a5d85 | 0.942 | async edge stage (edge capacity), 1 sync in graph making |
+| (B) | 689e7ed25.. | 0.945 | Session B: cooperative CCA + bidding |
+| 4 | b24654848 | 0.910 | 32-bit quantised-phi keys |
+| 5 | 46955cdd8 | 0.874 | one static-table upload, one memset |
+| 6 | 4161e19ba | 0.873 | surface map binary search |
+| 7 | 4b668c383 | 0.863 | no re-index finish kernel |
+| 8 | 60c95b7b0 | 0.800 | no atomics in bin_spacepoints (62 -> 8.5 us) |
+| 9 | 8d0e7e0e4 | 0.794 | one key search per bin |
+| 10 | b201b03af | 0.766 | keys-only 3-pass node sort |
+| 11 | cdf03875f | 0.761 | min/max radius fused into sort_nodes |
+| 12 | 77855636a | 0.755 | eta ranges by key boundaries |
+| (B) | afe732a63 | 0.732 | Session B: count pass records outer nodes |
+| 13 | feaa02e49 | 0.745 | interim: capacity graph compaction (sync to be removed by B) |
+
 ## Entries
 
 ### 1. Pinned static tables + memset elimination (FASTER, small)
