@@ -61,3 +61,18 @@ Not physics cuts, but limits that truncate deterministically when exceeded
   (resident blocks x 1024) connected edges, ~270k on an H100 (typical: 100k);
   edges beyond are dropped from seeding (`nCcaDropped` counter).
 - Seed output capacity: 2 seeds per path-store row.
+
+## CCA terminus flag race (determinism hazard, not fixed)
+In gbts_run_cca_iteration an edge that settles writes
+`outgoing_paths[nei].y = -1` for all its neighbours ("not a terminus"),
+while a neighbour that settles in the same iteration writes its own
+`outgoing_paths[nei] = {out_paths, terminus flag}`. The two writes race; the
+surviving value decides whether `nei` is a terminus edge (a seed path root).
+This is present in the original per-iteration kernel too, so results depend
+on the GPU's execution schedule: the same code with 1024-thread blocks and a
+different grid produced 1 642 679 instead of 1 608 480 seeds on events 5-9.
+A schedule-independent formulation (e.g. "terminus = edge that is nobody's
+neighbour", computed from the graph, or writing the flag with an atomic min)
+would make the CCA fully deterministic but changes which edges count as
+terminus in the racy cases -> this is a selection change to be decided by
+the physics owner; not applied.

@@ -209,6 +209,24 @@ __device__ inline bool gbts_cca_update(
   return stays_active;
 }
 
+/// Uncached CCA update of edge @c e (neighbours read from the graph). Kept
+/// out of line so that the cached fast path is compiled without its register
+/// pressure; only events larger than the resident grid take it.
+__device__ __noinline__ bool gbts_cca_update_uncached(
+    const unsigned int e, const unsigned int edge_size,
+    const unsigned char iter, const unsigned int levelLoad,
+    const unsigned int levelStore, const unsigned char minLevel,
+    const vecmem::device_vector<const unsigned int>& d_output_graph,
+    vecmem::device_vector<unsigned char>& d_levels,
+    vecmem::device_vector<int2>& d_outgoing_paths) {
+  const unsigned int e_pos = edge_size * e;
+  const unsigned int e_nNei = d_output_graph[e_pos + device::gbts_consts::nNei];
+  const unsigned int* e_nei =
+      &d_output_graph[e_pos + device::gbts_consts::nei_start];
+  return gbts_cca_update(e, e_nNei, e_nei, iter, levelLoad, levelStore,
+                         minLevel, d_levels, d_outgoing_paths);
+}
+
 template <unsigned int MAX_NEI>
 __device__ inline void gbts_run_cca_cached_body(
     cooperative_groups::grid_group& grid,
@@ -270,16 +288,9 @@ __device__ inline void gbts_run_cca_cached_body(
       if ((iter != 0) && (d_active[e] != static_cast<char>(iter))) {
         continue;
       }
-      const unsigned int e_pos = edge_size * e;
-      const unsigned int e_nNei =
-          d_output_graph[e_pos + device::gbts_consts::nNei];
-      // The neighbour list is read straight from the graph (no register
-      // buffer: this path is only taken by events larger than the grid).
-      const unsigned int* e_nei =
-          &d_output_graph[e_pos + device::gbts_consts::nei_start];
-      const bool e_active =
-          gbts_cca_update(e, e_nNei, e_nei, iter, levelLoad, levelStore,
-                          payload.minLevel, d_levels, d_outgoing_paths);
+      const bool e_active = gbts_cca_update_uncached(
+          e, edge_size, iter, levelLoad, levelStore, payload.minLevel,
+          d_output_graph, d_levels, d_outgoing_paths);
       d_active[e] = e_active ? static_cast<char>(iter + 1u) : char{-1};
       any_active |= e_active;
     }

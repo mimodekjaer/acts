@@ -381,3 +381,22 @@ identical semantics to the iterative CCA). Costs ~17 us on the fused kernel
 for all events (register pressure of the second code path) - still cheaper
 than the pre-fusion chain, and correct. The bench protocol now always checks
 events 5-9 (expected 1 608 480) in addition to events 0-4 (1 953 000).
+
+### B12. Uncached CCA path out of line (FASTER), and a determinism hazard
+The peer's fix e6f9cc614 (edges beyond the resident grid processed uncached
+inside the fused CCA) cost 77 -> 94 us on every event through register
+pressure. Moving the uncached update into a __noinline__ device function
+keeps the cached fast path lean: fused CCA/rows 75 us, seeding-only
+0.707 -> 0.680 ms/event on events 0-4 and 0.770 -> 0.754 on events 5-9;
+seed totals 1 904 200 (0-4, 500 processed) and 1 608 480 (5-9, 400
+processed) as in the pre-optimisation reference (commit 79492186c), no
+capacity warnings.
+Two lessons: (1) the "1 953 000" used in earlier entries is the total over
+the throughput example's default input set (events 0-9 cycled), not events
+0-4 -- every check from here on uses both explicit ranges; (2) a variant of
+the fused CCA that cached ALL edges of event 5 (2 resident blocks per SM)
+produced 1 642 679 instead of 1 608 480 although it executes the same
+per-edge update: the CCA has a latent write race (see GBTS_cut_notes.md,
+"CCA terminus flag race"), so its result depends on the execution schedule;
+the kept variants reproduce the reference schedule-wise, but this is luck,
+not a guarantee.
