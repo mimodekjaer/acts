@@ -35,6 +35,7 @@ TRACCC_HOST_DEVICE inline void gbts_fill_path_store(
       payload.row_sizes);
   vecmem::device_vector<int2> d_seed_proposals(payload.seed_proposals);
   vecmem::device_vector<char> d_seed_ambiguity(payload.seed_ambiguity);
+  vecmem::device_vector<unsigned long long int> d_edge_bids(payload.edge_bids);
   const vecmem::device_vector<const float4> d_sp_reduced(payload.reducedSP);
   const gbts_fit_segments_params& fit_params = payload.gbts_fit_segments_params;
 
@@ -115,7 +116,6 @@ TRACCC_HOST_DEVICE inline void gbts_fill_path_store(
     }
     d_path_store[row] = int2{static_cast<int>(cur_edge), parent_row};
     d_seed_proposals[row] = int2{-1, -1};
-    d_seed_ambiguity[row] = 0;
 
     // --- Segment fit of the row's path (leaf to root), formerly
     //     gbts_fit_segments. Terminus rows are single-edge paths and never
@@ -172,6 +172,22 @@ TRACCC_HOST_DEVICE inline void gbts_fill_path_store(
     d_seed_proposals[row] = int2{qual, static_cast<int>(row)};
     vecmem::device_atomic_ref<unsigned int>(*payload.nPropsCounter)
         .fetch_add(1u);
+
+    // Initial bid for the row's own edge (the ambiguity flags were zeroed
+    // by the terminus kernel; the marks below only ever write -1, so they
+    // cannot race with anything written in this kernel).
+    const unsigned long long int seed_bid =
+        (static_cast<unsigned long long int>(qual) << 32) |
+        static_cast<unsigned long long int>(row);
+    const unsigned long long int competing_offer =
+        vecmem::device_atomic_ref<unsigned long long int>(d_edge_bids[cur_edge])
+            .fetch_max(seed_bid);
+    if (competing_offer > seed_bid) {
+      d_seed_ambiguity[row] = -1;
+    } else if (competing_offer != 0ull) {
+      d_seed_ambiguity[static_cast<unsigned int>(competing_offer &
+                                                 0xFFFFFFFFull)] = -1;
+    }
   }
 }
 

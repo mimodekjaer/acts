@@ -26,8 +26,7 @@ TRACCC_HOST_DEVICE inline void gbts_bid_seeds_for_hits(
   const vecmem::device_vector<const unsigned int> d_output_graph(
       payload.output_graph);
   const vecmem::device_vector<const int2> d_path_store(payload.path_store);
-  const vecmem::device_vector<const char> d_seed_ambiguity(
-      payload.seed_ambiguity);
+  vecmem::device_vector<char> d_seed_ambiguity(payload.seed_ambiguity);
   const vecmem::device_vector<const int2> d_seed_proposals(
       payload.seed_proposals);
   vecmem::device_vector<unsigned long long int> d_hit_bids(payload.hit_bids);
@@ -44,7 +43,18 @@ TRACCC_HOST_DEVICE inline void gbts_bid_seeds_for_hits(
     if (prop.y < 0) {
       continue;
     }
-    if (d_seed_ambiguity[prop_idx] == -2) {
+    // Classification (own row only, hence race-free): a proposal that
+    // never lost a bid is a candidate, one that lost is rejected. Rows
+    // already classified by bidding rounds are left as they are.
+    const char ambi = d_seed_ambiguity[prop_idx];
+    if (ambi == 0) {
+      d_seed_ambiguity[prop_idx] = 1;
+    } else if (ambi == -1) {
+      d_seed_ambiguity[prop_idx] = -2;
+      vecmem::device_atomic_ref<unsigned int>(*payload.nRejectedPropsCounter)
+          .fetch_add(1u);
+      continue;
+    } else if (ambi == -2) {
       continue;
     }
     const unsigned long long int seed_bid =

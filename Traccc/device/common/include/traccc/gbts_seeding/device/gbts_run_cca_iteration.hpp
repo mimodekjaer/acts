@@ -66,6 +66,9 @@ struct gbts_run_cca_iteration_payload {
   unsigned char iter;
   /// Scratch, see gbts_run_cca_scratch_size (zeroed per event)
   unsigned int* counters;
+  /// Per-edge (neighbour count, first three neighbours) from
+  /// gbts_compress_graph
+  vecmem::data::vector_view<const uint4> nei_cache;
 };
 
 /// (Shared Event Data) Payload for the @c

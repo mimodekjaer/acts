@@ -33,6 +33,9 @@ struct TRACCC_ALIGN(8) int2 {
 struct TRACCC_ALIGN(8) uint2 {
   unsigned int x, y;
 };
+struct TRACCC_ALIGN(16) uint4 {
+  unsigned int x, y, z, w;
+};
 struct TRACCC_ALIGN(4) short2 {
   short x, y;
 };

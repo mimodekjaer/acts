@@ -42,6 +42,11 @@ struct gbts_count_terminus_edges_payload {
   /// Output: total number of path-store rows (written by the launcher after
   /// the scan, or by a fused implementation)
   unsigned int* row_count;
+  /// Capacity of the path store (rows)
+  unsigned int nRows;
+  /// Output: per-row seed ambiguity flags, zeroed here (the bids of
+  /// gbts_fill_path_store mark them)
+  vecmem::data::vector_view<char> seed_ambiguity;
 };
 
 /// @brief Count terminus edges and lay out the path store.

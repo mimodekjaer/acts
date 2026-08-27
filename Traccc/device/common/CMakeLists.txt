@@ -92,8 +92,6 @@ traccc_add_library( traccc_device_common device_common
    "include/traccc/gbts_seeding/device/impl/gbts_reset_edge_bids.ipp"
    "include/traccc/gbts_seeding/device/gbts_rebid_seeds_for_edges.hpp"
    "include/traccc/gbts_seeding/device/impl/gbts_rebid_seeds_for_edges.ipp"
-   "include/traccc/gbts_seeding/device/gbts_bid_seeds_for_edges.hpp"
-   "include/traccc/gbts_seeding/device/impl/gbts_bid_seeds_for_edges.ipp"
    "include/traccc/gbts_seeding/device/gbts_bid_seeds_for_hits.hpp"
    "include/traccc/gbts_seeding/device/impl/gbts_bid_seeds_for_hits.ipp"
    "include/traccc/gbts_seeding/device/details/gbts_create_seed_candidate.hpp"

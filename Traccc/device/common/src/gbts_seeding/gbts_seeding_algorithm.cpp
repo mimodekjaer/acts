@@ -336,6 +336,9 @@ auto gbts_seeding_algorithm::create_edges(
   copy().setup(levels_buf)->ignore();
   // Per-edge "has a settled parent" CCA marks (zero-initialised for the
   // kept edges by the compression kernel).
+  vecmem::data::vector_buffer<uint4> nei_cache_buf(nConnectedEdgesMax,
+                                                   mr().main);
+  copy().setup(nei_cache_buf)->ignore();
   vecmem::data::vector_buffer<unsigned char> has_parent_buf(nConnectedEdgesMax,
                                                             mr().main);
   copy().setup(has_parent_buf)->ignore();
@@ -344,7 +347,7 @@ auto gbts_seeding_algorithm::create_edges(
       {nEdgesMax, d_counters + gbts_counter::nEdges, d_nConnectedEdges,
        nConnectedEdgesMax, cfg.max_num_neighbours, node_index, edge_nodes_buf,
        num_neighbours_buf, neighbours_buf, reIndexer_buf, output_graph_buf,
-       has_parent_buf, levels_buf});
+       has_parent_buf, levels_buf, nei_cache_buf});
 
   // The kept-edge count must outlive this stage's transient buffers: keep
   // a device-side copy in the (persistent) counters.
@@ -355,9 +358,10 @@ auto gbts_seeding_algorithm::create_edges(
       vecmem::data::vector_view<unsigned int>(1u, d_nConnectedEdges_persistent))
       ->ignore();
 
-  return graph_making_output{std::move(output_graph_buf), std::move(levels_buf),
-                             std::move(has_parent_buf), nConnectedEdgesMax,
-                             d_nConnectedEdges_persistent};
+  return graph_making_output{
+      std::move(nei_cache_buf), std::move(output_graph_buf),
+      std::move(levels_buf),    std::move(has_parent_buf),
+      nConnectedEdgesMax,       d_nConnectedEdges_persistent};
 }
 
 // Stage 3:
@@ -368,6 +372,7 @@ auto gbts_seeding_algorithm::extract_seeds(
     vecmem::data::vector_buffer<unsigned int>& output_graph,
     vecmem::data::vector_buffer<unsigned char>& levels,
     vecmem::data::vector_buffer<unsigned char>& has_parent,
+    vecmem::data::vector_buffer<uint4>& nei_cache,
     vecmem::data::vector_buffer<float4>& reducedSP,
     const unsigned int nConnectedEdgesMax,
     const unsigned int* d_nConnectedEdges, const unsigned int nSp,
@@ -401,20 +406,26 @@ auto gbts_seeding_algorithm::extract_seeds(
                                                                    mr().main);
   copy().setup(hit_bids_buf)->ignore();
 
-  // CCA sweeps + finishing pass, terminus counting and the row-size scan.
+  // The path store gets a fixed capacity instead of a row-count readback.
+  const unsigned int nRows = cfg.max_rows_per_spacepoint * nSp;
+  vecmem::data::vector_buffer<char> seed_ambiguity_buf(nRows, mr().main);
+  copy().setup(seed_ambiguity_buf)->ignore();
+
+  // CCA sweeps + finishing pass, terminus counting (also zeroes the bids and
+  // the ambiguity flags) and the row-size scan.
   gbts_run_cca_and_count_kernel(
       {nConnectedEdgesMax, d_nConnectedEdges, cfg.max_num_neighbours,
        cfg.minLevel, output_graph, levels_buf, outgoing_paths_buf, has_parent,
-       0u, cca_scratch},
+       0u, cca_scratch, nei_cache},
       {nConnectedEdgesMax, d_nConnectedEdges, outgoing_paths_buf, has_parent,
        row_sizes_buf, edge_bids_buf, hit_bids_buf,
-       cca_scratch + traccc::device::gbts_run_cca_row_count_slot});
+       cca_scratch + traccc::device::gbts_run_cca_row_count_slot, nRows,
+       seed_ambiguity_buf});
 
   // The row count stays on the device (written by the terminus step); the
   // path store gets a fixed capacity instead of a readback.
   const unsigned int* row_count =
       cca_scratch + traccc::device::gbts_run_cca_row_count_slot;
-  const unsigned int nRows = cfg.max_rows_per_spacepoint * nSp;
   // Launch-size hint only (the kernels grid-stride to the device count).
   const unsigned int nRowsGrid = nSp / 2u;
 
@@ -422,8 +433,6 @@ auto gbts_seeding_algorithm::extract_seeds(
   copy().setup(path_store_buf)->ignore();
   vecmem::data::vector_buffer<int2> seed_proposals_buf(nRows, mr().main);
   copy().setup(seed_proposals_buf)->ignore();
-  vecmem::data::vector_buffer<char> seed_ambiguity_buf(nRows, mr().main);
-  copy().setup(seed_ambiguity_buf)->ignore();
 
   // Lays out the path store and fits every path (segment fit fused).
   gbts_fill_path_store_kernel(
@@ -432,7 +441,9 @@ auto gbts_seeding_algorithm::extract_seeds(
        outgoing_paths_buf, row_sizes_buf, seed_proposals_buf,
        seed_ambiguity_buf, cfg.minLevel, reducedSP,
        d_counters + gbts_counter::nProps, cfg.gbts_fit_segments_params,
-       cfg.gbts_make_graph_edges_params.max_z0});
+       cfg.gbts_make_graph_edges_params.max_z0,
+       vecmem::data::vector_view<unsigned long long int>(nConnectedEdgesMax,
+                                                         edge_bids_buf.ptr())});
 
   // 7. Disambiguate seeds through the initial bid and repeated seed-vs-edge
   //    bidding rounds. The proposal / rejection counts are not read back:
@@ -453,7 +464,8 @@ auto gbts_seeding_algorithm::extract_seeds(
        cfg.edge_bidding_rounds, path_store_buf, seed_proposals_buf,
        seed_ambiguity_buf, edge_bids_buf, d_counters + gbts_counter::nRejected},
       {nRows, nRowsGrid, row_count, nSeeds, edge_size, output_graph,
-       seed_proposals_buf, path_store_buf, seed_ambiguity_buf, hit_bids_buf},
+       seed_proposals_buf, path_store_buf, seed_ambiguity_buf, hit_bids_buf,
+       d_counters + gbts_counter::nRejected},
       {nRows, nRowsGrid, row_count, nSeeds, cfg.max_num_neighbours,
        seed_proposals_buf, seed_ambiguity_buf, path_store_buf, output_graph,
        reducedSP, output_seeds, hit_bids_buf, cfg.gbts_convert_seeds_params});
@@ -499,15 +511,18 @@ void gbts_seeding_algorithm::gbts_finish_seeds_kernel(
     const gbts_seed_bidding_payload& bidding,
     const gbts_bid_seeds_for_hits_payload& hits,
     const gbts_convert_seeds_payload& convert) const {
-  gbts_bid_seeds_kernel(bidding);
+  // The initial bid is placed by gbts_fill_path_store and the classification
+  // by the hit bidding; the (optional) bidding rounds need the classification
+  // first.
+  if (bidding.nRounds > 0u) {
+    gbts_bid_seeds_kernel(bidding);
+  }
   gbts_bid_seeds_for_hits_kernel(hits);
   gbts_convert_seeds_kernel(convert);
 }
 
 void gbts_seeding_algorithm::gbts_bid_seeds_kernel(
     const gbts_seed_bidding_payload& payload) const {
-  gbts_bid_seeds_for_edges_kernel(
-      gbts_make_bid_seeds_for_edges_payload(payload));
   // Classify the proposals in a launch of their own (deterministic: no
   // bidding marks are written concurrently).
   gbts_rebid_seeds_for_edges_kernel(
@@ -695,8 +710,9 @@ auto gbts_seeding_algorithm::operator()(
 
   // Stage 3: Create seeds from the graph edges.
   return extract_seeds(graph.output_graph, graph.levels, graph.has_parent,
-                       nodes.reducedSP, graph.nConnectedEdgesMax,
-                       graph.d_nConnectedEdges, nSp, counters_view, h_counters,
+                       graph.nei_cache, nodes.reducedSP,
+                       graph.nConnectedEdgesMax, graph.d_nConnectedEdges, nSp,
+                       counters_view, h_counters,
                        zero_buf.ptr() + gbts_counter::nCounters + nSp + 1);
 }
 

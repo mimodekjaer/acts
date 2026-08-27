@@ -599,3 +599,18 @@ for the subtree counts in the finishing pass is exact but tail-dominated
 (130-330 us: one thread walks a whole jet); (c) an empty launch of this
 grid costs ~5 us under ncu, so the sweep count matters more than the sweep
 body.
+
+### 25. Seed tail: initial bid in fill_path_store, classification in the hit bidding, neighbour cache  -> 0.605 ms/event
+- `gbts_count_terminus_edges` also zeroes the ambiguity flags, so
+  `gbts_fill_path_store` can place the initial terminus-edge bid right after
+  the fit (the marks only ever write -1: race-free); the standalone
+  `gbts_bid_seeds_for_edges` kernel is deleted from all backends.
+- The proposal classification (0 -> 1, -1 -> -2 + rejected counter) is done
+  by `gbts_bid_seeds_for_hits` on its own row (idempotent for rows already
+  classified by optional bidding rounds); the separate classification
+  launch only remains when rounds > 0.
+- `gbts_compress_graph` writes a 16-byte (neighbour count, first three
+  neighbours) record per edge; the CCA sweeps read it instead of the 52-byte
+  graph row (sweep 9.5 -> 8.7 us; it helped less than hoped, the sweeps are
+  latency bound: cache -> neighbour levels -> compare).
+Two launches fewer; seeds identical on all three sets.

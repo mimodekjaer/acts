@@ -13,7 +13,6 @@
 #include "traccc/cuda/gbts_seeding/gbts_seeding_algorithm.hpp"
 
 // Project include(s).
-#include "traccc/gbts_seeding/device/gbts_bid_seeds_for_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_bid_seeds_for_hits.hpp"
 #include "traccc/gbts_seeding/device/gbts_bin_spacepoints.hpp"
 #include "traccc/gbts_seeding/device/gbts_build_edge_work_list.hpp"
@@ -160,12 +159,6 @@ __global__ void gbts_count_terminus_edges(
 __global__ void gbts_fill_path_store(
     const device::gbts_fill_path_store_payload payload) {
   device::gbts_fill_path_store(details::thread_id1{}, payload);
-}
-
-/// CUDA kernel for running @c traccc::device::gbts_bid_seeds_for_edges
-__global__ void gbts_bid_seeds_for_edges(
-    const device::gbts_bid_seeds_for_edges_payload payload) {
-  device::gbts_bid_seeds_for_edges(details::thread_id1{}, payload);
 }
 
 /// CUDA kernel for running @c traccc::device::gbts_reset_edge_bids
@@ -373,15 +366,6 @@ void gbts_seeding_algorithm::gbts_fill_path_store_kernel(
   const unsigned int n_blocks = 1 + (payload.nRowsGrid - 1) / n_threads;
   kernels::gbts_fill_path_store<<<n_blocks, n_threads, 0,
                                   details::get_stream(stream())>>>(payload);
-  TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
-}
-
-void gbts_seeding_algorithm::gbts_bid_seeds_for_edges_kernel(
-    const device::gbts_bid_seeds_for_edges_payload& payload) const {
-  const unsigned int n_threads = 128;
-  const unsigned int n_blocks = 1 + (payload.nRowsGrid - 1) / n_threads;
-  kernels::gbts_bid_seeds_for_edges<<<n_blocks, n_threads, 0,
-                                      details::get_stream(stream())>>>(payload);
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
 }
 

@@ -32,6 +32,7 @@ TRACCC_HOST_DEVICE inline void gbts_compress_graph(
   vecmem::device_vector<unsigned int> d_output_graph(payload.output_graph);
   vecmem::device_vector<unsigned char> d_levels(payload.levels);
   vecmem::device_vector<unsigned char> d_has_parent(payload.has_parent);
+  vecmem::device_vector<uint4> d_nei_cache(payload.nei_cache);
 
   const unsigned int globalIdx = thread_id.getGlobalThreadIdX();
   const unsigned int blockDimX = thread_id.getBlockDimX();
@@ -67,11 +68,21 @@ TRACCC_HOST_DEVICE inline void gbts_compress_graph(
     const unsigned char nNei = d_num_neighbours[globalIndex];
     d_output_graph[pos + gbts_consts::nNei] = nNei;
     const unsigned int nei_pos = payload.nMaxNei * globalIndex;
+    uint4 cache{nNei, 0u, 0u, 0u};
     for (unsigned int k = 0u; k < nNei; k++) {
       // Every recorded neighbour is itself kept (match flagged it).
-      d_output_graph[pos + gbts_consts::nei_start + k] =
+      const unsigned int nei =
           static_cast<unsigned int>(d_reIndexer[d_neighbours[nei_pos + k]] - 1);
+      d_output_graph[pos + gbts_consts::nei_start + k] = nei;
+      if (k == 0u) {
+        cache.y = nei;
+      } else if (k == 1u) {
+        cache.z = nei;
+      } else if (k == 2u) {
+        cache.w = nei;
+      }
     }
+    d_nei_cache[static_cast<unsigned int>(newIdx)] = cache;
   }
 }
 

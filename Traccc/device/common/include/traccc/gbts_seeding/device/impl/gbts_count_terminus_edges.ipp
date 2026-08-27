@@ -29,6 +29,7 @@ TRACCC_HOST_DEVICE inline void gbts_count_terminus_edges(
   vecmem::device_vector<unsigned int> d_row_sizes(payload.row_sizes);
   vecmem::device_vector<unsigned long long int> d_edge_bids(payload.edge_bids);
   vecmem::device_vector<unsigned long long int> d_hit_bids(payload.hit_bids);
+  vecmem::device_vector<char> d_seed_ambiguity(payload.seed_ambiguity);
 
   const unsigned int globalIdx = thread_id.getGlobalThreadIdX();
   const unsigned int blockDimX = thread_id.getBlockDimX();
@@ -48,6 +49,10 @@ TRACCC_HOST_DEVICE inline void gbts_count_terminus_edges(
   for (unsigned int globalIndex = globalIdx; globalIndex < d_hit_bids.size();
        globalIndex += blockDimX * gridDimX) {
     d_hit_bids[globalIndex] = 0ull;
+  }
+  for (unsigned int globalIndex = globalIdx; globalIndex < payload.nRows;
+       globalIndex += blockDimX * gridDimX) {
+    d_seed_ambiguity[globalIndex] = 0;
   }
 
   // Row sizes beyond the edge count stay zero so the scan over the whole

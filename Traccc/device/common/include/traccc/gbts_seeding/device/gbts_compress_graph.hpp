@@ -50,6 +50,9 @@ struct gbts_compress_graph_payload {
   vecmem::data::vector_view<unsigned char> has_parent;
   /// Output: CCA levels (2 * nConnectedEdges), initialised to 1
   vecmem::data::vector_view<unsigned char> levels;
+  /// Output: per compacted edge (neighbour count, first three neighbours):
+  /// the CCA sweeps read this 16-byte record instead of the graph row
+  vecmem::data::vector_view<uint4> nei_cache;
 };
 
 /// @brief Pack kept edges into the compact "output graph" layout.

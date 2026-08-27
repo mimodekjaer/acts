@@ -40,10 +40,14 @@ struct gbts_bid_seeds_for_hits_payload {
   vecmem::data::vector_view<const int2> seed_proposals;
   /// Per-path (edge index, parent path-store index or -1) entries
   vecmem::data::vector_view<const int2> path_store;
-  /// Per-seed-proposal ambiguity tag
-  vecmem::data::vector_view<const char> seed_ambiguity;
+  /// In/out: per-seed-proposal ambiguity tag; the proposals are classified
+  /// here (0 -> 1 candidate, -1 -> -2 rejected: lost its initial bid) before
+  /// they bid for their hits
+  vecmem::data::vector_view<char> seed_ambiguity;
   /// In/out: per-hit highest-bidder seed (packed 64-bit)
   vecmem::data::vector_view<unsigned long long int> hit_bids;
+  /// Counter of the rejected proposals
+  unsigned int* nRejectedPropsCounter;
 };
 
 /// @brief One accepted seed bids on its constituent hits.

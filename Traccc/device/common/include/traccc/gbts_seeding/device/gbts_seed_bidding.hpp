@@ -9,7 +9,6 @@
 
 // Project include(s).
 #include "traccc/definitions/qualifiers.hpp"
-#include "traccc/gbts_seeding/device/gbts_bid_seeds_for_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_rebid_seeds_for_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_reset_edge_bids.hpp"
 #include "traccc/gbts_seeding/gbts_types.hpp"
@@ -58,14 +57,6 @@ gbts_edge_bids_half(const gbts_seed_bidding_payload& p,
                     const unsigned int half) {
   return vecmem::data::vector_view<unsigned long long int>(
       p.nConnectedEdges, p.edge_bids.ptr() + half * p.nConnectedEdges);
-}
-
-/// Payload of the initial bid
-TRACCC_HOST_DEVICE inline gbts_bid_seeds_for_edges_payload
-gbts_make_bid_seeds_for_edges_payload(const gbts_seed_bidding_payload& p) {
-  return {p.nRows,          p.nRowsGrid,      p.row_count,
-          p.seed_proposals, p.seed_ambiguity, gbts_edge_bids_half(p, 0u),
-          p.path_store};
 }
 
 /// Payload of the rebid of round @c round

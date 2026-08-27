@@ -30,6 +30,15 @@ TRACCC_HOST_DEVICE inline void gbts_run_cca_iteration(
   vecmem::device_vector<int2> d_outgoing_paths(payload.outgoing_paths);
   vecmem::device_vector<unsigned char> d_has_parent(payload.has_parent);
   vecmem::device_vector<unsigned int> shared_changed(shared_payload.changed);
+  const vecmem::device_vector<const uint4> d_nei_cache(payload.nei_cache);
+  // Neighbour k of the cached record (the graph row beyond the third).
+  auto neighbour = [&](const uint4& cache, const unsigned int edge_pos,
+                       const unsigned int k) -> unsigned int {
+    return (k == 0u)   ? cache.y
+           : (k == 1u) ? cache.z
+           : (k == 2u) ? cache.w
+                       : d_output_graph[edge_pos + gbts_consts::nei_start + k];
+  };
 
   constexpr unsigned char max_iter = traccc::device::gbts_consts::max_cca_iter;
   const unsigned char iter = payload.iter;
@@ -62,11 +71,11 @@ TRACCC_HOST_DEVICE inline void gbts_run_cca_iteration(
         continue;
       }
       const unsigned int edge_pos = edge_size * e;
-      const unsigned int nNei = d_output_graph[edge_pos + gbts_consts::nNei];
+      const uint4 cache = d_nei_cache[e];
+      const unsigned int nNei = cache.x;
       for (unsigned int k = 0u; k < nNei; ++k) {
         // Idempotent, race-free mark.
-        d_has_parent[d_output_graph[edge_pos + gbts_consts::nei_start + k]] =
-            1u;
+        d_has_parent[neighbour(cache, edge_pos, k)] = 1u;
       }
       d_outgoing_paths[e].y = static_cast<int>(lvl >= payload.minLevel) - 1;
     }
@@ -87,11 +96,11 @@ TRACCC_HOST_DEVICE inline void gbts_run_cca_iteration(
   for (unsigned int g = globalIdx; g < n; g += stride) {
     const unsigned int e = n - 1u - g;
     const unsigned int edge_pos = edge_size * e;
-    const unsigned int nNei = d_output_graph[edge_pos + gbts_consts::nNei];
+    const uint4 cache = d_nei_cache[e];
+    const unsigned int nNei = cache.x;
     unsigned int max_level = 0u;
     for (unsigned int k = 0u; k < nNei; ++k) {
-      const unsigned int c =
-          d_output_graph[edge_pos + gbts_consts::nei_start + k];
+      const unsigned int c = neighbour(cache, edge_pos, k);
       const unsigned int l = d_levels[c];
       max_level = (l > max_level) ? l : max_level;
     }
@@ -104,8 +113,7 @@ TRACCC_HOST_DEVICE inline void gbts_run_cca_iteration(
     int count = 0;
     if (lvl <= max_iter) {
       for (unsigned int k = 0u; k < nNei; ++k) {
-        const unsigned int c =
-            d_output_graph[edge_pos + gbts_consts::nei_start + k];
+        const unsigned int c = neighbour(cache, edge_pos, k);
         if (d_levels[c] + 1u == lvl) {
           // The counts are not initialised before the first sweep.
           count += 1 + ((iter == 0u) ? 0 : d_outgoing_paths[c].x);

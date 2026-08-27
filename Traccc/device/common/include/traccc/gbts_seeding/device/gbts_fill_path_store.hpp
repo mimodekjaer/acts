@@ -61,6 +61,9 @@ struct gbts_fill_path_store_payload {
   traccc::gbts_fit_segments_params gbts_fit_segments_params;
   /// Maximum |z0| at the beamline for extrapolation cuts
   float max_z0;
+  /// In/out: the edge bids of the initial bidding (zeroed by the terminus
+  /// kernel); every proposal bids for its own edge here
+  vecmem::data::vector_view<unsigned long long int> edge_bids;
   /// @}
 };
 

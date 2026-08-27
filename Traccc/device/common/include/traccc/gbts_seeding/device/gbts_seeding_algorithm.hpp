@@ -9,7 +9,6 @@
 
 // Local include(s).
 #include "traccc/device/algorithm_base.hpp"
-#include "traccc/gbts_seeding/device/gbts_bid_seeds_for_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_bid_seeds_for_hits.hpp"
 #include "traccc/gbts_seeding/device/gbts_bin_spacepoints.hpp"
 #include "traccc/gbts_seeding/device/gbts_build_edge_work_list.hpp"
@@ -241,13 +240,6 @@ class gbts_seeding_algorithm
   virtual void gbts_fill_path_store_kernel(
       const gbts_fill_path_store_payload& payload) const = 0;
 
-  /// Initial edge-bid kernel launcher
-  ///
-  /// @param payload The payload for the kernel
-  ///
-  virtual void gbts_bid_seeds_for_edges_kernel(
-      const gbts_bid_seeds_for_edges_payload& payload) const = 0;
-
   /// Edge-bid reset kernel launcher
   ///
   /// @param payload The payload for the kernel
@@ -315,9 +307,11 @@ class gbts_seeding_algorithm
 
   /// Outputs of the graph-making stage that are consumed by seed extraction.
   struct graph_making_output {
+    /// Per compacted edge (neighbour count, first three neighbours)
+    vecmem::data::vector_buffer<uint4> nei_cache;
     /// Compacted, row-major graph
     vecmem::data::vector_buffer<unsigned int> output_graph;
-    /// CCA levels (2 * nConnectedEdges, initialised to 1)
+    /// CCA levels (nConnectedEdges, initialised to 1)
     vecmem::data::vector_buffer<unsigned char> levels;
     /// Per-edge "has a settled parent" CCA mark (zero-initialised)
     vecmem::data::vector_buffer<unsigned char> has_parent;
@@ -356,6 +350,7 @@ class gbts_seeding_algorithm
       vecmem::data::vector_buffer<unsigned int>& output_graph,
       vecmem::data::vector_buffer<unsigned char>& levels,
       vecmem::data::vector_buffer<unsigned char>& has_parent,
+      vecmem::data::vector_buffer<uint4>& nei_cache,
       vecmem::data::vector_buffer<float4>& reducedSP,
       const unsigned int nConnectedEdgesMax,
       const unsigned int* d_nConnectedEdges, const unsigned int nSp,
