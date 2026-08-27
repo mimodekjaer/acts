@@ -400,3 +400,39 @@ per-edge update: the CCA has a latent write race (see GBTS_cut_notes.md,
 "CCA terminus flag race"), so its result depends on the execution schedule;
 the kept variants reproduce the reference schedule-wise, but this is luck,
 not a guarantee.
+
+### 15. Determinism: CCA race fixes + bidding classification split  -> 0.739 ms/event
+Three schedule-dependence fixes, developed together (events 5-9 flipped
+between 20105 and 20106 seeds run-to-run in the seq example):
+- The CCA terminus flag race (see entry B12 / GBTS_cut_notes.md): a settling
+  edge no longer clobbers `outgoing_paths[nei]` to mark "not a terminus";
+  it sets a byte in a separate `has_parent` array instead, and the terminus
+  test becomes `settled && !has_parent` - two racing writes to one int2
+  replaced by writes to disjoint arrays read only after a grid sync.
+- Subtree counting moved out of the settle step: previously a settling edge
+  read `outgoing_paths[child].x` of children that could be settling in the
+  same iteration (read/write race on .x). Now the CCA only records levels;
+  after convergence a level-ordered pass (level 2 upward, one grid iteration
+  per level, both in the fused kernel and the per-iteration fallback) sums
+  `1 + paths(child)` over children with `level == own-1`. Deterministic by
+  construction.
+- Seed bidding: the first rebid round both classified rows (ambiguity 0 ->
+  reject / 1) and immediately used other rows' classifications - a read/write
+  race on `seed_ambiguity`. Classification is now its own phase (separate
+  launch in the default path, extra grid-sync phase in the fused kernel);
+  the rounds then start from a settled classification.
+Validation: all per-stage counters (edges, connections, connected edges,
+proposals, rejected) are now bit-identical across repeated runs on events
+5-9. Seed totals moved to a new (legitimate) baseline because the old
+values were themselves schedule-dependent: default set (events 0-9)
+782 940 @ 200 processed, events 5-9 804 240 @ 200 processed.
+Cost: 0.727 -> 0.739 ms/event on the default set - the level-ordered
+counting pass adds ~max_level grid-sync iterations to the CCA kernel.
+Remaining: a +/-1-seed flip survives in the bidding rounds themselves
+(seen on both event ranges, in both the fused and the non-fused finish
+path). It is a count-preserving swap of WHICH proposals get rejected -
+all counters above stay identical - that reaches the seed total only via
+the converter's dropout multiplicity (1-2 seeds per accepted proposal).
+Bisection evidence and suspects are documented in GBTS_cut_notes.md
+("Residual seed-bidding nondeterminism"). With 0 bidding rounds the
+pipeline is fully deterministic.

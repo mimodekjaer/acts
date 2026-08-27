@@ -62,7 +62,7 @@ Not physics cuts, but limits that truncate deterministically when exceeded
   edges beyond are dropped from seeding (`nCcaDropped` counter).
 - Seed output capacity: 2 seeds per path-store row.
 
-## CCA terminus flag race (determinism hazard, not fixed)
+## CCA terminus flag race (FIXED, selection change in racy cases)
 In gbts_run_cca_iteration an edge that settles writes
 `outgoing_paths[nei].y = -1` for all its neighbours ("not a terminus"),
 while a neighbour that settles in the same iteration writes its own
@@ -71,8 +71,41 @@ surviving value decides whether `nei` is a terminus edge (a seed path root).
 This is present in the original per-iteration kernel too, so results depend
 on the GPU's execution schedule: the same code with 1024-thread blocks and a
 different grid produced 1 642 679 instead of 1 608 480 seeds on events 5-9.
-A schedule-independent formulation (e.g. "terminus = edge that is nobody's
-neighbour", computed from the graph, or writing the flag with an atomic min)
-would make the CCA fully deterministic but changes which edges count as
-terminus in the racy cases -> this is a selection change to be decided by
-the physics owner; not applied.
+FIXED (optimization log entry 15): the neighbour mark now goes to a separate
+`has_parent` byte array and terminus = `settled && !has_parent`. In the racy
+cases the old code kept whichever write landed last; the new rule is the
+deterministic union (an edge that is any settled edge's neighbour is never a
+terminus). This IS a selection change relative to some schedules of the old
+code - the seed totals moved (events 0-9: 781 200 -> 782 940 @ 200
+processed; events 5-9: ~1 608 480 -> 1 608 480x/804 240 @ 200) - but the old
+totals were themselves schedule-dependent, so there was no well-defined
+previous selection to preserve. Physics owner should re-validate efficiency
+once on the new deterministic baseline.
+
+## Residual seed-bidding nondeterminism (+/-1 seed, OPEN)
+After the fixes above one flip remains: repeated runs give 804 240 vs
+804 200 total track parameters on events 5-9 @ 200 processed (i.e. +/-1
+seed in one event per 40-event cycle) and 782 940 vs 782 960 on events 0-9.
+Bisection evidence:
+- Per-stage counters (edges, connections, connected edges, fit proposals,
+  rejected proposals) are bit-identical across runs -> the graph, CCA,
+  path store and fit are deterministic; the flip is a SWAP of which
+  proposals end up rejected (same count), which changes the final total
+  only through the converter's dropout step emitting 1-2 seeds per
+  accepted proposal.
+- With 0 bidding rounds the totals are exactly stable.
+- The flip appears in BOTH the fused finish kernel and the default
+  (separate-launch) bidding path -> the race is in the shared bidding
+  device code, not in the fusion.
+- Separating first-round classification into its own phase did not
+  remove it.
+Suspects (not yet proven): in `gbts_reset_edge_bids.ipp` the winner check
+`d_seed_ambiguity[best_bid & 0xFFFFFFFF] == 0` dereferences seed 0 when a
+path edge carries `best_bid == 0` (no bid), and rows whose proposal was
+never created (`prop.y < 0`) keep ambiguity 0 and can masquerade as
+"unmarked winner"; also the -1 "maybe" marks written by
+`create_seed_candidate` while other threads read the same flags within one
+round. A clean fix probably needs the reset pass to double-buffer the
+ambiguity flags (read round N, write round N+1) the way the bids already
+are. Left open for the physics/algorithm owner; effect size is 1 seed in
+~800 000.
