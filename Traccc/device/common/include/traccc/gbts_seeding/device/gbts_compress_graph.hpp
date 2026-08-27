@@ -46,6 +46,8 @@ struct gbts_compress_graph_payload {
   /// of edge_size = 2 + 1 + nMaxNei ints (node1, node2, nNei,
   /// nei0..neiN-1).
   vecmem::data::vector_view<unsigned int> output_graph;
+  /// Output: per-edge "has a settled parent" CCA mark, zero-initialised
+  vecmem::data::vector_view<unsigned char> has_parent;
   /// Output: CCA levels (2 * nConnectedEdges), initialised to 1
   vecmem::data::vector_view<unsigned char> levels;
 };

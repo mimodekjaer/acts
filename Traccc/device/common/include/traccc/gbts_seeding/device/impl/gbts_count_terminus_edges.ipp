@@ -24,6 +24,8 @@ TRACCC_HOST_DEVICE inline void gbts_count_terminus_edges(
     const gbts_count_terminus_edges_payload& payload) {
   const vecmem::device_vector<const int2> d_outgoing_paths(
       payload.outgoing_paths);
+  const vecmem::device_vector<const unsigned char> d_has_parent(
+      payload.has_parent);
   vecmem::device_vector<unsigned int> d_row_sizes(payload.row_sizes);
   vecmem::device_vector<unsigned long long int> d_edge_bids(payload.edge_bids);
   vecmem::device_vector<unsigned long long int> d_hit_bids(payload.hit_bids);
@@ -58,7 +60,7 @@ TRACCC_HOST_DEVICE inline void gbts_count_terminus_edges(
   for (unsigned int globalIndex = globalIdx; globalIndex < nConnectedEdges;
        globalIndex += blockDimX * gridDimX) {
     const int2 out_paths = d_outgoing_paths[globalIndex];
-    if (out_paths.y == -1) {
+    if ((out_paths.y == -1) || (d_has_parent[globalIndex] != 0u)) {
       d_row_sizes[globalIndex] = 0u;
       continue;
     }

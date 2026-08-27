@@ -71,12 +71,13 @@ gbts_make_bid_seeds_for_edges_payload(const gbts_seed_bidding_payload& p) {
 /// Payload of the rebid of round @c round
 TRACCC_HOST_DEVICE inline gbts_rebid_seeds_for_edges_payload
 gbts_make_rebid_seeds_for_edges_payload(const gbts_seed_bidding_payload& p,
-                                        const unsigned int round) {
+                                        const unsigned int round,
+                                        const bool first_round) {
   return {p.nRows,          p.nRowsGrid,
           p.row_count,      p.path_store,
           p.seed_proposals, gbts_edge_bids_half(p, (round + 1u) % 2u),
           p.seed_ambiguity, p.nRejectedPropsCounter,
-          round == 0u};
+          first_round};
 }
 
 /// Payload of the reset of round @c round

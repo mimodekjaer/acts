@@ -319,6 +319,8 @@ class gbts_seeding_algorithm
     vecmem::data::vector_buffer<unsigned int> output_graph;
     /// CCA levels (2 * nConnectedEdges, initialised to 1)
     vecmem::data::vector_buffer<unsigned char> levels;
+    /// Per-edge "has a settled parent" CCA mark (zero-initialised)
+    vecmem::data::vector_buffer<unsigned char> has_parent;
     /// Capacity of the compacted graph (sizes output_graph / levels)
     unsigned int nConnectedEdgesMax = 0;
     /// Number of edges that survived re-indexing, on the device (capped at
@@ -353,6 +355,7 @@ class gbts_seeding_algorithm
   edm::seed_collection::buffer extract_seeds(
       vecmem::data::vector_buffer<unsigned int>& output_graph,
       vecmem::data::vector_buffer<unsigned char>& levels,
+      vecmem::data::vector_buffer<unsigned char>& has_parent,
       vecmem::data::vector_buffer<float4>& reducedSP,
       const unsigned int nConnectedEdgesMax,
       const unsigned int* d_nConnectedEdges, const unsigned int nSp,

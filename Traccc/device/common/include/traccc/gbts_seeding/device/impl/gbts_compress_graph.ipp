@@ -31,6 +31,7 @@ TRACCC_HOST_DEVICE inline void gbts_compress_graph(
   const vecmem::device_vector<const int> d_reIndexer(payload.reIndexer);
   vecmem::device_vector<unsigned int> d_output_graph(payload.output_graph);
   vecmem::device_vector<unsigned char> d_levels(payload.levels);
+  vecmem::device_vector<unsigned char> d_has_parent(payload.has_parent);
 
   const unsigned int globalIdx = thread_id.getGlobalThreadIdX();
   const unsigned int blockDimX = thread_id.getBlockDimX();
@@ -54,7 +55,8 @@ TRACCC_HOST_DEVICE inline void gbts_compress_graph(
       // Deterministic truncation at the compacted-graph capacity.
       continue;
     }
-    // Initialise both CCA level buffers of the kept edge to 1.
+    // Initialise the CCA parent mark and both level buffers of the edge.
+    d_has_parent[static_cast<unsigned int>(newIdx)] = 0u;
     d_levels[static_cast<unsigned int>(newIdx)] = 1u;
     d_levels[nConnectedEdges + static_cast<unsigned int>(newIdx)] = 1u;
 

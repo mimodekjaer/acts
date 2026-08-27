@@ -324,12 +324,17 @@ auto gbts_seeding_algorithm::create_edges(
   vecmem::data::vector_buffer<unsigned char> levels_buf(2 * nConnectedEdgesMax,
                                                         mr().main);
   copy().setup(levels_buf)->ignore();
+  // Per-edge "has a settled parent" CCA marks (zero-initialised for the
+  // kept edges by the compression kernel).
+  vecmem::data::vector_buffer<unsigned char> has_parent_buf(nConnectedEdgesMax,
+                                                            mr().main);
+  copy().setup(has_parent_buf)->ignore();
 
   gbts_compress_graph_kernel(
       {nEdgesMax, d_counters + gbts_counter::nEdges, d_nConnectedEdges,
        nConnectedEdgesMax, cfg.max_num_neighbours, node_index, edge_nodes_buf,
        num_neighbours_buf, neighbours_buf, reIndexer_buf, output_graph_buf,
-       levels_buf});
+       has_parent_buf, levels_buf});
 
   // The kept-edge count must outlive this stage's transient buffers: keep
   // a device-side copy in the (persistent) counters.
@@ -341,7 +346,8 @@ auto gbts_seeding_algorithm::create_edges(
       ->ignore();
 
   return graph_making_output{std::move(output_graph_buf), std::move(levels_buf),
-                             nConnectedEdgesMax, d_nConnectedEdges_persistent};
+                             std::move(has_parent_buf), nConnectedEdgesMax,
+                             d_nConnectedEdges_persistent};
 }
 
 // Stage 3:
@@ -351,6 +357,7 @@ auto gbts_seeding_algorithm::create_edges(
 auto gbts_seeding_algorithm::extract_seeds(
     vecmem::data::vector_buffer<unsigned int>& output_graph,
     vecmem::data::vector_buffer<unsigned char>& levels,
+    vecmem::data::vector_buffer<unsigned char>& has_parent,
     vecmem::data::vector_buffer<float4>& reducedSP,
     const unsigned int nConnectedEdgesMax,
     const unsigned int* d_nConnectedEdges, const unsigned int nSp,
@@ -402,10 +409,10 @@ auto gbts_seeding_algorithm::extract_seeds(
   gbts_run_cca_and_count_kernel(
       {nConnectedEdgesMax, d_nConnectedEdges, cfg.max_num_neighbours,
        cfg.minLevel, output_graph, levels_buf, active_edges_buf,
-       outgoing_paths_buf, 0u, cca_active_buf.ptr(),
+       outgoing_paths_buf, has_parent, 0u, cca_active_buf.ptr(),
        d_counters + gbts_counter::nCcaDropped},
-      {nConnectedEdgesMax, d_nConnectedEdges, outgoing_paths_buf, row_sizes_buf,
-       edge_bids_buf, hit_bids_buf,
+      {nConnectedEdgesMax, d_nConnectedEdges, outgoing_paths_buf, has_parent,
+       row_sizes_buf, edge_bids_buf, hit_bids_buf,
        cca_active_buf.ptr() + traccc::device::gbts_run_cca_row_count_slot});
 
   // The row count stays on the device (written by the terminus step); the
@@ -477,8 +484,10 @@ void gbts_seeding_algorithm::gbts_run_cca_and_count_kernel(
 void gbts_seeding_algorithm::gbts_run_cca_kernel(
     const gbts_run_cca_iteration_payload& payload) const {
   gbts_run_cca_iteration_payload iteration = payload;
-  for (unsigned char iter = 0; iter < traccc::device::gbts_consts::max_cca_iter;
-       ++iter) {
+  // First half: the CCA iterations; second half: the deterministic
+  // level-ordered subtree counting passes.
+  for (unsigned char iter = 0;
+       iter < 2 * traccc::device::gbts_consts::max_cca_iter; ++iter) {
     iteration.iter = iter;
     gbts_run_cca_iteration_kernel(iteration);
   }
@@ -497,9 +506,13 @@ void gbts_seeding_algorithm::gbts_bid_seeds_kernel(
     const gbts_seed_bidding_payload& payload) const {
   gbts_bid_seeds_for_edges_kernel(
       gbts_make_bid_seeds_for_edges_payload(payload));
+  // Classify the proposals in a launch of their own (deterministic: no
+  // bidding marks are written concurrently).
+  gbts_rebid_seeds_for_edges_kernel(
+      gbts_make_rebid_seeds_for_edges_payload(payload, 0u, true));
   for (unsigned int round = 0; round < payload.nRounds; ++round) {
     gbts_rebid_seeds_for_edges_kernel(
-        gbts_make_rebid_seeds_for_edges_payload(payload, round));
+        gbts_make_rebid_seeds_for_edges_payload(payload, round, false));
     gbts_reset_edge_bids_kernel(
         gbts_make_reset_edge_bids_payload(payload, round));
   }
@@ -657,9 +670,9 @@ auto gbts_seeding_algorithm::operator()(
   }
 
   // Stage 3: Create seeds from the graph edges.
-  return extract_seeds(graph.output_graph, graph.levels, nodes.reducedSP,
-                       graph.nConnectedEdgesMax, graph.d_nConnectedEdges, nSp,
-                       counters_view, h_counters);
+  return extract_seeds(graph.output_graph, graph.levels, graph.has_parent,
+                       nodes.reducedSP, graph.nConnectedEdgesMax,
+                       graph.d_nConnectedEdges, nSp, counters_view, h_counters);
 }
 
 }  // namespace traccc::device

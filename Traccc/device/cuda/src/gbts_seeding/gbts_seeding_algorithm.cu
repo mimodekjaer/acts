@@ -152,8 +152,8 @@ __global__ void gbts_run_cca(
     const device::gbts_run_cca_iteration_payload payload) {
   cooperative_groups::grid_group grid = cooperative_groups::this_grid();
   device::gbts_run_cca_iteration_payload iteration = payload;
-  for (unsigned char iter = 0; iter < traccc::device::gbts_consts::max_cca_iter;
-       ++iter) {
+  for (unsigned char iter = 0;
+       iter < 2 * traccc::device::gbts_consts::max_cca_iter; ++iter) {
     iteration.iter = iter;
     device::gbts_run_cca_iteration(details::thread_id1{}, iteration);
     grid.sync();
@@ -173,7 +173,8 @@ __device__ inline bool gbts_cca_update(
     const unsigned int levelLoad, const unsigned int levelStore,
     const unsigned char minLevel,
     vecmem::device_vector<unsigned char>& d_levels,
-    vecmem::device_vector<int2>& d_outgoing_paths) {
+    vecmem::device_vector<int2>& d_outgoing_paths,
+    vecmem::device_vector<unsigned char>& d_has_parent) {
   constexpr unsigned char max_iter = traccc::device::gbts_consts::max_cca_iter;
   unsigned char next_level = d_levels[levelLoad + edge];
   bool localChange = false;
@@ -188,22 +189,21 @@ __device__ inline bool gbts_cca_update(
   bool stays_active = false;
   if (localChange) {
     if (iter == max_iter - 1) {
-      d_outgoing_paths[edge].y = -1;
+      // Never settled: excluded from the roots, subtree size zeroed.
+      d_outgoing_paths[edge] = int2{0, -1};
     } else {
       stays_active = true;
     }
   } else {
-    int out_paths = 0;
     for (unsigned int k = 0u; k < nNeighbours; ++k) {
-      if (next_level == 1 + d_levels[levelLoad + nei[k]]) {
-        out_paths += 1 + d_outgoing_paths[nei[k]].x;
-      }
-      // flag as not terminus edge
-      d_outgoing_paths[nei[k]].y = -1;
+      // Mark the neighbour as having a settled parent (idempotent,
+      // race-free).
+      d_has_parent[nei[k]] = 1u;
     }
-    // flag as long enough segment to become a seed
+    // Flag as long enough to become a seed; the subtree size is counted
+    // deterministically per level after the CCA has converged.
     d_outgoing_paths[edge] =
-        int2{out_paths, static_cast<int>(next_level >= minLevel) - 1};
+        int2{0, static_cast<int>(next_level >= minLevel) - 1};
   }
   d_levels[levelStore + edge] = next_level;
   return stays_active;
@@ -218,13 +218,37 @@ __device__ __noinline__ bool gbts_cca_update_uncached(
     const unsigned int levelStore, const unsigned char minLevel,
     const vecmem::device_vector<const unsigned int>& d_output_graph,
     vecmem::device_vector<unsigned char>& d_levels,
-    vecmem::device_vector<int2>& d_outgoing_paths) {
+    vecmem::device_vector<int2>& d_outgoing_paths,
+    vecmem::device_vector<unsigned char>& d_has_parent) {
   const unsigned int e_pos = edge_size * e;
   const unsigned int e_nNei = d_output_graph[e_pos + device::gbts_consts::nNei];
   const unsigned int* e_nei =
       &d_output_graph[e_pos + device::gbts_consts::nei_start];
   return gbts_cca_update(e, e_nNei, e_nei, iter, levelLoad, levelStore,
-                         minLevel, d_levels, d_outgoing_paths);
+                         minLevel, d_levels, d_outgoing_paths, d_has_parent);
+}
+
+/// Deterministic subtree count of edge @c e at level @c lvl (the children
+/// counted settled at level lvl - 1 and were counted in the previous pass).
+__device__ inline void gbts_cca_count_edge(
+    const unsigned int e, const unsigned int edge_size, const unsigned char lvl,
+    const vecmem::device_vector<const unsigned int>& d_output_graph,
+    const vecmem::device_vector<unsigned char>& d_levels,
+    vecmem::device_vector<int2>& d_outgoing_paths) {
+  if (d_levels[e] != lvl) {
+    return;
+  }
+  const unsigned int e_pos = edge_size * e;
+  const unsigned int nNei = d_output_graph[e_pos + device::gbts_consts::nNei];
+  int out_paths = 0;
+  for (unsigned int k = 0u; k < nNei; ++k) {
+    const unsigned int c =
+        d_output_graph[e_pos + device::gbts_consts::nei_start + k];
+    if (lvl == d_levels[c] + 1u) {
+      out_paths += 1 + d_outgoing_paths[c].x;
+    }
+  }
+  d_outgoing_paths[e].x = out_paths;
 }
 
 template <unsigned int MAX_NEI>
@@ -243,6 +267,7 @@ __device__ inline void gbts_run_cca_cached_body(
   // active flags in the global active_edges array -- ALL present edges are
   // processed.
   vecmem::device_vector<char> d_active(payload.active_edges);
+  vecmem::device_vector<unsigned char> d_has_parent(payload.has_parent);
   const unsigned int nThreads = gridDim.x * blockDim.x;
   const unsigned int n = (*payload.d_nConnectedEdges < payload.nConnectedEdges)
                              ? *payload.d_nConnectedEdges
@@ -276,9 +301,9 @@ __device__ inline void gbts_run_cca_cached_body(
     bool stays_cached = false;
 
     if (has_edge && active == static_cast<int>(iter)) {
-      stays_cached =
-          gbts_cca_update(edge, nNeighbours, nei, iter, levelLoad, levelStore,
-                          payload.minLevel, d_levels, d_outgoing_paths);
+      stays_cached = gbts_cca_update(edge, nNeighbours, nei, iter, levelLoad,
+                                     levelStore, payload.minLevel, d_levels,
+                                     d_outgoing_paths, d_has_parent);
       active = stays_cached ? static_cast<int>(iter) + 1 : -1;
     }
     // Extra edges beyond the grid, uncached (their neighbour lists are
@@ -290,7 +315,7 @@ __device__ inline void gbts_run_cca_cached_body(
       }
       const bool e_active = gbts_cca_update_uncached(
           e, edge_size, iter, levelLoad, levelStore, payload.minLevel,
-          d_output_graph, d_levels, d_outgoing_paths);
+          d_output_graph, d_levels, d_outgoing_paths, d_has_parent);
       d_active[e] = e_active ? static_cast<char>(iter + 1u) : char{-1};
       any_active |= e_active;
     }
@@ -308,6 +333,22 @@ __device__ inline void gbts_run_cca_cached_body(
     if (active_counters[iter] == 0u) {
       break;
     }
+  }
+
+  // Deterministic level-ordered subtree counting (children strictly before
+  // parents, separated by grid-wide barriers). The first levels half holds
+  // the final level of every settled edge.
+  grid.sync();
+  for (unsigned char lvl = 2u; lvl <= max_iter + 1u; ++lvl) {
+    if (has_edge) {
+      gbts_cca_count_edge(edge, edge_size, lvl, d_output_graph, d_levels,
+                          d_outgoing_paths);
+    }
+    for (unsigned int e = edge + nThreads; e < n; e += nThreads) {
+      gbts_cca_count_edge(e, edge_size, lvl, d_output_graph, d_levels,
+                          d_outgoing_paths);
+    }
+    grid.sync();
   }
 }
 
@@ -374,6 +415,7 @@ __global__ void gbts_cca_rows_cached(const gbts_cca_rows_payloads payloads) {
 
   const device::gbts_count_terminus_edges_payload& t = payloads.terminus;
   const vecmem::device_vector<const int2> d_outgoing_paths(t.outgoing_paths);
+  const vecmem::device_vector<const unsigned char> d_has_parent_t(t.has_parent);
   vecmem::device_vector<unsigned int> d_row_sizes(t.row_sizes);
   vecmem::device_vector<unsigned long long int> d_edge_bids(t.edge_bids);
   vecmem::device_vector<unsigned long long int> d_hit_bids(t.hit_bids);
@@ -408,8 +450,9 @@ __global__ void gbts_cca_rows_cached(const gbts_cca_rows_payloads payloads) {
     unsigned int v = 0u;
     if (e < end) {
       const int2 out_paths = d_outgoing_paths[e];
-      v = (out_paths.y == -1) ? 0u
-                              : 1u + static_cast<unsigned int>(out_paths.x);
+      v = ((out_paths.y == -1) || (d_has_parent_t[e] != 0u))
+              ? 0u
+              : 1u + static_cast<unsigned int>(out_paths.x);
     }
     unsigned int block_total = 0u;
     const unsigned int p = gbts_block_inclusive_scan(v, warp_sums, block_total);
@@ -551,26 +594,35 @@ __device__ inline void gbts_bid_seeds_cached_body(
     }
   }
 
+  // Classification phase of its own (deterministic: the decision reads the
+  // marks of the initial bidding only, no concurrent bidding marks).
+  grid.sync();
+  const auto classify = [&](const unsigned int row) {
+    if (d_seed_ambiguity[row] == 0) {
+      d_seed_ambiguity[row] = 1;
+    } else {
+      d_seed_ambiguity[row] = -2;
+      atomicAdd(payload.nRejectedPropsCounter, 1u);
+    }
+  };
+  if (has_prop) {
+    classify(prop_idx);
+  }
+  for (unsigned int row = prop_idx + nThreads; row < nRows; row += nThreads) {
+    if (extra_prop(row).y >= 0) {
+      classify(row);
+    }
+  }
+
   for (unsigned int round = 0u; round < payload.nRounds; ++round) {
     const unsigned int half = (round + 1u) % 2u;
     unsigned long long int* bids = d_edge_bids.data() + half * n;
     unsigned long long int* bids_next = d_edge_bids.data() + (1u - half) * n;
     grid.sync();
 
-    // --- rebid ---
+    // --- rebid (maybes only) ---
     const auto rebid_decision = [&](const unsigned int row) {
       const char ambi = d_seed_ambiguity[row];
-      if (round == 0u) {
-        if (ambi == 0) {
-          // rebid 'best seed from edge' in later rounds
-          d_seed_ambiguity[row] = 1;
-          return true;
-        }
-        d_seed_ambiguity[row] = -2;
-        atomicAdd(payload.nRejectedPropsCounter, 1u);
-        return false;
-      }
-      // only rebid for maybes
       return !((ambi == -2) | (ambi == 0));
     };
     if (has_prop && rebid_decision(prop_idx)) {
@@ -663,11 +715,16 @@ __global__ void gbts_bid_seeds(
   const details::thread_id1 thread_id{};
   device::gbts_bid_seeds_for_edges(
       thread_id, device::gbts_make_bid_seeds_for_edges_payload(payload));
+  grid.sync();
+  // Classification phase of its own (deterministic).
+  device::gbts_rebid_seeds_for_edges(
+      thread_id,
+      device::gbts_make_rebid_seeds_for_edges_payload(payload, 0u, true));
   for (unsigned int round = 0u; round < payload.nRounds; ++round) {
     grid.sync();
     device::gbts_rebid_seeds_for_edges(
         thread_id,
-        device::gbts_make_rebid_seeds_for_edges_payload(payload, round));
+        device::gbts_make_rebid_seeds_for_edges_payload(payload, round, false));
     grid.sync();
     device::gbts_reset_edge_bids(
         thread_id, device::gbts_make_reset_edge_bids_payload(payload, round));

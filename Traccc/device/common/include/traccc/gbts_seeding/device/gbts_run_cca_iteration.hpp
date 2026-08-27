@@ -49,9 +49,18 @@ struct gbts_run_cca_iteration_payload {
   /// once the edge is no longer active).
   vecmem::data::vector_view<char> active_edges;
   /// Output: per-edge (number of path-store rows below the edge, terminus
-  /// flag: 0 = candidate seed root, -1 = not a root)
+  /// flag: 0 = candidate seed root, -1 = not a root because the path is too
+  /// short or the CCA did not settle)
   vecmem::data::vector_view<int2> outgoing_paths;
-  /// Iteration index (0-based)
+  /// Output: per-edge "has a settled parent" mark (idempotent 1-writes:
+  /// race-free and deterministic, unlike clobbering outgoing_paths[nei].y);
+  /// zero-initialised by gbts_compress_graph. An edge is a path root iff
+  /// its terminus flag is 0 AND it has no parent mark.
+  vecmem::data::vector_view<unsigned char> has_parent;
+  /// Iteration index (0-based). Values >= gbts_consts::max_cca_iter select
+  /// the deterministic subtree-counting passes instead: pass p counts the
+  /// edges of level p + 2 - max_cca_iter (children strictly before parents),
+  /// so a full run is 2 * max_cca_iter launches.
   unsigned char iter;
   /// Scratch for fused implementations: gbts_consts::max_cca_iter + 1
   /// counters of the edges still active after each iteration (unused by the

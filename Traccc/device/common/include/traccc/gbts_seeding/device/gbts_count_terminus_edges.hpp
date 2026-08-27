@@ -27,6 +27,8 @@ struct gbts_count_terminus_edges_payload {
   const unsigned int* d_nConnectedEdges;
   /// Per-edge (subtree row count, terminus flag) from CCA
   vecmem::data::vector_view<const int2> outgoing_paths;
+  /// Per-edge "has a settled parent" mark from CCA (roots have none)
+  vecmem::data::vector_view<const unsigned char> has_parent;
   /// Output: per-edge number of path-store rows owned by the edge (1 + its
   /// subtree row count for a terminus edge, 0 otherwise). The kernel
   /// launcher turns this into an inclusive prefix sum in place, so the rows

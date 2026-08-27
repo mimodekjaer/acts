@@ -28,6 +28,7 @@ TRACCC_HOST_DEVICE inline void gbts_run_cca_iteration(
   vecmem::device_vector<unsigned char> d_levels(payload.levels);
   vecmem::device_vector<char> d_active_edges(payload.active_edges);
   vecmem::device_vector<int2> d_outgoing_paths(payload.outgoing_paths);
+  vecmem::device_vector<unsigned char> d_has_parent(payload.has_parent);
 
   const unsigned char iter = payload.iter;
 
@@ -37,6 +38,37 @@ TRACCC_HOST_DEVICE inline void gbts_run_cca_iteration(
       (*payload.d_nConnectedEdges < payload.nConnectedEdges)
           ? *payload.d_nConnectedEdges
           : payload.nConnectedEdges;
+
+  if (iter >= traccc::device::gbts_consts::max_cca_iter) {
+    // Deterministic subtree counting, one pass per level (children strictly
+    // before parents): pass p counts the edges of level p + 2 -
+    // max_cca_iter. The first levels half holds the final level of every
+    // settled edge (a settling edge rewrites its unchanged level, so both
+    // halves agree).
+    const unsigned char lvl =
+        static_cast<unsigned char>(iter - gbts_consts::max_cca_iter + 2u);
+    const unsigned int globalIdx = thread_id.getGlobalThreadIdX();
+    const unsigned int stride =
+        thread_id.getBlockDimX() * thread_id.getGridDimX();
+    for (unsigned int e = globalIdx; e < nConnectedEdges; e += stride) {
+      if (d_levels[e] != lvl) {
+        continue;
+      }
+      const unsigned int edge_pos = edge_size * e;
+      const unsigned int nNeighbours =
+          d_output_graph[edge_pos + gbts_consts::nNei];
+      int out_paths = 0;
+      for (unsigned int nIdx = 0; nIdx < nNeighbours; ++nIdx) {
+        const unsigned int c =
+            d_output_graph[edge_pos + gbts_consts::nei_start + nIdx];
+        if (lvl == d_levels[c] + 1u) {
+          out_paths += 1 + d_outgoing_paths[c].x;
+        }
+      }
+      d_outgoing_paths[e].x = out_paths;
+    }
+    return;
+  }
   const unsigned int toggle = iter % 2;
   const unsigned int levelLoad = toggle * nConnectedEdges;
   const unsigned int levelStore = (1 - toggle) * nConnectedEdges;
@@ -72,26 +104,27 @@ TRACCC_HOST_DEVICE inline void gbts_run_cca_iteration(
     }
     if (localChange) {
       if (iter == traccc::device::gbts_consts::max_cca_iter - 1) {
-        d_outgoing_paths[globalIndex].y = -1;
+        // Never settled: excluded from the roots; the subtree size is
+        // written here so the counting passes read no garbage.
+        d_outgoing_paths[globalIndex] = int2{0, -1};
         d_active_edges[globalIndex] = -1;
       } else {
         d_active_edges[globalIndex] = static_cast<char>(iter + 1u);
       }
     } else {
       d_active_edges[globalIndex] = -1;
-      int out_paths = 0;
       for (unsigned int nIdx = 0; nIdx < nNeighbours; ++nIdx) {
         const unsigned int nextglobalIndex =
             d_output_graph[edge_pos + gbts_consts::nei_start + nIdx];
-        if (next_level == 1 + d_levels[levelLoad + nextglobalIndex]) {
-          out_paths += 1 + d_outgoing_paths[nextglobalIndex].x;
-        }
-        // flag as not terminus edge
-        d_outgoing_paths[nextglobalIndex].y = -1;
+        // Mark the neighbour as having a settled parent (idempotent, so
+        // it cannot race with the neighbour's own settle write).
+        d_has_parent[nextglobalIndex] = 1u;
       }
-      // flag as long enough segement to become a seed
+      // Flag as long enough to become a seed; the subtree size is counted
+      // deterministically per level after the CCA has converged (a settling
+      // edge must not read a same-iteration settling child's count).
       d_outgoing_paths[globalIndex] =
-          int2{out_paths, static_cast<int>(next_level >= payload.minLevel) - 1};
+          int2{0, static_cast<int>(next_level >= payload.minLevel) - 1};
     }
     // store new level
     d_levels[levelStore + globalIndex] = next_level;

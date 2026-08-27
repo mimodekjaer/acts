@@ -41,18 +41,21 @@ TRACCC_HOST_DEVICE inline void gbts_rebid_seeds_for_edges(
     const char ambi = d_seed_ambiguity[prop_idx];
 
     if (payload.first_round) {
+      // Classification only (its own launch): the decision must read the
+      // ambiguity marks of the INITIAL bidding, not race with the marks
+      // written during a bidding pass.
       if (ambi == 0) {
         // rebid 'best seed from edge' in later rounds
         d_seed_ambiguity[prop_idx] = 1;
-        // Here there is no return by design
       } else {
         d_seed_ambiguity[prop_idx] = -2;
         // count rejected props to calculate nSeeds
         vecmem::device_atomic_ref<unsigned int>(*payload.nRejectedPropsCounter)
             .fetch_add(1u);
-        continue;
       }
-    } else if ((ambi == -2) | (ambi == 0)) {
+      continue;
+    }
+    if ((ambi == -2) | (ambi == 0)) {
       // only rebid for maybes
       continue;
     }
