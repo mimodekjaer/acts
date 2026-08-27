@@ -303,6 +303,16 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
     const gbts_make_graph_edges_shared_payload& shared) {
   const unsigned int threadIndex = thread_id.getLocalThreadIdX();
   const unsigned int blockSize = thread_id.getBlockDimX();
+  const unsigned int blockIndex = thread_id.getBlockIdX();
+
+  if constexpr (fill) {
+    // Blocks without a work item to replay that are also beyond the dynamic
+    // part of the grid have nothing to do: leave before any setup.
+    if ((blockIndex >= gbts_make_graph_edges_max_blocks) &&
+        (blockIndex >= *payload.nWork)) {
+      return;
+    }
+  }
 
   const vecmem::device_vector<const uint2> d_work_items(payload.work_items);
   const vecmem::device_vector<const unsigned int> d_pair_work_begin(
@@ -323,6 +333,7 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
   vecmem::device_vector<unsigned char> d_reindexer(payload.reindexer);
   vecmem::device_vector<unsigned int> d_edge_scratch(payload.edge_scratch);
   vecmem::device_vector<unsigned char> d_block_overflow(payload.block_overflow);
+  vecmem::device_vector<unsigned int> d_overflow_items(payload.overflow_items);
 
   vecmem::device_vector<float> shared_phi(shared.phi);
   vecmem::device_vector<float4> shared_node_pack(shared.node_pack);
@@ -332,19 +343,55 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
   constexpr unsigned int chunk_size = gbts_consts::node_buffer_length;
 
   const unsigned int nWork = *payload.nWork;
-  // Dynamic scheduling: every block grabs the next work item until the list
-  // is exhausted. The assignment of items to blocks is arbitrary, the output
-  // positions of every item are not.
+  // Count pass: every block grabs the next work item until the list is
+  // exhausted (dynamic scheduling; the assignment of items to blocks is
+  // arbitrary, the output positions of every item are not).
+  // Fill pass: block b first replays the edges recorded for work item b by
+  // the count pass (no barrier, all items in flight at once), then the
+  // blocks grab the items that must be re-walked (scratch overflow or no
+  // scratch) from the overflow list.
+  bool static_item = fill;
+  // Only the first blocks take part in the dynamic loop of the fill pass
+  // (the overflow list is short; every participating block costs one
+  // atomic on the cursor).
+  const bool grabs = !fill || (blockIndex < gbts_make_graph_edges_max_blocks);
   for (;;) {
-    if (threadIndex == 0u) {
-      shared_work_slot[0] =
-          vecmem::device_atomic_ref<unsigned int>(*payload.work_cursor)
-              .fetch_add(1u);
-    }
-    barrier.blockBarrier();
-    const unsigned int work = shared_work_slot[0];
-    if (work >= nWork) {
-      break;
+    unsigned int work = 0u;
+    bool replay = false;
+    if (static_item) {
+      static_item = false;
+      work = blockIndex;
+      if (!((work < nWork) && (work < payload.scratch_work_items) &&
+            (d_block_overflow[work] == 0u))) {
+        if (!grabs) {
+          break;
+        }
+        continue;
+      }
+      replay = true;
+    } else {
+      if (!grabs) {
+        break;
+      }
+      if (threadIndex == 0u) {
+        const unsigned int idx =
+            vecmem::device_atomic_ref<unsigned int>(*payload.work_cursor)
+                .fetch_add(1u);
+        unsigned int grabbed = nWork;  // sentinel: nothing left
+        if constexpr (fill) {
+          if (idx < *payload.n_overflow) {
+            grabbed = d_overflow_items[idx];
+          }
+        } else {
+          grabbed = idx;
+        }
+        shared_work_slot[0] = grabbed;
+      }
+      barrier.blockBarrier();
+      work = shared_work_slot[0];
+      if (work >= nWork) {
+        break;
+      }
     }
     // Accepted outer nodes of the thread (count pass), slot-major in global
     // memory: [(work * K + k) * blockSize + thread], so the fill pass reads
@@ -429,7 +476,7 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
     //     (block-uniform decision; the range search and slab walk below are
     //     skipped).
     if constexpr (fill) {
-      if (has_scratch && d_block_overflow[work] == 0u) {
+      if (replay) {
         if (active) {
           const unsigned int count =
               d_edge_counts[work * blockSize + threadIndex];
@@ -527,9 +574,10 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
             d_num_outgoing_edges[node1 + 1u])
             .fetch_add(count);
       }
+      // Items with a thread beyond the scratch capacity (block-wide maximum
+      // count) or without scratch are listed for the fill pass to re-walk.
+      bool needs_walk = true;
       if (has_scratch) {
-        // Blocks with a thread beyond the scratch capacity are flagged for
-        // the fill pass to re-walk them (block-wide maximum count).
         if (threadIndex == 0u) {
           shared_work_slot[9] = 0u;
         }
@@ -539,28 +587,42 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
             shared_work_slot[9])
             .fetch_max(count);
         barrier.blockBarrier();
+        needs_walk = shared_work_slot[9] > scratch_edges;
         if (threadIndex == 0u) {
-          d_block_overflow[work] =
-              (shared_work_slot[9] > scratch_edges) ? 1u : 0u;
+          d_block_overflow[work] = needs_walk ? 1u : 0u;
         }
         // The shared maximum is only rewritten after the next item's
         // barriers.
+      }
+      if (needs_walk && (threadIndex == 0u)) {
+        const unsigned int slot =
+            vecmem::device_atomic_ref<unsigned int>(*payload.n_overflow)
+                .fetch_add(1u);
+        d_overflow_items[slot] = work;
       }
     }
   }  // work item loop
 
   if constexpr (fill) {
     // Zero the kept flags beyond the edge count so that a prefix sum over the
-    // whole capacity ends with the kept-edge count. Every thread of the grid
-    // takes part (also the blocks that grabbed no work item).
-    const unsigned int total =
-        d_num_outgoing_edges[d_num_outgoing_edges.size() - 1u];
-    const unsigned int nEdges =
-        (total < payload.nEdgesMax) ? total : payload.nEdgesMax;
-    const unsigned int stride = blockSize * thread_id.getGridDimX();
-    for (unsigned int i = nEdges + thread_id.getGlobalThreadIdX();
-         i < payload.nEdgesMax; i += stride) {
-      d_reindexer[i] = 0u;
+    // whole capacity ends with the kept-edge count. The first
+    // gbts_make_graph_edges_max_blocks blocks take part (they are the ones
+    // that never leave early above).
+    if (blockIndex < gbts_make_graph_edges_max_blocks) {
+      const unsigned int total =
+          d_num_outgoing_edges[d_num_outgoing_edges.size() - 1u];
+      const unsigned int nEdges =
+          (total < payload.nEdgesMax) ? total : payload.nEdgesMax;
+      const unsigned int nBlocks = thread_id.getGridDimX();
+      const unsigned int zeroing_blocks =
+          (nBlocks < gbts_make_graph_edges_max_blocks)
+              ? nBlocks
+              : gbts_make_graph_edges_max_blocks;
+      const unsigned int stride = blockSize * zeroing_blocks;
+      for (unsigned int i = nEdges + blockIndex * blockSize + threadIndex;
+           i < payload.nEdgesMax; i += stride) {
+        d_reindexer[i] = 0u;
+      }
     }
   }
 }

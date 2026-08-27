@@ -217,6 +217,9 @@ auto gbts_seeding_algorithm::create_edges(
   vecmem::data::vector_buffer<unsigned char> block_overflow_buf(
       scratch_work_items, mr().main);
   copy().setup(block_overflow_buf)->ignore();
+  vecmem::data::vector_buffer<unsigned int> overflow_items_buf(nWorkMax,
+                                                               mr().main);
+  copy().setup(overflow_items_buf)->ignore();
   copy().setup(edge_counts_buf)->ignore();
   // setup edge param converter
   const float max_Kappa =
@@ -251,6 +254,8 @@ auto gbts_seeding_algorithm::create_edges(
       edge_scratch_buf,
       scratch_work_items,
       block_overflow_buf,
+      overflow_items_buf,
+      d_counters + gbts_counter::nOverflowItems,
       {},
       0u,
       nullptr,

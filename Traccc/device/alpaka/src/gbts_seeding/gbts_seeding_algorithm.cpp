@@ -316,7 +316,7 @@ void gbts_seeding_algorithm::gbts_make_graph_edges_kernel(
       traccc::device::gbts_consts::node_buffer_length;
   // The blocks stride over the device-side work list.
   const unsigned int n_blocks =
-      std::min(payload.nWorkMax, device::gbts_make_graph_edges_max_blocks);
+      std::min(payload.nWorkMax, device::gbts_make_graph_edges_max_fill_blocks);
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),
                       kernels::gbts_make_graph_edges<true>{}, payload);

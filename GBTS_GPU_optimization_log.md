@@ -484,3 +484,24 @@ Throughput: 0.727 ms/event on the default set (1 953 000 seeds x2),
 Lesson: "counters identical, seeds differ" was a relabeling, not a race;
 comparing seeds by coordinates instead of by spacepoint index is the right
 determinism test when the upstream chain is itself non-reproducible.
+
+### 17. Fill pass: static replay per block, dynamic loop only for overflowed items  -> 0.685 ms/event (-6%)
+The fill pass used the same dynamic work grabbing as the count pass (global
+atomic + block barrier + ~5 dependent global loads of block-uniform setup
+per item, ~2.6 items per block, 25 % of its stall samples on the grab
+barrier). Now block b replays the edges recorded for work item b (no
+barrier, every item in flight at once); the count pass appends the items
+that must be re-walked (scratch overflow, no scratch) to a compact overflow
+list (new counter `nOverflowItems`, buffer `overflow_items`) and only the
+first 4096 blocks loop over that list. Blocks beyond the replayable items
+return before any setup and the grid is capped at the scratch item count
+(16384; items beyond are on the overflow list anyway). Fill 126 -> 93 us.
+Tried on the way and dropped: (a) edge-parallel replay (the block's
+recorded edges flattened over all lanes with a per-thread offset table in
+shared memory): 133 us with dynamic grabbing - lane utilisation was not the
+limiter; (b) prefetching the <= 16 recorded outer nodes into a register
+array before the gathers: 153 us (spills). (c) the first static version
+launched nWorkMax (~65k) blocks that all hit the overflow cursor atomic:
+234 us - the cursor is a single address, only a few thousand blocks may
+touch it.
+Seeds identical on all three input sets (1 953 000 / 804 240 / 761 680).

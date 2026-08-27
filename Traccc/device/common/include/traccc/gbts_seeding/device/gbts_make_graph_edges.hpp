@@ -22,6 +22,9 @@ namespace traccc::device {
 /// Largest launch grid of gbts_make_graph_edges (the blocks stride over the
 /// work items)
 inline constexpr unsigned int gbts_make_graph_edges_max_blocks = 4096u;
+/// Grid cap of the fill pass (one block per replayed work item; items
+/// beyond the scratch are on the overflow list anyway)
+inline constexpr unsigned int gbts_make_graph_edges_max_fill_blocks = 16384u;
 
 /// (Global Event Data) Payload for the @c traccc::device::gbts_make_graph_edges
 /// function (shared by the counting and the filling pass).
@@ -79,6 +82,12 @@ struct gbts_make_graph_edges_payload {
   /// of the block accepted more edges than fit into edge_scratch (the fill
   /// pass then re-walks the outer nodes for the whole block)
   vecmem::data::vector_view<unsigned char> block_overflow;
+  /// Count pass output / fill pass input: the work items whose edges are not
+  /// (completely) recorded in the scratch and must be re-walked by the fill
+  /// pass (nWorkMax entries, arbitrary order)
+  vecmem::data::vector_view<unsigned int> overflow_items;
+  /// Count pass output: number of entries of @c overflow_items
+  unsigned int* n_overflow;
   /// Fill pass output: per-edge "kept" flag, initialised to 0 (later set by
   /// gbts_match_graph_edges)
   vecmem::data::vector_view<unsigned char> reindexer;

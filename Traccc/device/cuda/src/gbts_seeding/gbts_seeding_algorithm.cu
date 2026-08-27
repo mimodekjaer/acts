@@ -874,9 +874,10 @@ void gbts_seeding_algorithm::gbts_make_graph_edges_kernel(
     const device::gbts_make_graph_edges_payload& payload) const {
   const unsigned int n_threads =
       traccc::device::gbts_consts::node_buffer_length;
-  // The blocks stride over the device-side work list.
+  // One block per work item (static replay), the blocks then stride over
+  // the overflow list.
   const unsigned int n_blocks =
-      std::min(payload.nWorkMax, device::gbts_make_graph_edges_max_blocks);
+      std::min(payload.nWorkMax, device::gbts_make_graph_edges_max_fill_blocks);
   kernels::gbts_make_graph_edges<true>
       <<<n_blocks, n_threads, 0, details::get_stream(stream())>>>(payload);
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
