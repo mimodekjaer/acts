@@ -194,6 +194,40 @@ void gbts_seeding_algorithm::gbts_sort_nodes_kernel(
   });
 }
 
+namespace {
+
+/// Launch @c traccc::device::gbts_make_graph_edges<fill> on the queue.
+template <bool fill, typename kernel_name_t>
+void submit_gbts_make_graph_edges(
+    ::sycl::queue& squeue,
+    const device::gbts_make_graph_edges_payload& payload) {
+  // One thread per inner node of a chunk: the block size must equal the
+  // chunk size.
+  const unsigned int n_threads =
+      traccc::device::gbts_consts::node_buffer_length;
+  // Count pass: the blocks stride over the device-side work list. Fill
+  // pass: one block per work item (static replay), the first blocks then
+  // stride over the overflow list.
+  const unsigned int n_blocks = std::min(
+      payload.nWorkMax, fill ? device::gbts_make_graph_edges_max_fill_blocks
+                             : device::gbts_make_graph_edges_max_blocks);
+  squeue.submit([&](::sycl::handler& h) {
+    vecmem::sycl::local_accessor<unsigned int> work_slot(
+        traccc::device::gbts_make_graph_edges_scratch_size, h);
+
+    h.parallel_for<kernel_name_t>(
+        details::calculate1DimNdRange(n_blocks * n_threads, n_threads),
+        [payload, work_slot](::sycl::nd_item<1> item) {
+          const details::barrier<1> barrier{item};
+          device::gbts_make_graph_edges<fill>(
+              details::thread_id<1>{item}, barrier, payload,
+              {vecmem::data::vector_view<unsigned int>(
+                  traccc::device::gbts_make_graph_edges_scratch_size,
+                  &work_slot[0])});
+        });
+  });
+}
+
 }  // namespace
 
 void gbts_seeding_algorithm::gbts_count_graph_edges_kernel(

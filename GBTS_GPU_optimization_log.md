@@ -614,3 +614,55 @@ body.
   graph row (sweep 9.5 -> 8.7 us; it helped less than hoped, the sweeps are
   latency bound: cache -> neighbour levels -> compare).
 Two launches fewer; seeds identical on all three sets.
+
+### 26. Cleanup for the single portable version (no performance change)
+- Removed the now unused block-cooperative range search and the two
+  unused shared arrays (phi / node params slab) of `gbts_make_graph_edges`
+  from the device code and from the CUDA, Alpaka and SYCL wrappers; the
+  shared payload is only the 16-entry work-slot scratch.
+- Removed the `nCcaDropped` counter (resident-grid clamp of the deleted
+  cooperative CCA) and the CUDA-only includes.
+- Restored the SYCL `submit_gbts_make_graph_edges` launch helper that an
+  earlier commit (cdf03875f) had dropped while the SYCL backend was not
+  being built (the file called it and had an unbalanced namespace): all
+  three backends now have the same launcher set, the same block sizes and
+  the same launch sequence; every payload field they reference exists.
+  Alpaka and SYCL are still not compiled in this build - their sources were
+  checked by reading, not by compiling.
+
+### Rejected in session C, part 2 (kept out)
+- Storing the edge parameters decoded (float4 + long-edge byte) instead
+  of the short4 and dropping the decode from the match kernel: fill 87 ->
+  98 us and match 81 -> 88 us (wider stores/reads cost more than the 8
+  conversions per candidate), and one seed moved on events 0-4 (the two
+  kernels do not compile the decode identically). Reverted.
+- Two-hop terms in the CCA relaxation (1 + level of the neighbours'
+  cached neighbours): the levels converge faster but the subtree counts
+  still need one sweep per level, so the sweep count did not drop
+  (13 working sweeps) while each sweep got slower: 0.605 -> 0.633 ms/event.
+  Reverted.
+- Prefetching the strip's pair data in the single-block work-list kernel:
+  17.2 -> 18.0 us; the kernel is 18k instructions of pure launch/latency
+  floor. Reverted.
+- `__launch_bounds__(128, 12)` on the fill wrapper for more resident
+  blocks: not possible with the compute_75 build target (1024 threads/SM).
+
+## Final state (commit at the end of session C)
+| | ms/event (seeding-only, 500 events, default set) |
+|---|---|
+| start of session C (HEAD c5710dbe8, cooperative CUDA kernels) | 0.727 (0.739 with the residual nondeterminism fixes of entry 15) |
+| best with CUDA-only cooperative kernels (entry 22) | 0.572 |
+| single portable version (entries 24-26) | 0.604 |
+
+Kernel time per event 602 us: CCA sweeps 146 (17 launches, 14 working),
+graph making 87 + 87, matching 80, node sort ~50, path store 26,
+compaction 19, work list 17, scans ~21, conversion 14, sort_nodes 13,
+hit bidding 11, binning 9, terminus 8. Seeds: 1 953 000 / 804 240 /
+761 680 on the three validation sets, bit-identical run to run (the
+whole chain, verified array by array in entry 16).
+Remaining ideas, not pursued (see the entries above for the measurements
+behind them): the CCA sweep count is bounded by the longest chain
+(Jacobi), only a grid-synchronised or reverse-adjacency (frontier)
+formulation would cut it; the work list is launch-latency bound; the
+match kernel is instruction bound with ~14 of 32 lanes active because the
+bucket sizes vary per lane.

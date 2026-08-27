@@ -59,7 +59,6 @@ enum gbts_counter : unsigned int {
   nTerminusEdges,   // #terminus edges; then reused as path-store write cursor
   nProps,           // seed proposals from gbts_fit_segments
   nRejected,        // rejected seed proposals
-  nCcaDropped,      // connected edges beyond the resident CCA grid (dropped)
   nOverflowItems,   // work items the fill pass has to re-walk
   nCounters         // total number of counters
 };

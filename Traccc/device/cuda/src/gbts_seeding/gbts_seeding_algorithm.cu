@@ -35,7 +35,6 @@
 
 // System include(s).
 #include <algorithm>
-#include <cstdlib>
 #include <memory_resource>
 
 // CUDA include(s).
@@ -107,20 +106,14 @@ __global__ void gbts_sort_nodes(const device::gbts_sort_nodes_payload payload) {
 template <bool fill>
 __global__ void gbts_make_graph_edges(
     const device::gbts_make_graph_edges_payload payload) {
-  __shared__ float phi[traccc::device::gbts_consts::node_buffer_length];
-  __shared__ float4 node_pack[traccc::device::gbts_consts::node_buffer_length];
   __shared__ unsigned int
       work_slot[traccc::device::gbts_make_graph_edges_scratch_size];
   const traccc::cuda::barrier barrier;
 
   device::gbts_make_graph_edges<fill>(
       details::thread_id1{}, barrier, payload,
-      {vecmem::data::vector_view<float>(
-           traccc::device::gbts_consts::node_buffer_length, phi),
-       vecmem::data::vector_view<float4>(
-           traccc::device::gbts_consts::node_buffer_length, node_pack),
-       vecmem::data::vector_view<unsigned int>(
-           traccc::device::gbts_make_graph_edges_scratch_size, work_slot)});
+      {vecmem::data::vector_view<unsigned int>(
+          traccc::device::gbts_make_graph_edges_scratch_size, work_slot)});
 }
 
 /// CUDA kernel for running @c traccc::device::gbts_match_graph_edges

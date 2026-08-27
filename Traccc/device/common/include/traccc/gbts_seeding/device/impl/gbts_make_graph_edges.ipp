@@ -49,96 +49,6 @@ TRACCC_HOST_DEVICE inline unsigned int gbts_phi_lower_bound(
   return begin;
 }
 
-/// First index in [begin, end) of @c phis whose value is > @c value
-/// (the range must be sorted ascending).
-template <typename vector_t>
-TRACCC_HOST_DEVICE inline unsigned int gbts_phi_upper_bound(
-    const vector_t& phis, unsigned int begin, unsigned int end,
-    const float value) {
-  while (begin < end) {
-    const unsigned int mid = begin + (end - begin) / 2u;
-    if (phis[mid] <= value) {
-      begin = mid + 1u;
-    } else {
-      end = mid;
-    }
-  }
-  return begin;
-}
-
-/// Block-cooperative search of up to four boundaries in the phi-sorted node
-/// range [begin, end): boundary k is lower_bound(values[k]) for even k and
-/// upper_bound(values[k]) for odd k (only the first @c n_values are
-/// searched). Round 1 probes blockSize evenly spaced nodes, round 2 lets 32
-/// threads per boundary refine inside the probe interval. All threads of
-/// the block must call this; the results are broadcast through
-/// @c shared_bounds (>= 8 entries). @c shared_phi must hold >= blockSize
-/// entries and is clobbered.
-template <typename barrier_t>
-TRACCC_HOST_DEVICE inline void gbts_block_find_bounds(
-    const barrier_t& barrier, const unsigned int threadIndex,
-    const unsigned int blockSize,
-    const vecmem::device_vector<const float>& d_node_phi,
-    const unsigned int begin, const unsigned int end, const float* values,
-    const unsigned int n_values, vecmem::device_vector<float>& shared_phi,
-    vecmem::device_vector<unsigned int>& shared_bounds, unsigned int* bounds) {
-  const unsigned int n = end - begin;
-  // Round 1: probe positions pos(t) = begin + t * n / blockSize.
-  const auto pos = [&](const unsigned int t) {
-    return begin +
-           static_cast<unsigned int>(
-               (static_cast<unsigned long long int>(t) * n) / blockSize);
-  };
-  shared_phi[threadIndex] = d_node_phi[pos(threadIndex)];
-  barrier.blockBarrier();
-  // The predicate P_k(i): the boundary lies after node i.
-  const auto pred = [&](const unsigned int k, const float phi) {
-    return (k % 2u == 0u) ? (phi < values[k]) : (phi <= values[k]);
-  };
-  // Find, per boundary, the last probe satisfying the predicate (or none).
-  for (unsigned int k = 0u; k < n_values; ++k) {
-    const bool p_here = pred(k, shared_phi[threadIndex]);
-    const bool p_next = (threadIndex + 1u < blockSize)
-                            ? pred(k, shared_phi[threadIndex + 1u])
-                            : false;
-    if (threadIndex == 0u && !p_here) {
-      shared_bounds[k] = blockSize;  // sentinel: boundary == begin
-    } else if (p_here && !p_next) {
-      shared_bounds[k] = threadIndex;
-    }
-  }
-  barrier.blockBarrier();
-  // Round 2: 32 threads per boundary scan the probe interval
-  // (pos(m), pos(m + 1)], with pos(blockSize) == end, in chunks of 32.
-  const unsigned int k = threadIndex / 32u;
-  const unsigned int lane = threadIndex % 32u;
-  if (k < n_values) {
-    const unsigned int m = shared_bounds[k];
-    if (m == blockSize) {
-      if (lane == 0u) {
-        shared_bounds[4u + k] = begin;
-      }
-    } else {
-      const unsigned int first = pos(m) + 1u;
-      const unsigned int last = (m + 1u < blockSize) ? pos(m + 1u) : end;
-      for (unsigned int i = first + lane; i <= last; i += 32u) {
-        // P(i - 1) holds by construction for i == first.
-        const bool p_prev = (i == first) ? true : pred(k, d_node_phi[i - 1u]);
-        const bool p_here = (i < end) ? pred(k, d_node_phi[i]) : false;
-        if (p_prev && !p_here) {
-          shared_bounds[4u + k] = i;
-        }
-      }
-    }
-  }
-  barrier.blockBarrier();
-  for (unsigned int b = 0u; b < n_values; ++b) {
-    bounds[b] = shared_bounds[4u + b];
-  }
-  // The scratch is reused by the next work item only after further
-  // barriers, so no trailing barrier is needed here.
-}
-
 /// A phi window [lo, hi] split at the +/- pi boundary into up to two
 /// intervals, ordered by ascending phi (and therefore ascending node index).
 struct gbts_phi_window {
@@ -344,8 +254,6 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
   vecmem::device_vector<unsigned int> d_overflow_items(payload.overflow_items);
   vecmem::device_vector<float4> d_item_info(payload.item_info);
 
-  vecmem::device_vector<float> shared_phi(shared.phi);
-  vecmem::device_vector<float4> shared_node_pack(shared.node_pack);
   vecmem::device_vector<unsigned int> shared_work_slot(shared.work_slot);
 
   const gbts_make_graph_edges_params& ap = payload.gbts_make_graph_edges_params;

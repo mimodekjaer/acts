@@ -108,13 +108,8 @@ struct gbts_make_graph_edges_payload {
 ///
 /// Shared-memory scratch: one slab of bin-2 (outer) nodes.
 struct gbts_make_graph_edges_shared_payload {
-  /// Shared-mem cache: phi / node
-  vecmem::data::vector_view<float> phi;
-  /// Shared-mem cache: (tau_min, tau_max, r, z) float4 / node
-  vecmem::data::vector_view<float4> node_pack;
   /// gbts_make_graph_edges_scratch_size unsigned ints: [0] the work item
-  /// grabbed by the block, [1..8] the outer-node range boundaries found by
-  /// the block-cooperative search
+  /// grabbed by the block, [9] the block-wide maximum edge count
   vecmem::data::vector_view<unsigned int> work_slot;
 };
 

@@ -116,12 +116,6 @@ struct gbts_make_graph_edges {
   ALPAKA_FN_ACC void operator()(
       TAcc const& acc,
       const device::gbts_make_graph_edges_payload payload) const {
-    auto& phi = ::alpaka::declareSharedVar<
-        float[traccc::device::gbts_consts::node_buffer_length], __COUNTER__>(
-        acc);
-    auto& node_pack = ::alpaka::declareSharedVar<
-        traccc::float4[traccc::device::gbts_consts::node_buffer_length],
-        __COUNTER__>(acc);
     auto& work_slot = ::alpaka::declareSharedVar<
         unsigned int[traccc::device::gbts_make_graph_edges_scratch_size],
         __COUNTER__>(acc);
@@ -129,13 +123,9 @@ struct gbts_make_graph_edges {
 
     device::gbts_make_graph_edges<fill>(
         details::thread_id1{acc}, barrier, payload,
-        {vecmem::data::vector_view<float>(
-             traccc::device::gbts_consts::node_buffer_length, &phi[0]),
-         vecmem::data::vector_view<traccc::float4>(
-             traccc::device::gbts_consts::node_buffer_length, &node_pack[0]),
-         vecmem::data::vector_view<unsigned int>(
-             traccc::device::gbts_make_graph_edges_scratch_size,
-             &work_slot[0])});
+        {vecmem::data::vector_view<unsigned int>(
+            traccc::device::gbts_make_graph_edges_scratch_size,
+            &work_slot[0])});
   }
 };
 
