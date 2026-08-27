@@ -436,3 +436,9 @@ the converter's dropout multiplicity (1-2 seeds per accepted proposal).
 Bisection evidence and suspects are documented in GBTS_cut_notes.md
 ("Residual seed-bidding nondeterminism"). With 0 bidding rounds the
 pipeline is fully deterministic.
+### B13. Did NOT help: row -> root map for fill_path_store
+Writing, in the fused CCA tail, the terminus edge of every path-store row
+(so fill_path_store reads one value instead of a 17-step binary search of
+row_sizes) costs more in the tail (load-imbalanced per-subtree writes, one
+more grid barrier: 75 -> 80-89 us) than it saves; 0.680 -> 0.687 ms/event.
+Dropped.
