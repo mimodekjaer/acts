@@ -28,8 +28,11 @@ namespace traccc::device {
 inline constexpr unsigned int gbts_run_cca_max_blocks = 4096u;
 inline constexpr unsigned int gbts_run_cca_row_count_slot =
     gbts_consts::max_cca_iter + 2u;
-inline constexpr unsigned int gbts_run_cca_scratch_size =
+/// Scratch slot holding the maximum level reached (fused CCA only)
+inline constexpr unsigned int gbts_run_cca_max_level_slot =
     gbts_run_cca_row_count_slot + 1u + gbts_run_cca_max_blocks;
+inline constexpr unsigned int gbts_run_cca_scratch_size =
+    gbts_run_cca_max_level_slot + 1u;
 
 struct gbts_run_cca_iteration_payload {
   /// Capacity of the compacted graph (maximum number of edges)

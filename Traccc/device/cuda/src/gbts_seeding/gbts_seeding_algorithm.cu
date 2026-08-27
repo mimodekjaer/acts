@@ -291,6 +291,7 @@ __device__ inline void gbts_run_cca_cached_body(
 
   if (edge == 0u) {
     active_counters[0] = 0u;
+    active_counters[device::gbts_run_cca_max_level_slot] = 0u;
   }
   grid.sync();
 
@@ -337,9 +338,29 @@ __device__ inline void gbts_run_cca_cached_body(
 
   // Deterministic level-ordered subtree counting (children strictly before
   // parents, separated by grid-wide barriers). The first levels half holds
-  // the final level of every settled edge.
+  // the final level of every settled edge. Only the levels actually reached
+  // are visited: the grid-wide maximum level is reduced first.
+  __shared__ unsigned int block_max_level;
+  if (threadIdx.x == 0u) {
+    block_max_level = 0u;
+  }
+  __syncthreads();
+  {
+    unsigned int my_max = has_edge ? d_levels[edge] : 0u;
+    for (unsigned int e = edge + nThreads; e < n; e += nThreads) {
+      my_max = max(my_max, static_cast<unsigned int>(d_levels[e]));
+    }
+    atomicMax(&block_max_level, my_max);
+  }
+  __syncthreads();
+  if (threadIdx.x == 0u) {
+    atomicMax(active_counters + device::gbts_run_cca_max_level_slot,
+              block_max_level);
+  }
   grid.sync();
-  for (unsigned char lvl = 2u; lvl <= max_iter + 1u; ++lvl) {
+  const unsigned int max_level =
+      active_counters[device::gbts_run_cca_max_level_slot];
+  for (unsigned char lvl = 2u; lvl <= max_level; ++lvl) {
     if (has_edge) {
       gbts_cca_count_edge(edge, edge_size, lvl, d_output_graph, d_levels,
                           d_outgoing_paths);

@@ -304,7 +304,13 @@ struct gbts_seedfinder_config {
   unsigned char minLevel = 3;
 
   // number of seed-vs-edge bidding rounds during disambiguation.
-  unsigned int edge_bidding_rounds = 5;
+  // NOTE: with the current device implementation the rounds cannot change
+  // the result (a round rejects a proposal only if one of its edges is held
+  // by a proposal with ambiguity 0, which no classified proposal has), so
+  // they are pure cost; verified identical seeds for 0, 1 and 5 rounds. The
+  // default is therefore 0 - see GBTS_cut_notes.md ("Seed bidding rounds")
+  // before changing the bidding semantics.
+  unsigned int edge_bidding_rounds = 0;
 
   // Capacity of the seed path store, in rows per spacepoint. Rows beyond the
   // capacity are dropped (typical ttbar mu200 events need ~0.35 rows per

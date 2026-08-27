@@ -505,3 +505,25 @@ launched nWorkMax (~65k) blocks that all hit the overflow cursor atomic:
 234 us - the cursor is a single address, only a few thousand blocks may
 touch it.
 Seeds identical on all three input sets (1 953 000 / 804 240 / 761 680).
+
+### 18. CCA: level-ordered counting stops at the maximum level reached  -> 0.682 ms/event
+The fused CCA kernel ran the deterministic subtree-counting pass for every
+level 2..16 (15 grid barriers) although the longest path of an event is
+much shorter. The maximum settled level is reduced (block max, one global
+atomicMax, one extra grid barrier) and the loop stops there: fused CCA 94 ->
+91 us. Seeds identical.
+
+### 19. Seed bidding rounds are dead code -> 0.626 ms/event (-8%), default rounds 0
+With a temporary override of `edge_bidding_rounds`: 0, 1 and 5 rounds give
+bit-identical seed totals on events 0-9 (1 953 000 @ 500) and events 5-9
+(804 240 @ 200). Reason (device code, unchanged since the original port):
+after the classification pass every proposal is 1 (maybe) or -2 (rejected);
+a round marks losers -1 and the reset step rejects a maybe only when an
+edge on its path is held by a proposal whose ambiguity is 0 - impossible,
+because the holder is itself a bidder (1 or -1) and every edge on the path
+carries the row's own bid at least. So the rounds only cost: 5 rounds x 2
+grid barriers plus the bids, ~55 us per event. The default is now 0 (the
+code path stays for configurations with rounds > 0). This is NOT a physics
+change of the produced seeds (verified), but the intended semantics of the
+rounds may differ from what the port does - documented in
+GBTS_cut_notes.md for the physics owner.

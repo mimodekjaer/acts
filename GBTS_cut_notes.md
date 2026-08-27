@@ -119,3 +119,17 @@ round. A clean fix probably needs the reset pass to double-buffer the
 ambiguity flags (read round N, write round N+1) the way the bids already
 are. Left open for the physics/algorithm owner; effect size is 1 seed in
 ~800 000.
+
+## Seed bidding rounds (session C, entry 19) - PLEASE REVIEW
+The seed-vs-edge bidding rounds (`edge_bidding_rounds`, default was 5)
+cannot change the seed selection with the current device code: after the
+classification (0 -> 1 "maybe", else -2 "rejected") only 1/-1 proposals bid,
+and the reset step rejects a proposal only if an edge of its path is held
+by a proposal with ambiguity 0, which no bidding proposal has. Verified:
+identical seeds for 0, 1 and 5 rounds on 15 events; default set to 0.
+If the intended algorithm is the CPU one ("clean winners keep 0 and do not
+rebid; a maybe is rejected when one of its edges is held by a clean
+winner"), the port would need: (a) the classification to leave clean
+winners at 0 (and exclude them from rebidding), (b) the reset test as it
+is. That WOULD change the selection (more rejections); it is a physics
+decision, not made here.
