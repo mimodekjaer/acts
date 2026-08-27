@@ -566,3 +566,36 @@ window (14 % of the fill's stall samples). Seeds identical on all three
 sets. Also tried and dropped: edge-parallel replay with static blocks
 (93 -> 97 us; the lanes' serialisation over their <= 16 edges is not the
 limiter, the dependent gathers are).
+
+## Session C, part 2: one portable GBTS version (no CUDA-only kernels)
+
+Requirement (user): a single implementation whose optimizations can be
+ported to Alpaka and SYCL; CUDA-only constructs are removed and replaced by
+the fastest portable alternative.
+
+### 24. Cooperative-groups kernels removed; portable fixed-point CCA  -> 0.613 ms/event (+8% vs the fused version)
+Removed from the CUDA backend: the fused cooperative CCA (+ terminus
+counting + grid-wide scan), the register-cached CCA variants, the
+cooperative bidding / finish kernels, `launch_cooperative`, and with them
+`__syncthreads_count`, `__shfl_*`, `__noinline__`, grid.sync, the resident-
+grid clamp (`nCcaDropped`) and the double-buffered level array. All
+backends now run the same device code through the same launch sequence.
+Portable CCA: `gbts_run_cca_iteration` is a fixed-point sweep - every edge
+recomputes in place level = 1 + max(neighbour levels) (capped at 16 = "does
+not settle") and its subtree row count from the neighbours one level below;
+a block-level change flag (shared atomic) feeds one global counter per
+sweep and the next launch returns immediately when nothing changed. The
+result is the unique fixed point (longest path lengths and the counts they
+imply), identical to the cellular automaton (verified: all seed totals
+unchanged), and schedule independent by construction. Levels of a chain of
+L edges settle after sweep L-1, the counts one sweep later, so at most
+max_cca_iter + 1 = 16 sweeps are launched (bounded further by the depth of
+the bin-pair DAG, computed once on the host); a finishing launch writes the
+parent marks and terminus flags. 17 launches: 14 working sweeps x 9.5 us,
+2 early-exit launches x 5 us, finishing 7 us = 152 us vs 90 us fused.
+Learned on the way: (a) with ~1300 resident blocks the in-place sweep is
+effectively Jacobi (descending edge order buys nothing); (b) a per-edge DFS
+for the subtree counts in the finishing pass is exact but tail-dominated
+(130-330 us: one thread walks a whole jet); (c) an empty launch of this
+grid costs ~5 us under ncu, so the sweep count matters more than the sweep
+body.

@@ -170,7 +170,12 @@ struct gbts_run_cca_iteration {
   ALPAKA_FN_ACC void operator()(
       TAcc const& acc,
       const device::gbts_run_cca_iteration_payload payload) const {
-    device::gbts_run_cca_iteration(details::thread_id1{acc}, payload);
+    auto& changed =
+        ::alpaka::declareSharedVar<unsigned int[1], __COUNTER__>(acc);
+    const alpaka::barrier<TAcc> barrier(&acc);
+    device::gbts_run_cca_iteration(
+        details::thread_id1{acc}, barrier, payload,
+        {vecmem::data::vector_view<unsigned int>(1u, &changed[0])});
   }
 };
 
@@ -355,7 +360,7 @@ void gbts_seeding_algorithm::gbts_compress_graph_kernel(
 
 void gbts_seeding_algorithm::gbts_run_cca_iteration_kernel(
     const device::gbts_run_cca_iteration_payload& payload) const {
-  const unsigned int n_threads = 128;
+  const unsigned int n_threads = 256;
   const unsigned int n_blocks = 1 + (payload.nConnectedEdges - 1) / n_threads;
   ::alpaka::exec<Acc>(details::get_queue(queue()),
                       makeWorkDiv<Acc>(n_blocks, n_threads),

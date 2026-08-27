@@ -38,11 +38,6 @@ TRACCC_HOST_DEVICE inline void gbts_compress_graph(
   const unsigned int gridDimX = thread_id.getGridDimX();
 
   const unsigned int nEdges = *payload.nEdges;
-  // Offset of the second CCA levels buffer (the capped kept-edge count).
-  const unsigned int nConnectedEdges =
-      (*payload.nConnectedEdges < payload.nConnectedEdgesMax)
-          ? *payload.nConnectedEdges
-          : payload.nConnectedEdgesMax;
   for (unsigned int globalIndex = globalIdx; globalIndex < nEdges;
        globalIndex += blockDimX * gridDimX) {
     const int scan = d_reIndexer[globalIndex];
@@ -55,10 +50,9 @@ TRACCC_HOST_DEVICE inline void gbts_compress_graph(
       // Deterministic truncation at the compacted-graph capacity.
       continue;
     }
-    // Initialise the CCA parent mark and both level buffers of the edge.
+    // Initialise the CCA parent mark and the level of the edge.
     d_has_parent[static_cast<unsigned int>(newIdx)] = 0u;
     d_levels[static_cast<unsigned int>(newIdx)] = 1u;
-    d_levels[nConnectedEdges + static_cast<unsigned int>(newIdx)] = 1u;
 
     // Row-major output graph: each edge owns a contiguous block of
     // edge_size = 2 + 1 + nMaxNei ints ([node1, node2, nNei,

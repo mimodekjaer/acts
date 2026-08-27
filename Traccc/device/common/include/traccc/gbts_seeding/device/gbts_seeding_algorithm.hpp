@@ -360,7 +360,8 @@ class gbts_seeding_algorithm
       const unsigned int nConnectedEdgesMax,
       const unsigned int* d_nConnectedEdges, const unsigned int nSp,
       const vecmem::data::vector_view<unsigned int>& counters_view,
-      vecmem::vector<unsigned int>& h_counters) const;
+      vecmem::vector<unsigned int>& h_counters,
+      unsigned int* cca_scratch) const;
 
   /// @}
 
@@ -369,6 +370,9 @@ class gbts_seeding_algorithm
   gbts_seedfinder_config m_config;
   /// Number of bin pairs in m_config.binTables
   unsigned int m_nBinPairs = 0;
+  /// Longest chain of bin pairs (edges of a path visit a path of the bin
+  /// DAG): upper bound of the CCA relaxation sweeps needed
+  unsigned int m_maxChainLength = 0;
   /// Largest number of bin pairs sharing one inner bin
   unsigned int m_maxPairsPerBin1 = 0;
   /// Counters of the previous event (pinned host memory, copied

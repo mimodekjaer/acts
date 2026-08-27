@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <memory_resource>
 #include <unordered_map>
 #include <utility>
@@ -330,7 +331,7 @@ auto gbts_seeding_algorithm::create_edges(
   // CCA levels (double buffered); initialised to 1 by the compression
   // kernel so a level counts the maximum number of edge segments for a seed
   // originating at the edge.
-  vecmem::data::vector_buffer<unsigned char> levels_buf(2 * nConnectedEdgesMax,
+  vecmem::data::vector_buffer<unsigned char> levels_buf(nConnectedEdgesMax,
                                                         mr().main);
   copy().setup(levels_buf)->ignore();
   // Per-edge "has a settled parent" CCA marks (zero-initialised for the
@@ -371,33 +372,20 @@ auto gbts_seeding_algorithm::extract_seeds(
     const unsigned int nConnectedEdgesMax,
     const unsigned int* d_nConnectedEdges, const unsigned int nSp,
     const vecmem::data::vector_view<unsigned int>& counters_view,
-    vecmem::vector<unsigned int>& h_counters) const
+    vecmem::vector<unsigned int>& h_counters, unsigned int* cca_scratch) const
     -> edm::seed_collection::buffer {
   const gbts_seedfinder_config& cfg = m_config;
   unsigned int* d_counters = counters_view.ptr();
   // The device counters of this stage are only used by the kernels.
   static_cast<void>(h_counters);
 
-  // 6. Find longest segments with CCA.
-  // active_edges is the per-edge "next iter index" flag: it holds `iter`
-  // while the edge is active in iteration `iter`, and -1 once it settles.
-  // Iteration 0 writes every entry before any later iteration reads it, so
-  // no initialisation is required.
-  vecmem::data::vector_buffer<char> active_edges_buf(nConnectedEdgesMax,
-                                                     mr().main);
-  copy().setup(active_edges_buf)->ignore();
-
+  // 6. Find longest segments with the CCA (deterministic longest-path
+  //    relaxation), then count the terminus rows.
   vecmem::data::vector_buffer<unsigned char>& levels_buf = levels;
 
   vecmem::data::vector_buffer<int2> outgoing_paths_buf(nConnectedEdgesMax,
                                                        mr().main);
   copy().setup(outgoing_paths_buf)->ignore();
-
-  // Per-iteration active-edge counters for fused CCA implementations
-  // (initialised by the kernel itself).
-  vecmem::data::vector_buffer<unsigned int> cca_active_buf(
-      traccc::device::gbts_run_cca_scratch_size, mr().main);
-  copy().setup(cca_active_buf)->ignore();
 
   vecmem::data::vector_buffer<unsigned int> row_sizes_buf(nConnectedEdgesMax,
                                                           mr().main);
@@ -413,21 +401,19 @@ auto gbts_seeding_algorithm::extract_seeds(
                                                                    mr().main);
   copy().setup(hit_bids_buf)->ignore();
 
-  // CCA, terminus counting, row-size scan and bid zeroing (fused by the
-  // CUDA backend into one cooperative kernel).
+  // CCA sweeps + finishing pass, terminus counting and the row-size scan.
   gbts_run_cca_and_count_kernel(
       {nConnectedEdgesMax, d_nConnectedEdges, cfg.max_num_neighbours,
-       cfg.minLevel, output_graph, levels_buf, active_edges_buf,
-       outgoing_paths_buf, has_parent, 0u, cca_active_buf.ptr(),
-       d_counters + gbts_counter::nCcaDropped},
+       cfg.minLevel, output_graph, levels_buf, outgoing_paths_buf, has_parent,
+       0u, cca_scratch},
       {nConnectedEdgesMax, d_nConnectedEdges, outgoing_paths_buf, has_parent,
        row_sizes_buf, edge_bids_buf, hit_bids_buf,
-       cca_active_buf.ptr() + traccc::device::gbts_run_cca_row_count_slot});
+       cca_scratch + traccc::device::gbts_run_cca_row_count_slot});
 
   // The row count stays on the device (written by the terminus step); the
   // path store gets a fixed capacity instead of a readback.
   const unsigned int* row_count =
-      cca_active_buf.ptr() + traccc::device::gbts_run_cca_row_count_slot;
+      cca_scratch + traccc::device::gbts_run_cca_row_count_slot;
   const unsigned int nRows = cfg.max_rows_per_spacepoint * nSp;
   // Launch-size hint only (the kernels grid-stride to the device count).
   const unsigned int nRowsGrid = nSp / 2u;
@@ -493,13 +479,20 @@ void gbts_seeding_algorithm::gbts_run_cca_and_count_kernel(
 void gbts_seeding_algorithm::gbts_run_cca_kernel(
     const gbts_run_cca_iteration_payload& payload) const {
   gbts_run_cca_iteration_payload iteration = payload;
-  // First half: the CCA iterations; second half: the deterministic
-  // level-ordered subtree counting passes.
-  for (unsigned char iter = 0;
-       iter < 2 * traccc::device::gbts_consts::max_cca_iter; ++iter) {
-    iteration.iter = iter;
+  // The relaxation sweeps (a sweep after convergence returns at once; at
+  // most max_cca_iter, and no more than the bin-DAG depth requires) and the
+  // finishing pass.
+  // Levels of a chain of L edges settle after sweep L - 1, their counts one
+  // sweep later: L sweeps for chains of at most L edges.
+  const unsigned int nSweeps =
+      std::min<unsigned int>(traccc::device::gbts_consts::max_cca_iter + 1u,
+                             std::max(m_maxChainLength, 1u));
+  for (unsigned int iter = 0; iter < nSweeps; ++iter) {
+    iteration.iter = static_cast<unsigned char>(iter);
     gbts_run_cca_iteration_kernel(iteration);
   }
+  iteration.iter = traccc::device::gbts_run_cca_finish_pass;
+  gbts_run_cca_iteration_kernel(iteration);
 }
 
 void gbts_seeding_algorithm::gbts_finish_seeds_kernel(
@@ -559,6 +552,32 @@ gbts_seeding_algorithm::gbts_seeding_algorithm(
     binTables.erase(duplicates.begin(), duplicates.end());
   }
   m_nBinPairs = static_cast<unsigned int>(binTables.size());
+  // Depth of the bin DAG (pairs go from an inner to an outer bin): the
+  // longest chain of edges is at most the longest path through the pairs.
+  // Memoised longest path from every bin; the pairs are sorted by bin1.
+  {
+    std::vector<unsigned int> depth(m_config.n_eta_bins, 0u);
+    std::vector<unsigned char> done(m_config.n_eta_bins, 0u);
+    std::function<unsigned int(unsigned int)> longest =
+        [&](unsigned int bin) -> unsigned int {
+      if (done[bin] != 0u) {
+        return depth[bin];
+      }
+      done[bin] = 1u;  // (cycles are impossible: pairs go outward)
+      auto first =
+          std::lower_bound(binTables.begin(), binTables.end(),
+                           std::pair<unsigned int, unsigned int>{bin, 0u});
+      unsigned int best = 0u;
+      for (auto it = first; it != binTables.end() && it->first == bin; ++it) {
+        best = std::max(best, 1u + longest(it->second));
+      }
+      depth[bin] = best;
+      return best;
+    };
+    for (unsigned int bin = 0; bin < m_config.n_eta_bins; ++bin) {
+      m_maxChainLength = std::max(m_maxChainLength, longest(bin));
+    }
+  }
   m_maxPairsPerBin1 = 0;
   for (unsigned int i = 0, run = 0; i < m_nBinPairs; i++) {
     run = (i > 0 && binTables[i - 1].first == binTables[i].first) ? run + 1 : 1;
@@ -641,19 +660,15 @@ auto gbts_seeding_algorithm::operator()(
                      << " connected edges were dropped; raise "
                         "max_connected_edges_per_spacepoint");
     }
-    if (m_last_counters[gbts_counter::nCcaDropped] > 0u) {
-      TRACCC_WARNING("Previous event: "
-                     << m_last_counters[gbts_counter::nCcaDropped]
-                     << " connected edges beyond the resident CCA grid were "
-                        "dropped (event too large for the fused CCA)");
-    }
     m_have_last_counters = false;
   }
 
-  // One zeroed buffer for the named counters, the eta node counters and the
-  // edge CSR: a single memset per event.
+  // One zeroed buffer for the named counters, the eta node counters, the
+  // edge CSR and the CCA scratch: a single memset per event.
   vecmem::data::vector_buffer<unsigned int> zero_buf(
-      gbts_counter::nCounters + nSp + 1, mr().main);
+      gbts_counter::nCounters + nSp + 1 +
+          traccc::device::gbts_run_cca_scratch_size,
+      mr().main);
   copy().setup(zero_buf)->ignore();
   copy().memset(zero_buf, 0)->ignore();
   const vecmem::data::vector_view<unsigned int> counters_view(
@@ -681,7 +696,8 @@ auto gbts_seeding_algorithm::operator()(
   // Stage 3: Create seeds from the graph edges.
   return extract_seeds(graph.output_graph, graph.levels, graph.has_parent,
                        nodes.reducedSP, graph.nConnectedEdgesMax,
-                       graph.d_nConnectedEdges, nSp, counters_view, h_counters);
+                       graph.d_nConnectedEdges, nSp, counters_view, h_counters,
+                       zero_buf.ptr() + gbts_counter::nCounters + nSp + 1);
 }
 
 }  // namespace traccc::device

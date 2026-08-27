@@ -276,12 +276,16 @@ void gbts_seeding_algorithm::gbts_run_cca_iteration_kernel(
   ::sycl::queue& squeue = details::get_queue(queue());
   squeue.throw_asynchronous();
 
-  const unsigned int n_threads = 128;
+  const unsigned int n_threads = 256;
   squeue.submit([&](::sycl::handler& h) {
+    vecmem::sycl::local_accessor<unsigned int> changed(1u, h);
     h.parallel_for<kernels::gbts_run_cca_iteration>(
         details::calculate1DimNdRange(payload.nConnectedEdges, n_threads),
-        [payload](::sycl::nd_item<1> item) {
-          device::gbts_run_cca_iteration(details::thread_id<1>{item}, payload);
+        [payload, changed](::sycl::nd_item<1> item) {
+          const details::barrier<1> barrier{item};
+          device::gbts_run_cca_iteration(
+              details::thread_id<1>{item}, barrier, payload,
+              {vecmem::data::vector_view<unsigned int>(1u, &changed[0])});
         });
   });
 }
