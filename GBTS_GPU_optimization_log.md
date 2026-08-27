@@ -442,3 +442,13 @@ Writing, in the fused CCA tail, the terminus edge of every path-store row
 row_sizes) costs more in the tail (load-imbalanced per-subtree writes, one
 more grid barrier: 75 -> 80-89 us) than it saves; 0.680 -> 0.687 ms/event.
 Dropped.
+
+### B14. Did NOT work: static work assignment in the fill pass
+The fill pass grabs work items via the same global atomic cursor + block
+barrier as the count pass. Assigning items to blocks statically instead
+(blockIdx + k * nBlocks, no atomic, no per-item barrier) looked like a small
+kernel win on a single event, but crashed (illegal memory access) when the
+algorithm is reused across differently-sized events in the throughput run,
+and the instrumented sanitizer was too slow to localise it in the time
+budget. Reverted; not worth the risk for the marginal gain. The dynamic
+grab stays.
