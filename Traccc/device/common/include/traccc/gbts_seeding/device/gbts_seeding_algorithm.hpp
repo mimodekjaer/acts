@@ -306,6 +306,12 @@ class gbts_seeding_algorithm
     vecmem::data::vector_buffer<unsigned int> output_graph;
     /// CCA levels (2 * nConnectedEdges, initialised to 1)
     vecmem::data::vector_buffer<unsigned char> levels;
+    /// Capacity of the compacted graph (sizes output_graph / levels)
+    unsigned int nConnectedEdgesMax = 0;
+    /// Number of edges that survived re-indexing, on the device (capped at
+    /// nConnectedEdgesMax; the second CCA levels buffer starts at this
+    /// offset)
+    const unsigned int* d_nConnectedEdges = nullptr;
     /// Number of edges that survived re-indexing (0 == nothing to do)
     unsigned int nConnectedEdges = 0;
   };
@@ -329,8 +335,7 @@ class gbts_seeding_algorithm
       const vecmem::data::vector_buffer<uint2>& work_items_buf,
       const unsigned int nWorkMax, const unsigned int nSp,
       const vecmem::data::vector_buffer<unsigned char>& static_blob,
-      vecmem::data::vector_buffer<unsigned int>& zero_buf,
-      vecmem::vector<unsigned int>& h_counters) const;
+      vecmem::data::vector_buffer<unsigned int>& zero_buf) const;
 
   /// Stage 3: run the CCA, extract paths, fit and disambiguate into seeds.
   edm::seed_collection::buffer extract_seeds(
@@ -350,6 +355,12 @@ class gbts_seeding_algorithm
   unsigned int m_nBinPairs = 0;
   /// Largest number of bin pairs sharing one inner bin
   unsigned int m_maxPairsPerBin1 = 0;
+  /// Counters of the previous event (pinned host memory, copied
+  /// asynchronously at the end of graph making; checked at the start of
+  /// the next event for capacity overflows)
+  mutable vecmem::vector<unsigned int> m_last_counters;
+  mutable bool m_have_last_counters = false;
+  mutable unsigned int m_last_nSp = 0;
   /// @name Static tables, packed into one (pinned) host blob that is
   /// uploaded with a single copy per event
   /// @{

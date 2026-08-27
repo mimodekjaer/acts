@@ -25,7 +25,10 @@ struct gbts_compress_graph_payload {
   /// Number of original (uncompressed) edges, on the device
   const unsigned int* nEdges;
   /// Number of kept edges (size of one CCA levels buffer)
-  unsigned int nConnectedEdges;
+  const unsigned int* nConnectedEdges;
+  /// Capacity of the compacted graph (edges with a compact index beyond it
+  /// are dropped)
+  unsigned int nConnectedEdgesMax;
   /// Maximum number of neighbours retained per edge
   unsigned int nMaxNei;
   /// Sorted-slot to original spacepoint index map

@@ -305,3 +305,16 @@ with per-thread offsets (count 165 / fill 140 us: the offset sums, extra
 barriers and a dynamically indexed local array cost more than the scattered
 writes), and a per-thread register buffer written out row by row (the buffer
 spilled to local memory: count 260 us).
+
+### 13. Asynchronous graph compaction (interim)  -> 0.745 ms/event (+1.5% for now)
+The compacted graph and the CCA levels are sized by a capacity
+`max_connected_edges_per_spacepoint * nSp` (new config field, default 2;
+~0.45 observed), `gbts_compress_graph` reads the kept-edge count on the
+device (last scan entry) and truncates deterministically at the capacity;
+the counters are read back asynchronously and checked at the start of the
+next event (deferred capacity warnings). graph_making_output now carries
+`nConnectedEdgesMax` and the device count pointer `d_nConnectedEdges`.
+Interim: the seed extraction still reads the kept-edge count on the host
+(one sync, now after the compaction), so this step alone costs ~12 us
+(larger buffers, extra async copies); the gain comes when the extraction
+kernels grid-stride on the device count (Session B).

@@ -289,6 +289,10 @@ struct gbts_seedfinder_config {
   // spacepoints). Lets the graph making run without a host synchronisation;
   // events with more edges are truncated deterministically (with a warning).
   unsigned int max_edges_per_spacepoint = 8;
+  // Capacity of the compacted (connected-edge) graph per spacepoint
+  // (capacity = factor * number of spacepoints); ~0.5 observed for ttbar
+  // mu200. Exceeding it truncates the graph deterministically (warning).
+  unsigned int max_connected_edges_per_spacepoint = 2;
 
   // graph making maxiums: max neighbours kept per edge.
   unsigned int max_num_neighbours = 10;
