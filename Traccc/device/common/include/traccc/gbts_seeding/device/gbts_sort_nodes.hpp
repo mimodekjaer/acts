@@ -27,10 +27,12 @@ struct gbts_sort_nodes_payload {
   unsigned int nKeys;
   /// Number of eta bins (bounds the significant key bits)
   unsigned int nEtaBins;
-  /// Number of GBTS nodes (accepted spacepoints), on the device
-  const unsigned int* nNodes;
+  /// Output: number of GBTS nodes (accepted spacepoints)
+  unsigned int* nNodes;
+  /// Output: per eta bin (begin, end) node ranges, flat
+  vecmem::data::vector_view<unsigned int> eta_bin_views;
   /// In/out: per eta bin (min r, max r) as float bits, initialised by
-  /// gbts_build_edge_work_list to (1e8, 0) and accumulated here
+  /// gbts_bin_spacepoints to (1e8, 0) and accumulated here
   vecmem::data::vector_view<unsigned int> bin_rads_bits;
   /// Reduced (x, y, z, cluster width) per spacepoint, in original order
   vecmem::data::vector_view<const float4> reducedSP;
@@ -70,6 +72,11 @@ struct gbts_sort_nodes_shared_payload {
 /// writes that spacepoint's node data at rank i, except inside a run of
 /// equal (eta bin, quantised phi) where the exact (phi, index) rank is used
 /// -- no atomics, deterministic node order.
+///
+/// The per-eta-bin node ranges and the node count come from the key
+/// boundaries: a thread whose key starts a new eta bin (or is the first
+/// rejected key) writes the begin of its bin, the end of the previous one and
+/// the ranges of the empty bins in between.
 ///
 /// The (min r, max r) of every eta bin is reduced in shared memory per block
 /// (consecutive sorted nodes share their bins) and merged with a few global

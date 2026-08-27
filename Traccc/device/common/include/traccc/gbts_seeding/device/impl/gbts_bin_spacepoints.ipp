@@ -165,6 +165,14 @@ TRACCC_HOST_DEVICE inline void gbts_bin_spacepoints(
   const unsigned int stride =
       thread_id.getBlockDimX() * thread_id.getGridDimX();
 
+  // (min r, max r) accumulators of the eta bins (radii are >= 0, so their
+  // float bits order like the values).
+  vecmem::device_vector<unsigned int> d_bin_rads_bits(payload.bin_rads_bits);
+  for (unsigned int bin = globalIdx; bin < payload.nEtaBins; bin += stride) {
+    d_bin_rads_bits[2u * bin] = gbts_float_bits(1e8f);
+    d_bin_rads_bits[2u * bin + 1u] = gbts_float_bits(0.0f);
+  }
+
   // Every key slot of the capacity gets written: the unused tail sorts last.
   for (unsigned int globalIndex = globalIdx; globalIndex < payload.nSp;
        globalIndex += stride) {

@@ -33,6 +33,7 @@ TRACCC_HOST_DEVICE inline void gbts_sort_nodes(
   vecmem::device_vector<float> d_node_phi(payload.node_phi);
   vecmem::device_vector<unsigned int> d_node_index(payload.node_index);
   vecmem::device_vector<unsigned int> d_bin_rads_bits(payload.bin_rads_bits);
+  vecmem::device_vector<unsigned int> d_eta_bin_views(payload.eta_bin_views);
   const vecmem::device_vector<const float> d_tau_lut(payload.tau_lut);
   vecmem::device_vector<unsigned int> shared_min(shared_payload.min_bits);
   vecmem::device_vector<unsigned int> shared_max(shared_payload.max_bits);
@@ -42,22 +43,66 @@ TRACCC_HOST_DEVICE inline void gbts_sort_nodes(
   const unsigned int threadIndex = thread_id.getLocalThreadIdX();
   const unsigned int blockSize = thread_id.getBlockDimX();
   const unsigned int stride = blockSize * thread_id.getGridDimX();
-  const unsigned int nNodes = *payload.nNodes;
+  const unsigned int nKeys = payload.nKeys;
+  const unsigned int nEtaBins = payload.nEtaBins;
+  // Eta bin of a key slot; the rejected keys (sorted last) get nEtaBins.
+  auto bin_of = [&](const unsigned int i) -> unsigned int {
+    const gbts_sort_key_t k = d_sort_keys[i];
+    return (k == gbts_sort_key_rejected)
+               ? nEtaBins
+               : (gbts_sort_key_bin_phi(k) >> gbts_sort_key_phi_bits);
+  };
 
-  // Block-uniform loop (the barriers below must be reached by every thread).
-  for (unsigned int base = thread_id.getBlockIdX() * blockSize; base < nNodes;
+  // Block-uniform loop over the capacity (the barriers below must be reached
+  // by every thread).
+  for (unsigned int base = thread_id.getBlockIdX() * blockSize; base < nKeys;
        base += stride) {
     const unsigned int globalIndex = base + threadIndex;
-    const bool active = globalIndex < nNodes;
 
-    // The eta bins spanned by the block's nodes: [bin_first, bin_last].
+    // Eta-bin boundaries: the thread whose bin differs from the previous
+    // slot's bin writes the ranges. Empty bins between the two get an empty
+    // range; the first rejected key marks the node count.
+    if (globalIndex < nKeys) {
+      const unsigned int cur = bin_of(globalIndex);
+      const unsigned int prev =
+          (globalIndex == 0u) ? 0u : bin_of(globalIndex - 1u);
+      if ((globalIndex == 0u) || (cur != prev)) {
+        const unsigned int first_begin = (globalIndex == 0u) ? 0u : prev + 1u;
+        for (unsigned int b = first_begin; (b <= cur) && (b < nEtaBins); b++) {
+          d_eta_bin_views[2u * b] = globalIndex;
+        }
+        const unsigned int first_end = (globalIndex == 0u) ? 0u : prev;
+        for (unsigned int b = first_end; (b < cur) && (b < nEtaBins); b++) {
+          d_eta_bin_views[2u * b + 1u] = globalIndex;
+        }
+        if (cur == nEtaBins) {
+          *payload.nNodes = globalIndex;
+        }
+      }
+      if ((globalIndex + 1u == nKeys) && (cur < nEtaBins)) {
+        // No rejected key at all: close the last bins at the capacity.
+        for (unsigned int b = cur; b < nEtaBins; b++) {
+          d_eta_bin_views[2u * b + 1u] = nKeys;
+          if (b > cur) {
+            d_eta_bin_views[2u * b] = nKeys;
+          }
+        }
+        *payload.nNodes = nKeys;
+      }
+    }
+
+    // Nodes of this block: the slots before the first rejected key.
     const unsigned int last =
-        (base + blockSize <= nNodes) ? base + blockSize - 1u : nNodes - 1u;
-    const unsigned int bin_first =
-        gbts_sort_key_bin_phi(d_sort_keys[base]) >> gbts_sort_key_phi_bits;
-    const unsigned int bin_last =
-        gbts_sort_key_bin_phi(d_sort_keys[last]) >> gbts_sort_key_phi_bits;
-    const unsigned int n_bins = bin_last - bin_first + 1u;
+        (base + blockSize <= nKeys) ? base + blockSize - 1u : nKeys - 1u;
+    const unsigned int bin_first = bin_of(base);
+    const bool active =
+        (globalIndex < nKeys) && (bin_of(globalIndex) < nEtaBins);
+    unsigned int bin_last = bin_of(last);
+    if (bin_last >= nEtaBins) {
+      bin_last = nEtaBins - 1u;
+    }
+    const unsigned int n_bins =
+        (bin_first < nEtaBins) ? bin_last - bin_first + 1u : 0u;
     // Shared reduction only when the spanned bins fit the scratch arrays.
     const bool use_shared = n_bins <= blockSize;
     if (use_shared && (threadIndex < n_bins)) {
@@ -119,7 +164,7 @@ TRACCC_HOST_DEVICE inline void gbts_sort_nodes(
       const bool in_run =
           ((globalIndex > 0u) &&
            (gbts_sort_key_bin_phi(d_sort_keys[globalIndex - 1u]) == bin_phi)) ||
-          ((globalIndex + 1u < nNodes) &&
+          ((globalIndex + 1u < nKeys) &&
            (gbts_sort_key_bin_phi(d_sort_keys[globalIndex + 1u]) == bin_phi));
       if (in_run) {
         unsigned int start = globalIndex;
@@ -128,7 +173,7 @@ TRACCC_HOST_DEVICE inline void gbts_sort_nodes(
           --start;
         }
         unsigned int end = globalIndex + 1u;
-        while ((end < nNodes) &&
+        while ((end < nKeys) &&
                (gbts_sort_key_bin_phi(d_sort_keys[end]) == bin_phi)) {
           ++end;
         }

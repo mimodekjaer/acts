@@ -22,14 +22,6 @@
 
 namespace traccc::device {
 
-/// Bit pattern of a float (for atomic min / max on non-negative floats)
-TRACCC_HOST_DEVICE inline unsigned int gbts_float_bits(const float f) {
-  static_assert(sizeof(float) == sizeof(unsigned int));
-  unsigned int bits = 0u;
-  std::memcpy(&bits, &f, sizeof(float));
-  return bits;
-}
-
 /// Block size of the (single block) gbts_build_edge_work_list kernel; must
 /// be a power of two.
 inline constexpr unsigned int gbts_build_edge_work_list_block_size = 1024u;
@@ -43,24 +35,16 @@ struct gbts_build_edge_work_list_payload {
   unsigned int nBinPairs;
   /// Chunk size of the inner bin of a graph-making work item
   unsigned int chunkSize;
-  /// The sorted node keys (rejected keys last), nKeys entries
-  vecmem::data::vector_view<const gbts_sort_key_t> sort_keys;
   /// Per bin pair: (bin1, bin2)
   vecmem::data::vector_view<const uint2> bin_pairs;
-  /// Output: per eta bin (begin, end) node range, flat
-  vecmem::data::vector_view<unsigned int> eta_bin_views;
+  /// Per eta bin (begin, end) node range, flat (from gbts_sort_nodes)
+  vecmem::data::vector_view<const unsigned int> eta_bin_views;
   /// Output: per bin pair the first graph-making work item of the pair
   /// (nBinPairs + 1 entries; the last one is the number of work items)
   vecmem::data::vector_view<unsigned int> pair_work_begin;
   /// Output: per work item (bin pair, chunk of the inner bin); sized for the
   /// host-side upper bound of the work item count
   vecmem::data::vector_view<uint2> work_items;
-  /// Output: per eta bin (min r, max r) as float bits, initialised to
-  /// (1e8, 0) so that gbts_sort_nodes can accumulate them with atomic
-  /// min / max
-  vecmem::data::vector_view<unsigned int> bin_rads_bits;
-  /// Output: total number of nodes
-  unsigned int* nNodes;
   /// Output: total number of graph-making work items
   unsigned int* nWork;
 };
@@ -75,11 +59,10 @@ struct gbts_build_edge_work_list_shared_payload {
 /// @brief Turn the per-eta-bin node counts into node ranges and lay out the
 /// graph-making work items, entirely on the device (single block).
 ///
-/// The node ranges come from binary searches of the sorted keys (no node
-/// counting is needed); the work item offsets from a block scan of the
-/// per-pair chunk counts. A work item is one
-/// (bin pair, chunkSize-sized chunk of the pair's inner bin); pairs with an
-/// empty bin get no work items.
+/// The work item offsets come from a block scan of the per-pair chunk
+/// counts (the eta-bin node ranges are produced by gbts_sort_nodes). A work
+/// item is one (bin pair, chunkSize-sized chunk of the pair's inner bin); pairs
+/// with an empty bin get no work items.
 ///
 /// @param[in] thread_id      Thread identifier (one block)
 /// @param[in] barrier        Block-wide barrier

@@ -63,14 +63,12 @@ TRACCC_HOST_DEVICE inline void gbts_build_edge_work_list(
     const thread_id_t& thread_id, const barrier_t& barrier,
     const gbts_build_edge_work_list_payload& payload,
     const gbts_build_edge_work_list_shared_payload& shared_payload) {
-  const vecmem::device_vector<const gbts_sort_key_t> d_sort_keys(
-      payload.sort_keys);
   const vecmem::device_vector<const uint2> d_bin_pairs(payload.bin_pairs);
-  vecmem::device_vector<unsigned int> d_eta_bin_views(payload.eta_bin_views);
+  const vecmem::device_vector<const unsigned int> d_eta_bin_views(
+      payload.eta_bin_views);
   vecmem::device_vector<unsigned int> d_pair_work_begin(
       payload.pair_work_begin);
   vecmem::device_vector<uint2> d_work_items(payload.work_items);
-  vecmem::device_vector<unsigned int> d_bin_rads_bits(payload.bin_rads_bits);
   vecmem::device_vector<unsigned int> scratch(shared_payload.scratch);
 
   const unsigned int threadIndex = thread_id.getLocalThreadIdX();
@@ -80,41 +78,7 @@ TRACCC_HOST_DEVICE inline void gbts_build_edge_work_list(
   // sequentially, and one block scan of the strip totals gives the offsets:
   // one block scan per phase instead of one per blockSize elements.
 
-  // 1. Node ranges of the eta bins: the keys are sorted by (eta bin, phi)
-  //    with the rejected keys last, so every bin's begin is a binary search
-  //    and its end is the next bin's begin (the bins are contiguous).
-  {
-    const unsigned int nKeys = d_sort_keys.size();
-    for (unsigned int bin = threadIndex; bin < payload.nEtaBins;
-         bin += blockSize) {
-      d_eta_bin_views[2u * bin] = detail::gbts_key_lower_bound(
-          d_sort_keys, nKeys,
-          static_cast<gbts_sort_key_t>(bin) << gbts_sort_key_eta_shift);
-      // (min r, max r) accumulators of the bin (radii are >= 0, so their
-      // float bits order like the values)
-      d_bin_rads_bits[2u * bin] = gbts_float_bits(1e8f);
-      d_bin_rads_bits[2u * bin + 1u] = gbts_float_bits(0.0f);
-    }
-    if (threadIndex == 0u) {
-      *payload.nNodes = detail::gbts_key_lower_bound(
-          d_sort_keys, nKeys,
-          static_cast<gbts_sort_key_t>(payload.nEtaBins)
-              << gbts_sort_key_eta_shift);
-    }
-    barrier.blockBarrier();
-    const unsigned int nNodes = *payload.nNodes;
-    for (unsigned int bin = threadIndex; bin < payload.nEtaBins;
-         bin += blockSize) {
-      d_eta_bin_views[2u * bin + 1u] = (bin + 1u < payload.nEtaBins)
-                                           ? d_eta_bin_views[2u * bin + 2u]
-                                           : nNodes;
-    }
-  }
-  // The eta bin views are read by every thread below, and scratch is
-  // rewritten.
-  barrier.blockBarrier();
-
-  // 2. Work items of the bin pairs.
+  // Work items of the bin pairs.
   {
     const unsigned int strip = (payload.nBinPairs + blockSize - 1u) / blockSize;
     const unsigned int begin = threadIndex * strip;

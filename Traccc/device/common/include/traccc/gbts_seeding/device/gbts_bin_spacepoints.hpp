@@ -20,6 +20,7 @@
 
 // System include(s).
 #include <bit>
+#include <cstring>
 #include <utility>
 
 namespace traccc::device {
@@ -55,6 +56,14 @@ TRACCC_HOST_DEVICE inline unsigned int gbts_sort_key_bin_phi(
 TRACCC_HOST_DEVICE inline unsigned int gbts_sort_key_index(
     const gbts_sort_key_t key) {
   return static_cast<unsigned int>(key & 0xFFFFFFFFull);
+}
+
+/// Bit pattern of a float (for atomic min / max on non-negative floats)
+TRACCC_HOST_DEVICE inline unsigned int gbts_float_bits(const float f) {
+  static_assert(sizeof(float) == sizeof(unsigned int));
+  unsigned int bits = 0u;
+  std::memcpy(&bits, &f, sizeof(float));
+  return bits;
 }
 
 /// Quantised phi (monotone in phi): the low gbts_sort_key_phi_bits key bits
@@ -112,6 +121,9 @@ struct gbts_bin_spacepoints_payload {
   unsigned long int volumeMapSize;
   /// Size of the surface-to-layer map (for bounds checking)
   unsigned long int surfaceMapSize;
+  /// Output: per eta bin (min r, max r) as float bits, initialised here to
+  /// (1e8, 0) and accumulated by gbts_sort_nodes
+  vecmem::data::vector_view<unsigned int> bin_rads_bits;
   /// Parameters for SP filtering (passed through from config, used for tau
   /// cut if enabled)
   traccc::gbts_count_spacepoints_by_layer_params

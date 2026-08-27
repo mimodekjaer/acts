@@ -280,3 +280,12 @@ bits, local address space) and merged with a few global atomic min/max per
 block; the work-list kernel initialises the accumulators. Deterministic
 (min/max are order independent). sort_nodes 10.5 -> 12.3 us, the 8 us
 `gbts_find_minmax_radius` kernel and its launch gap are gone. Seeds identical.
+
+### 12. Eta-bin ranges by key boundary detection in gbts_sort_nodes  -> 0.755 ms/event
+Instead of one binary search per bin in the single-block work-list kernel,
+every thread of `gbts_sort_nodes` (which runs over the sorted keys anyway)
+compares its key's eta bin with the previous slot's and writes the bin
+begin/end (and the empty bins in between) at the boundaries; the first
+rejected key marks the node count. The radius accumulators are initialised
+by `gbts_bin_spacepoints`. The work-list kernel keeps only the pair phase:
+26 -> 17 us; sort_nodes unchanged. Seeds identical.
