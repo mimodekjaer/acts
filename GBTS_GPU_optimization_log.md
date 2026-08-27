@@ -666,3 +666,20 @@ behind them): the CCA sweep count is bounded by the longest chain
 formulation would cut it; the work list is launch-latency bound; the
 match kernel is instruction bound with ~14 of 32 lanes active because the
 bucket sizes vary per lane.
+
+### 27. Checked: can the portable CCA do better? (no - measurements)
+The 17 launches (14 working sweeps x 8.6 us + 2 early exits + finishing)
+are bounded by the Jacobi behaviour: one level per launch. Three portable
+attempts to propagate several hops per launch:
+- 4 in-place passes per launch (block barriers between them): still 13-14
+  working sweeps, each 2x the cost (0.605 -> 0.700 ms/event). Other blocks'
+  updates are served from the non-coherent L1 within a launch.
+- 32-bit levels read through vecmem atomic loads (L2-coherent): converges
+  in 5-6 launches - the propagation works - but every sweep costs ~130 us
+  (atomic loads serialise in L2): 770 us for the CCA, 1.31 ms/event.
+- 32-bit levels read through volatile loads: 13 working sweeps (no
+  propagation gained) at ~26 us each.
+All reverted; the plain sweep (entry 24) stays. What would help is a
+grid-synchronised loop (not portable) or a frontier formulation with
+reverse adjacency (fewer bytes per launch, same launch count, ~35 us net at
+best).
