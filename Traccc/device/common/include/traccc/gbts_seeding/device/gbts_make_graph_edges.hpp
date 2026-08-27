@@ -88,6 +88,10 @@ struct gbts_make_graph_edges_payload {
   vecmem::data::vector_view<unsigned int> overflow_items;
   /// Count pass output: number of entries of @c overflow_items
   unsigned int* n_overflow;
+  /// Count pass output / fill pass input: per work item (chunk begin, chunk
+  /// size, delta-phi window bits, unused), so the replay needs one load
+  /// instead of the dependent chain work item -> pair -> bins -> radii
+  vecmem::data::vector_view<float4> item_info;
   /// Fill pass output: per-edge "kept" flag, initialised to 0 (later set by
   /// gbts_match_graph_edges)
   vecmem::data::vector_view<unsigned char> reindexer;

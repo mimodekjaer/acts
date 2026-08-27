@@ -16,6 +16,9 @@
 #include "traccc/gbts_seeding/gbts_types.hpp"
 #include "traccc/utils/trigonometric_helpers.hpp"
 
+// System include(s).
+#include <bit>
+
 // VecMem include(s).
 #include <vecmem/containers/device_vector.hpp>
 #include <vecmem/memory/device_atomic_ref.hpp>
@@ -339,6 +342,7 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
   vecmem::device_vector<unsigned int> d_edge_scratch(payload.edge_scratch);
   vecmem::device_vector<unsigned char> d_block_overflow(payload.block_overflow);
   vecmem::device_vector<unsigned int> d_overflow_items(payload.overflow_items);
+  vecmem::device_vector<float4> d_item_info(payload.item_info);
 
   vecmem::device_vector<float> shared_phi(shared.phi);
   vecmem::device_vector<float4> shared_node_pack(shared.node_pack);
@@ -428,26 +432,48 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
     const uint2 item = d_work_items[work];
     const unsigned int pair = item.x;
     const unsigned int chunk = item.y;
-    const uint2 bins = d_bin_pairs[pair];
+    unsigned int chunk_begin = 0u;
+    unsigned int num_nodes1 = 0u;
+    unsigned int begin2 = 0u;
+    unsigned int end2 = 0u;
+    float deltaPhi = 0.0f;
+    if (replay) {
+      // Recorded by the count pass (one load instead of the chain work
+      // item -> pair -> bins -> radii).
+      const float4 info = d_item_info[work];
+      chunk_begin = std::bit_cast<unsigned int>(info.x);
+      num_nodes1 = std::bit_cast<unsigned int>(info.y);
+      deltaPhi = info.z;
+    } else {
+      const uint2 bins = d_bin_pairs[pair];
 
-    const unsigned int begin1 = d_eta_bin_views[2u * bins.x];
-    const unsigned int end1 = d_eta_bin_views[2u * bins.x + 1u];
-    const unsigned int begin2 = d_eta_bin_views[2u * bins.y];
-    const unsigned int end2 = d_eta_bin_views[2u * bins.y + 1u];
+      const unsigned int begin1 = d_eta_bin_views[2u * bins.x];
+      const unsigned int end1 = d_eta_bin_views[2u * bins.x + 1u];
+      begin2 = d_eta_bin_views[2u * bins.y];
+      end2 = d_eta_bin_views[2u * bins.y + 1u];
 
-    const unsigned int chunk_begin = begin1 + chunk * chunk_size;
-    const unsigned int chunk_end =
-        (chunk_begin + chunk_size < end1) ? chunk_begin + chunk_size : end1;
-    const unsigned int num_nodes1 = chunk_end - chunk_begin;
+      chunk_begin = begin1 + chunk * chunk_size;
+      const unsigned int chunk_end =
+          (chunk_begin + chunk_size < end1) ? chunk_begin + chunk_size : end1;
+      num_nodes1 = chunk_end - chunk_begin;
 
-    // delta-phi window of the bin pair from the radial separation of the bins
-    const float rb1 = d_bin_rads[2u * bins.x];
-    const float rb2 = d_bin_rads[2u * bins.y + 1u];
-    const float maxDeltaR = math::fabs(rb2 - rb1);
-    const gbts_dphi_window_params& dp = payload.gbts_dphi_window_params;
-    float deltaPhi = dp.min_delta_phi + dp.dphi_coeff * maxDeltaR;
-    if (maxDeltaR < dp.low_dr_threshold) {
-      deltaPhi = dp.min_delta_phi_low_dr + dp.dphi_coeff_low_dr * maxDeltaR;
+      // delta-phi window of the bin pair from the radial separation of the
+      // bins
+      const float rb1 = d_bin_rads[2u * bins.x];
+      const float rb2 = d_bin_rads[2u * bins.y + 1u];
+      const float maxDeltaR = math::fabs(rb2 - rb1);
+      const gbts_dphi_window_params& dp = payload.gbts_dphi_window_params;
+      deltaPhi = dp.min_delta_phi + dp.dphi_coeff * maxDeltaR;
+      if (maxDeltaR < dp.low_dr_threshold) {
+        deltaPhi = dp.min_delta_phi_low_dr + dp.dphi_coeff_low_dr * maxDeltaR;
+      }
+      if constexpr (!fill) {
+        if (has_scratch && (threadIndex == 0u)) {
+          d_item_info[work] =
+              float4{std::bit_cast<float>(chunk_begin),
+                     std::bit_cast<float>(num_nodes1), deltaPhi, 0.0f};
+        }
+      }
     }
     const float window = deltaPhi + detail::gbts_phi_window_eps;
 

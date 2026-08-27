@@ -557,3 +557,12 @@ the walk stops at the upper edge - makes the count pass barrier-free:
 per-thread searches while the slabs were staged through shared memory; the
 trade-off flipped once the staging was gone.) Seeds identical on all three
 sets.
+
+### 23. Fill replay reads a per-item record instead of the setup chain  -> fill 93 -> 87 us
+The count pass stores (chunk begin, chunk size, delta-phi) per work item
+(`item_info`); the replay of an item needs one load instead of the
+dependent chain work item -> bin pair -> eta-bin ranges -> bin radii ->
+window (14 % of the fill's stall samples). Seeds identical on all three
+sets. Also tried and dropped: edge-parallel replay with static blocks
+(93 -> 97 us; the lanes' serialisation over their <= 16 edges is not the
+limiter, the dependent gathers are).
