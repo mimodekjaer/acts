@@ -511,29 +511,12 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
       }
     }
 
-    // Outer-node index ranges that can pair with any node of the chunk: up to
-    // two (wraparound), the lower-index one first. Computed redundantly by
-    // every thread from block-uniform data.
-    const detail::gbts_phi_window block_window = detail::gbts_make_phi_window(
-        d_node_phi[chunk_begin] - window, d_node_phi[chunk_end - 1u] + window);
+    // Every thread searches the start of its own window inside the whole
+    // outer bin (the walk stops at the window's upper edge). Measured faster
+    // than a block-cooperative range search (18 dependent L1/L2 loads per
+    // thread, but no barriers and no shared probe rounds).
     unsigned int range_begin[2] = {begin2, end2};
     unsigned int range_end[2] = {end2, end2};
-    if (!block_window.whole) {
-      const bool has_b = block_window.lo_b <= block_window.hi_b;
-      const float values[4] = {block_window.lo_a, block_window.hi_a,
-                               block_window.lo_b, block_window.hi_b};
-      unsigned int bounds[4] = {begin2, end2, end2, end2};
-      // Cooperative search (barriers inside): block-uniform call.
-      detail::gbts_block_find_bounds(
-          barrier, threadIndex, blockSize, d_node_phi, begin2, end2, values,
-          has_b ? 4u : 2u, shared_phi, shared_work_slot, bounds);
-      range_begin[0] = bounds[0];
-      range_end[0] = bounds[1];
-      if (has_b) {
-        range_begin[1] = bounds[2];
-        range_end[1] = bounds[3];
-      }
-    }
 
     // --- Walk the outer-node ranges directly (global memory, L1 resident:
     //     the threads of a block read the same lines). No barriers from here

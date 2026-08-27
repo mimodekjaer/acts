@@ -546,3 +546,14 @@ thread whose phi window lies inside [-pi, pi] skip the wrap_phi call
 (`wrap_periodic` returns its input unchanged whenever value + pi is in
 [0, 2pi), which holds for |phi2 - phi1| <= window < pi: bit-identical).
 Count 105 -> 104 us. Seeds identical on all three sets.
+
+### 22. Count pass: per-thread window search instead of the block-cooperative one  -> 0.572 ms/event (-3.5%)
+With the outer nodes read directly from global memory (entry 20) the
+block-cooperative search of the block's outer range (4 barriers, two probe
+rounds) only served to shorten each thread's own binary search. Dropping
+it - every thread lower_bound()s its window start in the whole outer bin,
+the walk stops at the upper edge - makes the count pass barrier-free:
+104 -> 85 us. (Entry B4 had found the cooperative search to be a win over
+per-thread searches while the slabs were staged through shared memory; the
+trade-off flipped once the staging was gone.) Seeds identical on all three
+sets.
