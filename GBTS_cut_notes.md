@@ -52,3 +52,12 @@ the previous implementation.
   `max_Kappa_*` or the `z0` window would reduce the graph-making time roughly
   proportionally to the candidate count, but that is a physics decision; no
   change recommended from the performance side.
+
+## Capacities that can drop data (Session B)
+Not physics cuts, but limits that truncate deterministically when exceeded
+(a warning is printed at the start of the next event):
+- `max_rows_per_spacepoint` (2): path-store rows (typical need ~0.35/spacepoint).
+- Resident CCA grid: the fused CCA handles at most
+  (resident blocks x 1024) connected edges, ~270k on an H100 (typical: 100k);
+  edges beyond are dropped from seeding (`nCcaDropped` counter).
+- Seed output capacity: 2 seeds per path-store row.

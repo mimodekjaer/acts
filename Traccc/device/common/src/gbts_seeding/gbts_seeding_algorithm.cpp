@@ -331,35 +331,17 @@ auto gbts_seeding_algorithm::create_edges(
        num_neighbours_buf, neighbours_buf, reIndexer_buf, output_graph_buf,
        levels_buf});
 
-  // Deferred capacity checks: the counters of this event are read back
-  // asynchronously and inspected at the start of the next event.
-  copy()(counters_view, m_last_counters)->ignore();
-  copy()(vecmem::data::vector_view<const unsigned int>(1u, d_nConnectedEdges),
-         vecmem::data::vector_view<unsigned int>(
-             1u, m_last_counters.data() + gbts_counter::nConnectedEdges))
+  // The kept-edge count must outlive this stage's transient buffers: keep
+  // a device-side copy in the (persistent) counters.
+  unsigned int* d_nConnectedEdges_persistent =
+      d_counters + gbts_counter::nConnectedEdges;
+  copy()(
+      vecmem::data::vector_view<const unsigned int>(1u, d_nConnectedEdges),
+      vecmem::data::vector_view<unsigned int>(1u, d_nConnectedEdges_persistent))
       ->ignore();
-  m_have_last_counters = true;
-  m_last_nSp = nSp;
-
-  // Interim: the seed extraction still needs the kept-edge count on the
-  // host (to be replaced by device-side counts in the extraction kernels).
-  unsigned int nConnectedEdges = 0;
-  copy()(vecmem::data::vector_view<const unsigned int>(1u, d_nConnectedEdges),
-         vecmem::data::vector_view<unsigned int>(1u, &nConnectedEdges))
-      ->wait();
-  if (nConnectedEdges > nConnectedEdgesMax) {
-    nConnectedEdges = nConnectedEdgesMax;
-  }
-  TRACCC_DEBUG("found " << nConnectedEdges
-                        << " connected edges for seed extraction");
-  if (nConnectedEdges == 0) {
-    TRACCC_WARNING("No connected edges were found");
-    return graph_making_output{};
-  }
 
   return graph_making_output{std::move(output_graph_buf), std::move(levels_buf),
-                             nConnectedEdgesMax, d_nConnectedEdges,
-                             nConnectedEdges};
+                             nConnectedEdgesMax, d_nConnectedEdges_persistent};
 }
 
 // Stage 3:
@@ -370,7 +352,8 @@ auto gbts_seeding_algorithm::extract_seeds(
     vecmem::data::vector_buffer<unsigned int>& output_graph,
     vecmem::data::vector_buffer<unsigned char>& levels,
     vecmem::data::vector_buffer<float4>& reducedSP,
-    const unsigned int nConnectedEdges, const unsigned int nSp,
+    const unsigned int nConnectedEdgesMax,
+    const unsigned int* d_nConnectedEdges, const unsigned int nSp,
     const vecmem::data::vector_view<unsigned int>& counters_view,
     vecmem::vector<unsigned int>& h_counters) const
     -> edm::seed_collection::buffer {
@@ -384,13 +367,13 @@ auto gbts_seeding_algorithm::extract_seeds(
   // while the edge is active in iteration `iter`, and -1 once it settles.
   // Iteration 0 writes every entry before any later iteration reads it, so
   // no initialisation is required.
-  vecmem::data::vector_buffer<char> active_edges_buf(nConnectedEdges,
+  vecmem::data::vector_buffer<char> active_edges_buf(nConnectedEdgesMax,
                                                      mr().main);
   copy().setup(active_edges_buf)->ignore();
 
   vecmem::data::vector_buffer<unsigned char>& levels_buf = levels;
 
-  vecmem::data::vector_buffer<int2> outgoing_paths_buf(nConnectedEdges,
+  vecmem::data::vector_buffer<int2> outgoing_paths_buf(nConnectedEdgesMax,
                                                        mr().main);
   copy().setup(outgoing_paths_buf)->ignore();
 
@@ -400,7 +383,7 @@ auto gbts_seeding_algorithm::extract_seeds(
       traccc::device::gbts_run_cca_scratch_size, mr().main);
   copy().setup(cca_active_buf)->ignore();
 
-  vecmem::data::vector_buffer<unsigned int> row_sizes_buf(nConnectedEdges,
+  vecmem::data::vector_buffer<unsigned int> row_sizes_buf(nConnectedEdgesMax,
                                                           mr().main);
   copy().setup(row_sizes_buf)->ignore();
 
@@ -408,7 +391,7 @@ auto gbts_seeding_algorithm::extract_seeds(
   // of round r zeroes the half used by round r + 1, so no memsets are needed
   // inside the loop. Both halves start zeroed (done by the terminus kernel).
   vecmem::data::vector_buffer<unsigned long long int> edge_bids_buf(
-      2 * nConnectedEdges, mr().main);
+      2 * nConnectedEdgesMax, mr().main);
   copy().setup(edge_bids_buf)->ignore();
   vecmem::data::vector_buffer<unsigned long long int> hit_bids_buf(nSp,
                                                                    mr().main);
@@ -417,19 +400,21 @@ auto gbts_seeding_algorithm::extract_seeds(
   // CCA, terminus counting, row-size scan and bid zeroing (fused by the
   // CUDA backend into one cooperative kernel).
   gbts_run_cca_and_count_kernel(
-      {nConnectedEdges, cfg.max_num_neighbours, cfg.minLevel, output_graph,
-       levels_buf, active_edges_buf, outgoing_paths_buf, 0u,
-       cca_active_buf.ptr()},
-      {nConnectedEdges, outgoing_paths_buf, row_sizes_buf, edge_bids_buf,
-       hit_bids_buf,
+      {nConnectedEdgesMax, d_nConnectedEdges, cfg.max_num_neighbours,
+       cfg.minLevel, output_graph, levels_buf, active_edges_buf,
+       outgoing_paths_buf, 0u, cca_active_buf.ptr(),
+       d_counters + gbts_counter::nCcaDropped},
+      {nConnectedEdgesMax, d_nConnectedEdges, outgoing_paths_buf, row_sizes_buf,
+       edge_bids_buf, hit_bids_buf,
        cca_active_buf.ptr() + traccc::device::gbts_run_cca_row_count_slot});
 
   // The row count stays on the device (written by the terminus step); the
   // path store gets a fixed capacity instead of a readback.
   const unsigned int* row_count =
       cca_active_buf.ptr() + traccc::device::gbts_run_cca_row_count_slot;
-  const unsigned int nRows = cfg.max_rows_per_connected_edge * nConnectedEdges;
-  const unsigned int nRowsGrid = nConnectedEdges;
+  const unsigned int nRows = cfg.max_rows_per_spacepoint * nSp;
+  // Launch-size hint only (the kernels grid-stride to the device count).
+  const unsigned int nRowsGrid = nSp / 2u;
 
   vecmem::data::vector_buffer<int2> path_store_buf(nRows, mr().main);
   copy().setup(path_store_buf)->ignore();
@@ -440,11 +425,12 @@ auto gbts_seeding_algorithm::extract_seeds(
 
   // Lays out the path store and fits every path (segment fit fused).
   gbts_fill_path_store_kernel(
-      {nRows, nRowsGrid, row_count, nConnectedEdges, cfg.max_num_neighbours,
-       path_store_buf, output_graph, levels_buf, outgoing_paths_buf,
-       row_sizes_buf, seed_proposals_buf, seed_ambiguity_buf, cfg.minLevel,
-       reducedSP, d_counters + gbts_counter::nProps,
-       cfg.gbts_fit_segments_params, cfg.gbts_make_graph_edges_params.max_z0});
+      {nRows, nRowsGrid, row_count, nConnectedEdgesMax, d_nConnectedEdges,
+       cfg.max_num_neighbours, path_store_buf, output_graph, levels_buf,
+       outgoing_paths_buf, row_sizes_buf, seed_proposals_buf,
+       seed_ambiguity_buf, cfg.minLevel, reducedSP,
+       d_counters + gbts_counter::nProps, cfg.gbts_fit_segments_params,
+       cfg.gbts_make_graph_edges_params.max_z0});
 
   // 7. Disambiguate seeds through the initial bid and repeated seed-vs-edge
   //    bidding rounds. The proposal / rejection counts are not read back:
@@ -461,14 +447,21 @@ auto gbts_seeding_algorithm::extract_seeds(
   // backend into one cooperative kernel).
   const unsigned int edge_size = 1u + 2u + cfg.max_num_neighbours;
   gbts_finish_seeds_kernel(
-      {nRows, nRowsGrid, row_count, nConnectedEdges, cfg.edge_bidding_rounds,
-       path_store_buf, seed_proposals_buf, seed_ambiguity_buf, edge_bids_buf,
-       d_counters + gbts_counter::nRejected},
+      {nRows, nRowsGrid, row_count, nConnectedEdgesMax, d_nConnectedEdges,
+       cfg.edge_bidding_rounds, path_store_buf, seed_proposals_buf,
+       seed_ambiguity_buf, edge_bids_buf, d_counters + gbts_counter::nRejected},
       {nRows, nRowsGrid, row_count, nSeeds, edge_size, output_graph,
        seed_proposals_buf, path_store_buf, seed_ambiguity_buf, hit_bids_buf},
       {nRows, nRowsGrid, row_count, nSeeds, cfg.max_num_neighbours,
        seed_proposals_buf, seed_ambiguity_buf, path_store_buf, output_graph,
        reducedSP, output_seeds, hit_bids_buf, cfg.gbts_convert_seeds_params});
+
+  // Deferred capacity checks: the counters of this event (including the
+  // device-side connected-edge count copied into them) are read back
+  // asynchronously and inspected at the start of the next event.
+  copy()(counters_view, m_last_counters)->ignore();
+  m_have_last_counters = true;
+  m_last_nSp = nSp;
 
   // No synchronisation here: the caller reads the seed count.
   return output_seeds;
@@ -626,6 +619,12 @@ auto gbts_seeding_algorithm::operator()(
                      << " connected edges were dropped; raise "
                         "max_connected_edges_per_spacepoint");
     }
+    if (m_last_counters[gbts_counter::nCcaDropped] > 0u) {
+      TRACCC_WARNING("Previous event: "
+                     << m_last_counters[gbts_counter::nCcaDropped]
+                     << " connected edges beyond the resident CCA grid were "
+                        "dropped (event too large for the fused CCA)");
+    }
     m_have_last_counters = false;
   }
 
@@ -652,14 +651,15 @@ auto gbts_seeding_algorithm::operator()(
       std::move(nodes.node_index), nodes.bin_rads, nodes.eta_bin_views_buf,
       nodes.pair_work_begin_buf, nodes.work_items_buf, nodes.nWorkMax,
       nodes.nSp, nodes.static_blob, zero_buf);
-  if (graph.nConnectedEdges == 0) {
+  if (graph.nConnectedEdgesMax == 0) {
     // No connected edges survived graph making -> no seeds.
     return {0, mr().main};
   }
 
   // Stage 3: Create seeds from the graph edges.
   return extract_seeds(graph.output_graph, graph.levels, nodes.reducedSP,
-                       graph.nConnectedEdges, nSp, counters_view, h_counters);
+                       graph.nConnectedEdgesMax, graph.d_nConnectedEdges, nSp,
+                       counters_view, h_counters);
 }
 
 }  // namespace traccc::device

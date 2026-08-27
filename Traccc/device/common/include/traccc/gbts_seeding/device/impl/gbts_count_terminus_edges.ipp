@@ -32,17 +32,30 @@ TRACCC_HOST_DEVICE inline void gbts_count_terminus_edges(
   const unsigned int blockDimX = thread_id.getBlockDimX();
   const unsigned int gridDimX = thread_id.getGridDimX();
 
-  for (unsigned int globalIndex = globalIdx; globalIndex < d_edge_bids.size();
+  const unsigned int nConnectedEdges =
+      (*payload.d_nConnectedEdges < payload.nConnectedEdges)
+          ? *payload.d_nConnectedEdges
+          : payload.nConnectedEdges;
+  // Only the bids of the edges present are used (halves laid out with the
+  // capacity as stride).
+  for (unsigned int globalIndex = globalIdx; globalIndex < nConnectedEdges;
        globalIndex += blockDimX * gridDimX) {
     d_edge_bids[globalIndex] = 0ull;
+    d_edge_bids[payload.nConnectedEdges + globalIndex] = 0ull;
   }
   for (unsigned int globalIndex = globalIdx; globalIndex < d_hit_bids.size();
        globalIndex += blockDimX * gridDimX) {
     d_hit_bids[globalIndex] = 0ull;
   }
 
-  for (unsigned int globalIndex = globalIdx;
+  // Row sizes beyond the edge count stay zero so the scan over the whole
+  // capacity ends with the total row count.
+  for (unsigned int globalIndex = globalIdx + nConnectedEdges;
        globalIndex < payload.nConnectedEdges;
+       globalIndex += blockDimX * gridDimX) {
+    d_row_sizes[globalIndex] = 0u;
+  }
+  for (unsigned int globalIndex = globalIdx; globalIndex < nConnectedEdges;
        globalIndex += blockDimX * gridDimX) {
     const int2 out_paths = d_outgoing_paths[globalIndex];
     if (out_paths.y == -1) {

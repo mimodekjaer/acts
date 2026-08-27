@@ -22,6 +22,9 @@ namespace traccc::device {
 struct gbts_count_terminus_edges_payload {
   /// Number of edges in the compacted graph
   unsigned int nConnectedEdges;
+  /// Device-side number of edges in the compacted graph (clamped to
+  /// nConnectedEdges, the capacity, by the kernels)
+  const unsigned int* d_nConnectedEdges;
   /// Per-edge (subtree row count, terminus flag) from CCA
   vecmem::data::vector_view<const int2> outgoing_paths;
   /// Output: per-edge number of path-store rows owned by the edge (1 + its

@@ -326,7 +326,6 @@ class gbts_seeding_algorithm
     /// offset)
     const unsigned int* d_nConnectedEdges = nullptr;
     /// Number of edges that survived re-indexing (0 == nothing to do)
-    unsigned int nConnectedEdges = 0;
   };
 
   /// Stage 1: count, bin, sort and characterise nodes. Fully asynchronous:
@@ -355,7 +354,8 @@ class gbts_seeding_algorithm
       vecmem::data::vector_buffer<unsigned int>& output_graph,
       vecmem::data::vector_buffer<unsigned char>& levels,
       vecmem::data::vector_buffer<float4>& reducedSP,
-      const unsigned int nConnectedEdges, const unsigned int nSp,
+      const unsigned int nConnectedEdgesMax,
+      const unsigned int* d_nConnectedEdges, const unsigned int nSp,
       const vecmem::data::vector_view<unsigned int>& counters_view,
       vecmem::vector<unsigned int>& h_counters) const;
 

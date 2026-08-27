@@ -31,8 +31,12 @@ struct gbts_seed_bidding_payload {
   unsigned int nRowsGrid;
   /// Device-side number of rows (clamped to nRows by the kernels)
   const unsigned int* row_count;
-  /// Number of connected edges (size of one edge-bid buffer)
+  /// Capacity of one edge-bid buffer (half of edge_bids); the halves are
+  /// laid out with this stride
   unsigned int nConnectedEdges;
+  /// Device-side number of connected edges (only that many bids per half
+  /// are used / zeroed)
+  const unsigned int* d_nConnectedEdges;
   /// Number of rebid / reset rounds
   unsigned int nRounds;
   /// Per-path (edge index, parent path-store index or -1) entries
@@ -84,6 +88,7 @@ gbts_make_reset_edge_bids_payload(const gbts_seed_bidding_payload& p,
           p.nRowsGrid,
           p.row_count,
           p.nConnectedEdges,
+          p.d_nConnectedEdges,
           p.path_store,
           p.seed_proposals,
           gbts_edge_bids_half(p, half),

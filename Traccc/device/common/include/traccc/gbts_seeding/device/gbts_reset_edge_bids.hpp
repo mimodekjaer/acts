@@ -28,6 +28,9 @@ struct gbts_reset_edge_bids_payload {
   const unsigned int* row_count;
   /// Number of connected edges (size of one edge-bid buffer)
   unsigned int nConnectedEdges;
+  /// Device-side number of connected edges (only that many next-round bids
+  /// are zeroed)
+  const unsigned int* d_nConnectedEdges;
   /// Per-path (edge index, parent path-store index or -1) entries
   vecmem::data::vector_view<const int2> path_store;
   /// In/out: per-seed-proposal (path_store index, level)

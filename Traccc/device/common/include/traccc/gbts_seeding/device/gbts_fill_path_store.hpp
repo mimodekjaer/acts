@@ -29,6 +29,8 @@ struct gbts_fill_path_store_payload {
   const unsigned int* row_count;
   /// Number of edges in the compacted graph
   unsigned int nConnectedEdges;
+  /// Device-side number of edges in the compacted graph (clamped)
+  const unsigned int* d_nConnectedEdges;
   /// Maximum number of neighbours retained per edge
   unsigned int max_num_neighbours;
   /// Output: per-row (edge index, parent row or -1) entries

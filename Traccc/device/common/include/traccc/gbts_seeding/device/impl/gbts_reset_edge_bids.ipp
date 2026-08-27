@@ -35,7 +35,11 @@ TRACCC_HOST_DEVICE inline void gbts_reset_edge_bids(
 
   // Prepare the bids of the next round (the buffer of the previous round
   // is no longer read by anyone).
-  for (unsigned int idx = globalIdx; idx < payload.nConnectedEdges;
+  const unsigned int nConnectedEdges =
+      (*payload.d_nConnectedEdges < payload.nConnectedEdges)
+          ? *payload.d_nConnectedEdges
+          : payload.nConnectedEdges;
+  for (unsigned int idx = globalIdx; idx < nConnectedEdges;
        idx += blockDimX * gridDimX) {
     d_edge_bids_next[idx] = 0ull;
   }

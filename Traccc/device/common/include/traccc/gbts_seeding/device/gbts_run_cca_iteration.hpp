@@ -32,8 +32,11 @@ inline constexpr unsigned int gbts_run_cca_scratch_size =
     gbts_run_cca_row_count_slot + 1u + gbts_run_cca_max_blocks;
 
 struct gbts_run_cca_iteration_payload {
-  /// Number of edges in the compacted graph
+  /// Capacity of the compacted graph (maximum number of edges)
   unsigned int nConnectedEdges;
+  /// Device-side number of edges in the compacted graph (clamped to
+  /// nConnectedEdges by the kernels)
+  const unsigned int* d_nConnectedEdges;
   /// Maximum number of neighbours retained per edge
   unsigned int max_num_neighbours;
   /// Minimum path length required for an edge to be considered active
@@ -54,6 +57,9 @@ struct gbts_run_cca_iteration_payload {
   /// counters of the edges still active after each iteration (unused by the
   /// per-iteration function)
   unsigned int* active_counters;
+  /// Output of fused implementations: number of edges that did not fit the
+  /// resident cooperative grid and were dropped (deferred warning)
+  unsigned int* dropped_counter;
 };
 
 /// @brief One iteration of the cellular-automaton "longest path" relaxation.

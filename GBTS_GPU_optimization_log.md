@@ -349,3 +349,21 @@ The row count no longer depends on a host-side edge count (needed for the
 capacity-based graph compaction). Also: the cached CCA gets a variant that
 handles edges beyond a non-resident grid uncached (template flag, no cost
 in the resident case).
+
+### B11. Seed extraction on the device-side connected-edge count (FASTER)
+0.745 (peer's interim, one sync in create_edges) -> 0.707 ms/event. The last
+per-event host readback (kept-edge count) is gone: extract_seeds sizes its
+buffers by nConnectedEdgesMax, every tail kernel clamps to the device count,
+the fused CCA/rows kernel additionally clamps to the resident cooperative
+grid (one cached edge per thread; edges beyond it are counted in the new
+nCcaDropped counter and reported by the deferred warning of the next event),
+the path-store capacity is max_rows_per_spacepoint (2) x nSp, and the bid
+zeroing only covers the edges present (the bid halves keep the capacity as
+stride). The device count is copied into the persistent counters because the
+re-index buffer it lived in is freed before the extraction runs (found with
+compute-sanitizer: dangling pointer -> illegal access).
+Pitfalls on the way: a row capacity of 4 x nConnectedEdgesMax made the seed
+output ~58 MB per event, which the cached device pool did not absorb (23 ms
+per event in a host gap); a CCA variant that also handled edges beyond the
+grid uncached cost 24 us even when unused (register spills) and was dropped
+in favour of the clamp + warning.

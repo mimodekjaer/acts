@@ -209,7 +209,7 @@ __device__ inline bool gbts_cca_update(
   return stays_active;
 }
 
-template <unsigned int MAX_NEI, bool EXTRA_EDGES>
+template <unsigned int MAX_NEI>
 __device__ inline void gbts_run_cca_cached_body(
     cooperative_groups::grid_group& grid,
     const device::gbts_run_cca_iteration_payload& payload) {
@@ -217,15 +217,22 @@ __device__ inline void gbts_run_cca_cached_body(
       payload.output_graph);
   vecmem::device_vector<unsigned char> d_levels(payload.levels);
   vecmem::device_vector<int2> d_outgoing_paths(payload.outgoing_paths);
-  vecmem::device_vector<char> d_active_edges(payload.active_edges);
   unsigned int* active_counters = payload.active_counters;
-  __shared__ unsigned int block_active_sum;
 
-  const unsigned int n = payload.nConnectedEdges;
-  const unsigned int edge_size = 2u + 1u + payload.max_num_neighbours;
+  // Edges present, capped by the capacity and by the resident grid (one
+  // cached edge per thread); the rest is reported as dropped.
   const unsigned int nThreads = gridDim.x * blockDim.x;
+  const unsigned int n_present =
+      (*payload.d_nConnectedEdges < payload.nConnectedEdges)
+          ? *payload.d_nConnectedEdges
+          : payload.nConnectedEdges;
+  const unsigned int n = (n_present < nThreads) ? n_present : nThreads;
+  const unsigned int edge_size = 2u + 1u + payload.max_num_neighbours;
   const unsigned int edge = blockIdx.x * blockDim.x + threadIdx.x;
   const bool has_edge = edge < n;
+  if (edge == 0u && n_present > n) {
+    *payload.dropped_counter = n_present - n;
+  }
   constexpr unsigned char max_iter = traccc::device::gbts_consts::max_cca_iter;
 
   // Cache the neighbour list of the thread's first edge; edges beyond the
@@ -253,7 +260,6 @@ __device__ inline void gbts_run_cca_cached_body(
     const unsigned int levelLoad = toggle * n;
     const unsigned int levelStore = (1u - toggle) * n;
     bool stays_cached = false;
-    unsigned int my_extra_active = 0u;
 
     if (has_edge && active == static_cast<int>(iter)) {
       stays_cached =
@@ -261,42 +267,10 @@ __device__ inline void gbts_run_cca_cached_body(
                           payload.minLevel, d_levels, d_outgoing_paths);
       active = stays_cached ? static_cast<int>(iter) + 1 : -1;
     }
-    // Uncached extra edges (only when the grid does not cover all edges).
-    if constexpr (EXTRA_EDGES) {
-      for (unsigned int e = edge + nThreads; e < n; e += nThreads) {
-        if (iter != 0 && d_active_edges[e] != static_cast<char>(iter)) {
-          continue;
-        }
-        const unsigned int edge_pos = edge_size * e;
-        const unsigned int nn =
-            d_output_graph[edge_pos + device::gbts_consts::nNei];
-        unsigned int ne[MAX_NEI];
-        for (unsigned int k = 0u; k < nn; ++k) {
-          ne[k] = d_output_graph[edge_pos + device::gbts_consts::nei_start + k];
-        }
-        const bool stays =
-            gbts_cca_update(e, nn, ne, iter, levelLoad, levelStore,
-                            payload.minLevel, d_levels, d_outgoing_paths);
-        d_active_edges[e] = stays ? static_cast<char>(iter + 1u) : -1;
-        my_extra_active += stays ? 1u : 0u;
-      }
-    }
-
     // Count the edges that stay active (block aggregated), zero the next
     // counter, and stop when nothing is left to do.
     unsigned int block_active =
         static_cast<unsigned int>(__syncthreads_count(stays_cached ? 1 : 0));
-    if constexpr (EXTRA_EDGES) {
-      if (threadIdx.x == 0u) {
-        block_active_sum = 0u;
-      }
-      __syncthreads();
-      if (my_extra_active != 0u) {
-        atomicAdd(&block_active_sum, my_extra_active);
-      }
-      __syncthreads();
-      block_active += block_active_sum;
-    }
     if (threadIdx.x == 0u && block_active != 0u) {
       atomicAdd(active_counters + iter, block_active);
     }
@@ -311,11 +285,11 @@ __device__ inline void gbts_run_cca_cached_body(
 }
 
 /// Cached CCA as a kernel of its own
-template <unsigned int MAX_NEI, bool EXTRA_EDGES>
+template <unsigned int MAX_NEI>
 __global__ void gbts_run_cca_cached(
     const device::gbts_run_cca_iteration_payload payload) {
   cooperative_groups::grid_group grid = cooperative_groups::this_grid();
-  gbts_run_cca_cached_body<MAX_NEI, EXTRA_EDGES>(grid, payload);
+  gbts_run_cca_cached_body<MAX_NEI>(grid, payload);
 }
 
 /// Block-wide inclusive scan (blockDim.x a multiple of 32, <= 1024).
@@ -362,13 +336,13 @@ struct gbts_cca_rows_payloads {
 /// CUDA kernel running the cached CCA, then the terminus-edge counting, the
 /// inclusive scan of the row sizes (grid-wide) and the zeroing of the edge
 /// and hit bids, all in one cooperative launch
-template <unsigned int MAX_NEI, bool EXTRA_EDGES>
+template <unsigned int MAX_NEI>
 __global__ void gbts_cca_rows_cached(const gbts_cca_rows_payloads payloads) {
   cooperative_groups::grid_group grid = cooperative_groups::this_grid();
   __shared__ unsigned int warp_sums[32];
   __shared__ unsigned int block_offset_shared;
 
-  gbts_run_cca_cached_body<MAX_NEI, EXTRA_EDGES>(grid, payloads.cca);
+  gbts_run_cca_cached_body<MAX_NEI>(grid, payloads.cca);
   grid.sync();
 
   const device::gbts_count_terminus_edges_payload& t = payloads.terminus;
@@ -378,13 +352,19 @@ __global__ void gbts_cca_rows_cached(const gbts_cca_rows_payloads payloads) {
   vecmem::device_vector<unsigned long long int> d_hit_bids(t.hit_bids);
   unsigned int* block_sums =
       payloads.cca.active_counters + device::gbts_run_cca_row_count_slot + 1u;
-  const unsigned int n = t.nConnectedEdges;
+  // Same edge clamp as the CCA body (present edges, capacity, grid).
   const unsigned int nThreads = gridDim.x * blockDim.x;
+  const unsigned int n_present = (*t.d_nConnectedEdges < t.nConnectedEdges)
+                                     ? *t.d_nConnectedEdges
+                                     : t.nConnectedEdges;
+  const unsigned int n = (n_present < nThreads) ? n_present : nThreads;
   const unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
-  // Zero the bids (grid-stride).
-  for (unsigned int i = tid; i < d_edge_bids.size(); i += nThreads) {
+  // Zero the bids of the edges present in both halves (grid-stride); the
+  // halves are laid out with the capacity as stride.
+  for (unsigned int i = tid; i < n; i += nThreads) {
     d_edge_bids[i] = 0ull;
+    d_edge_bids[t.nConnectedEdges + i] = 0ull;
   }
   for (unsigned int i = tid; i < d_hit_bids.size(); i += nThreads) {
     d_hit_bids[i] = 0ull;
@@ -485,7 +465,11 @@ __device__ inline void gbts_bid_seeds_cached_body(
   vecmem::device_vector<int2> d_seed_proposals(payload.seed_proposals);
   vecmem::device_vector<char> d_seed_ambiguity(payload.seed_ambiguity);
   vecmem::device_vector<unsigned long long int> d_edge_bids(payload.edge_bids);
+  // Stride of the bid halves is the capacity; only the edges present are
+  // zeroed between the rounds.
   const unsigned int n = payload.nConnectedEdges;
+  const unsigned int n_edges =
+      (*payload.d_nConnectedEdges < n) ? *payload.d_nConnectedEdges : n;
   const unsigned int nRows =
       (*payload.row_count < payload.nRows) ? *payload.row_count : payload.nRows;
   const unsigned int nThreads = gridDim.x * blockDim.x;
@@ -576,7 +560,7 @@ __device__ inline void gbts_bid_seeds_cached_body(
     grid.sync();
 
     // --- reset: zero the next round's bids, then re-evaluate the maybes ---
-    for (unsigned int idx = prop_idx; idx < n; idx += nThreads) {
+    for (unsigned int idx = prop_idx; idx < n_edges; idx += nThreads) {
       bids_next[idx] = 0ull;
     }
     const auto reset_row = [&](const unsigned int row, const bool isgood) {
@@ -901,18 +885,11 @@ void gbts_seeding_algorithm::gbts_run_cca_and_count_kernel(
   constexpr unsigned int max_cached_nei = 16u;
   const unsigned int n_threads = 1024u;
   const kernels::gbts_cca_rows_payloads payloads{cca, terminus};
-  if (cca.max_num_neighbours <= max_cached_nei) {
-    if (launch_cooperative(kernels::gbts_cca_rows_cached<max_cached_nei, false>,
-                           cca.nConnectedEdges, n_threads, payloads,
-                           details::get_stream(stream()),
-                           /*require_full_grid=*/true)) {
-      return;
-    }
-    if (launch_cooperative(kernels::gbts_cca_rows_cached<max_cached_nei, true>,
-                           cca.nConnectedEdges, n_threads, payloads,
-                           details::get_stream(stream()))) {
-      return;
-    }
+  if (cca.max_num_neighbours <= max_cached_nei &&
+      launch_cooperative(kernels::gbts_cca_rows_cached<max_cached_nei>,
+                         cca.nConnectedEdges, n_threads, payloads,
+                         details::get_stream(stream()))) {
+    return;
   }
   device::gbts_seeding_algorithm::gbts_run_cca_and_count_kernel(cca, terminus);
 }
@@ -923,22 +900,11 @@ void gbts_seeding_algorithm::gbts_run_cca_kernel(
   // Large blocks: the cost of an iteration is dominated by the grid-wide
   // barrier, which scales with the number of blocks.
   const unsigned int n_threads = 1024u;
-  if (payload.max_num_neighbours <= max_cached_nei) {
-    // Fast path: one edge per thread with the neighbour lists cached in
-    // registers. Only possible when the whole grid can be resident.
-    // Grid covers every edge: one cached edge per thread. Otherwise the
-    // variant that also handles the edges beyond the grid uncached.
-    if (launch_cooperative(kernels::gbts_run_cca_cached<max_cached_nei, false>,
-                           payload.nConnectedEdges, n_threads, payload,
-                           details::get_stream(stream()),
-                           /*require_full_grid=*/true)) {
-      return;
-    }
-    if (launch_cooperative(kernels::gbts_run_cca_cached<max_cached_nei, true>,
-                           payload.nConnectedEdges, n_threads, payload,
-                           details::get_stream(stream()))) {
-      return;
-    }
+  if (payload.max_num_neighbours <= max_cached_nei &&
+      launch_cooperative(kernels::gbts_run_cca_cached<max_cached_nei>,
+                         payload.nConnectedEdges, n_threads, payload,
+                         details::get_stream(stream()))) {
+    return;
   }
   if (!launch_cooperative(kernels::gbts_run_cca, payload.nConnectedEdges,
                           n_threads, payload, details::get_stream(stream()))) {

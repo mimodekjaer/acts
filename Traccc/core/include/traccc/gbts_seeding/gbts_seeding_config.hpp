@@ -59,6 +59,7 @@ enum gbts_counter : unsigned int {
   nTerminusEdges,   // #terminus edges; then reused as path-store write cursor
   nProps,           // seed proposals from gbts_fit_segments
   nRejected,        // rejected seed proposals
+  nCcaDropped,      // connected edges beyond the resident CCA grid (dropped)
   nCounters         // total number of counters
 };
 
@@ -304,10 +305,11 @@ struct gbts_seedfinder_config {
   // number of seed-vs-edge bidding rounds during disambiguation.
   unsigned int edge_bidding_rounds = 5;
 
-  // Capacity of the seed path store, in rows per connected edge. Rows beyond
-  // the capacity are dropped (typical events need ~0.8 rows per edge); the
-  // count is not read back to the host so the tail kernels stay asynchronous.
-  unsigned int max_rows_per_connected_edge = 4;
+  // Capacity of the seed path store, in rows per spacepoint. Rows beyond the
+  // capacity are dropped (typical ttbar mu200 events need ~0.35 rows per
+  // spacepoint); the count is not read back to the host so the tail kernels
+  // stay asynchronous.
+  unsigned int max_rows_per_spacepoint = 2;
 };
 
 }  // namespace traccc
