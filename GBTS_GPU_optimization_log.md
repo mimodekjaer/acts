@@ -527,3 +527,14 @@ code path stays for configurations with rounds > 0). This is NOT a physics
 change of the produced seeds (verified), but the intended semantics of the
 rounds may differ from what the port does - documented in
 GBTS_cut_notes.md for the physics owner.
+
+### 20. Count pass walks the outer nodes directly from global memory  -> 0.599 ms/event (-4.6%)
+The outer-node ranges of a work item were streamed through shared memory
+in 128-node slabs (two block barriers per slab, a per-thread binary search
+per slab). The block-cooperative range search is kept, but every thread
+now binary-searches its own start once inside the block's range and walks
+the outer nodes from global memory (the threads of a block read the same
+lines, L1 resident); no barrier from the search to the end of the item.
+The per-thread evaluation order is unchanged, the result bit-identical.
+Count 134 -> 105 us (the same code path serves the overflow re-walk of the
+fill pass). Seeds identical on all three sets.

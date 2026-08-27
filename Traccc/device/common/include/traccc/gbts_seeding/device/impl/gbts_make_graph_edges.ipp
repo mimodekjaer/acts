@@ -245,11 +245,13 @@ TRACCC_HOST_DEVICE inline void gbts_emit_edge(
   //               extrapolated phi at node1)
 }
 
-template <bool fill>
-TRACCC_HOST_DEVICE inline unsigned int gbts_walk_slab_interval(
-    const vecmem::device_vector<float>& shared_phi,
-    const vecmem::device_vector<float4>& shared_node_pack,
-    const unsigned int slab_begin, const unsigned int slab_size, const float lo,
+/// Walk the phi-sorted outer nodes [begin, end) (absolute indices into
+/// @c phis / @c packs) that fall into [lo, hi] and either count or write the
+/// edges of inner node @c node1. Returns the updated count / cursor.
+template <bool fill, typename phi_vector_t, typename pack_vector_t>
+TRACCC_HOST_DEVICE inline unsigned int gbts_walk_range_interval(
+    const phi_vector_t& phis, const pack_vector_t& packs,
+    const unsigned int begin, const unsigned int end, const float lo,
     const float hi, const float4 np1, const float phi1,
     const unsigned int node1, const float deltaPhi,
     const gbts_make_graph_edges_params& ap,
@@ -259,16 +261,16 @@ TRACCC_HOST_DEVICE inline unsigned int gbts_walk_slab_interval(
     vecmem::device_vector<unsigned char>& d_reindexer, unsigned int cursor,
     const unsigned int cursor_end, unsigned int* scratch,
     const unsigned int scratch_stride) {
-  if (hi < shared_phi[0] || lo > shared_phi[slab_size - 1u]) {
+  if (begin >= end || hi < phis[begin] || lo > phis[end - 1u]) {
     return cursor;
   }
-  for (unsigned int j = gbts_phi_lower_bound(shared_phi, 0u, slab_size, lo);
-       j < slab_size; j++) {
-    const float phi2 = shared_phi[j];
+  for (unsigned int j = gbts_phi_lower_bound(phis, begin, end, lo); j < end;
+       j++) {
+    const float phi2 = phis[j];
     if (phi2 > hi) {
       break;
     }
-    const float4 np2 = shared_node_pack[j];
+    const float4 np2 = packs[j];
     float tau, dr, dz, curv;
     if (!gbts_edge_passes_cuts(np1, np2, phi1, phi2, deltaPhi, ap, tau, dr, dz,
                                curv)) {
@@ -279,13 +281,13 @@ TRACCC_HOST_DEVICE inline unsigned int gbts_walk_slab_interval(
         // Count / fill mismatch guard: never write outside the bucket.
         return cursor;
       }
-      gbts_emit_edge(cursor, slab_begin + j, node1, np1, np2, phi1, phi2, tau,
-                     dr, dz, curv, ap, edge_params_maker, d_edge_nodes,
-                     d_edge_params, d_reindexer);
+      gbts_emit_edge(cursor, j, node1, np1, np2, phi1, phi2, tau, dr, dz, curv,
+                     ap, edge_params_maker, d_edge_nodes, d_edge_params,
+                     d_reindexer);
     } else {
       // Remember the accepted outer node so the fill pass can skip the walk.
       if (scratch != nullptr && cursor < gbts_make_graph_edges_scratch_edges) {
-        scratch[cursor * scratch_stride] = slab_begin + j;
+        scratch[cursor * scratch_stride] = j;
       }
     }
     cursor++;
@@ -523,42 +525,32 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
       }
     }
 
-    // --- Stream the outer-node ranges through shared memory
-    // -------------------
-    for (unsigned int r = 0u; r < 2u; r++) {
-      for (unsigned int slab_begin = range_begin[r]; slab_begin < range_end[r];
-           slab_begin += chunk_size) {
-        const unsigned int slab_size = (slab_begin + chunk_size < range_end[r])
-                                           ? chunk_size
-                                           : range_end[r] - slab_begin;
-        // The previous slab is fully consumed before it gets overwritten.
-        barrier.blockBarrier();
-        for (unsigned int j = threadIndex; j < slab_size; j += blockSize) {
-          shared_phi[j] = d_node_phi[slab_begin + j];
-          shared_node_pack[j] = d_node_params[slab_begin + j];
-        }
-        barrier.blockBarrier();
-
-        if (!active) {
+    // --- Walk the outer-node ranges directly (global memory, L1 resident:
+    //     the threads of a block read the same lines). No barriers from here
+    //     to the end of the item.
+    if (active) {
+      for (unsigned int r = 0u; r < 2u; r++) {
+        const unsigned int rb = range_begin[r];
+        const unsigned int re = range_end[r];
+        if (rb >= re) {
           continue;
         }
         if (my_window.whole) {
-          cursor = detail::gbts_walk_slab_interval<fill>(
-              shared_phi, shared_node_pack, slab_begin, slab_size,
-              -traccc::device::PI_F - 1.0f, traccc::device::PI_F + 1.0f, np1,
-              phi1, node1, deltaPhi, ap, payload.edge_params_maker,
-              d_edge_nodes, d_edge_params, d_reindexer, cursor, cursor_end,
-              scratch, scratch_stride);
-        } else {
-          cursor = detail::gbts_walk_slab_interval<fill>(
-              shared_phi, shared_node_pack, slab_begin, slab_size,
-              my_window.lo_a, my_window.hi_a, np1, phi1, node1, deltaPhi, ap,
+          cursor = detail::gbts_walk_range_interval<fill>(
+              d_node_phi, d_node_params, rb, re, -traccc::device::PI_F - 1.0f,
+              traccc::device::PI_F + 1.0f, np1, phi1, node1, deltaPhi, ap,
               payload.edge_params_maker, d_edge_nodes, d_edge_params,
               d_reindexer, cursor, cursor_end, scratch, scratch_stride);
+        } else {
+          cursor = detail::gbts_walk_range_interval<fill>(
+              d_node_phi, d_node_params, rb, re, my_window.lo_a, my_window.hi_a,
+              np1, phi1, node1, deltaPhi, ap, payload.edge_params_maker,
+              d_edge_nodes, d_edge_params, d_reindexer, cursor, cursor_end,
+              scratch, scratch_stride);
           if (my_window.lo_b <= my_window.hi_b) {
-            cursor = detail::gbts_walk_slab_interval<fill>(
-                shared_phi, shared_node_pack, slab_begin, slab_size,
-                my_window.lo_b, my_window.hi_b, np1, phi1, node1, deltaPhi, ap,
+            cursor = detail::gbts_walk_range_interval<fill>(
+                d_node_phi, d_node_params, rb, re, my_window.lo_b,
+                my_window.hi_b, np1, phi1, node1, deltaPhi, ap,
                 payload.edge_params_maker, d_edge_nodes, d_edge_params,
                 d_reindexer, cursor, cursor_end, scratch, scratch_stride);
           }
