@@ -222,6 +222,29 @@ TRACCC_HOST_DEVICE inline bool gbts_edge_passes_cuts(
 /// Walk the slab entries [begin, end) of the phi-sorted outer-node slab that
 /// fall into [lo, hi] and either count or write the edges of inner node
 /// @c node1. Returns the updated count / cursor.
+/// Write the accepted edge (node1 -> node2) at @c cursor.
+TRACCC_HOST_DEVICE inline void gbts_emit_edge(
+    const unsigned int cursor, const unsigned int node2,
+    const unsigned int node1, const float4 np1, const float4 np2,
+    const float phi1, const float phi2, const float tau, const float dr,
+    const float dz, const float curv, const gbts_make_graph_edges_params& ap,
+    const edge_params_converter& edge_params_maker,
+    vecmem::device_vector<uint2>& d_edge_nodes,
+    vecmem::device_vector<short4>& d_edge_params,
+    vecmem::device_vector<unsigned char>& d_reindexer) {
+  const float eta = -1 * math::log(math::sqrt(1.0f + tau * tau) - tau);
+  // edge linking order is inside->out
+  d_edge_nodes[cursor] = uint2{node2, node1};
+  d_reindexer[cursor] = 0u;
+  const bool inflate_matching_cuts =
+      (ap.long_edge_dz < math::fabs(dz)) || (ap.long_edge_dr < math::fabs(dr));
+  d_edge_params[cursor] = edge_params_maker.make_edge_params(
+      eta, curv, phi2 + curv * np2.z, phi1 + curv * np1.z,
+      inflate_matching_cuts);
+  // edge params: (eta, curvature, extrapolated phi at node2,
+  //               extrapolated phi at node1)
+}
+
 template <bool fill>
 TRACCC_HOST_DEVICE inline unsigned int gbts_walk_slab_interval(
     const vecmem::device_vector<float>& shared_phi,
@@ -234,7 +257,8 @@ TRACCC_HOST_DEVICE inline unsigned int gbts_walk_slab_interval(
     vecmem::device_vector<uint2>& d_edge_nodes,
     vecmem::device_vector<short4>& d_edge_params,
     vecmem::device_vector<unsigned char>& d_reindexer, unsigned int cursor,
-    const unsigned int cursor_end) {
+    const unsigned int cursor_end, unsigned int* scratch,
+    const unsigned int scratch_stride) {
   if (hi < shared_phi[0] || lo > shared_phi[slab_size - 1u]) {
     return cursor;
   }
@@ -255,17 +279,14 @@ TRACCC_HOST_DEVICE inline unsigned int gbts_walk_slab_interval(
         // Count / fill mismatch guard: never write outside the bucket.
         return cursor;
       }
-      const float eta = -1 * math::log(math::sqrt(1.0f + tau * tau) - tau);
-      // edge linking order is inside->out
-      d_edge_nodes[cursor] = uint2{slab_begin + j, node1};
-      d_reindexer[cursor] = 0u;
-      const bool inflate_matching_cuts = (ap.long_edge_dz < math::fabs(dz)) ||
-                                         (ap.long_edge_dr < math::fabs(dr));
-      d_edge_params[cursor] = edge_params_maker.make_edge_params(
-          eta, curv, phi2 + curv * np2.z, phi1 + curv * np1.z,
-          inflate_matching_cuts);
-      // edge params: (eta, curvature, extrapolated phi at node2,
-      //               extrapolated phi at node1)
+      gbts_emit_edge(cursor, slab_begin + j, node1, np1, np2, phi1, phi2, tau,
+                     dr, dz, curv, ap, edge_params_maker, d_edge_nodes,
+                     d_edge_params, d_reindexer);
+    } else {
+      // Remember the accepted outer node so the fill pass can skip the walk.
+      if (scratch != nullptr && cursor < gbts_make_graph_edges_scratch_edges) {
+        scratch[cursor * scratch_stride] = slab_begin + j;
+      }
     }
     cursor++;
   }
@@ -300,6 +321,8 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
   vecmem::device_vector<uint2> d_edge_nodes(payload.edge_nodes);
   vecmem::device_vector<short4> d_edge_params(payload.edge_params);
   vecmem::device_vector<unsigned char> d_reindexer(payload.reindexer);
+  vecmem::device_vector<unsigned int> d_edge_scratch(payload.edge_scratch);
+  vecmem::device_vector<unsigned char> d_block_overflow(payload.block_overflow);
 
   vecmem::device_vector<float> shared_phi(shared.phi);
   vecmem::device_vector<float4> shared_node_pack(shared.node_pack);
@@ -323,6 +346,17 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
     if (work >= nWork) {
       break;
     }
+    // Accepted outer nodes of the thread (count pass), slot-major in global
+    // memory: [(work * K + k) * blockSize + thread], so the fill pass reads
+    // every slot row coalesced.
+    constexpr unsigned int scratch_edges = gbts_make_graph_edges_scratch_edges;
+    const bool has_scratch = work < payload.scratch_work_items;
+    unsigned int* const global_scratch =
+        has_scratch ? d_edge_scratch.data() +
+                          (work * scratch_edges) * blockSize + threadIndex
+                    : nullptr;
+    unsigned int* scratch = fill ? nullptr : global_scratch;
+    const unsigned int scratch_stride = blockSize;
     if constexpr (fill) {
       if ((work == 0u) && (threadIndex == 0u)) {
         // The scanned per-node counts end with the total edge count.
@@ -360,30 +394,6 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
     }
     const float window = deltaPhi + detail::gbts_phi_window_eps;
 
-    // Outer-node index ranges that can pair with any node of the chunk: up to
-    // two (wraparound), the lower-index one first. Computed redundantly by
-    // every thread from block-uniform data.
-    const detail::gbts_phi_window block_window = detail::gbts_make_phi_window(
-        d_node_phi[chunk_begin] - window, d_node_phi[chunk_end - 1u] + window);
-    unsigned int range_begin[2] = {begin2, end2};
-    unsigned int range_end[2] = {end2, end2};
-    if (!block_window.whole) {
-      const bool has_b = block_window.lo_b <= block_window.hi_b;
-      const float values[4] = {block_window.lo_a, block_window.hi_a,
-                               block_window.lo_b, block_window.hi_b};
-      unsigned int bounds[4] = {begin2, end2, end2, end2};
-      // Cooperative search (barriers inside): block-uniform call.
-      detail::gbts_block_find_bounds(
-          barrier, threadIndex, blockSize, d_node_phi, begin2, end2, values,
-          has_b ? 4u : 2u, shared_phi, shared_work_slot, bounds);
-      range_begin[0] = bounds[0];
-      range_end[0] = bounds[1];
-      if (has_b) {
-        range_begin[1] = bounds[2];
-        range_end[1] = bounds[3];
-      }
-    }
-
     // --- Per-thread setup
     // -----------------------------------------------------
     const bool active = threadIndex < num_nodes1;
@@ -414,6 +424,58 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
       }
     }
 
+    // --- Fill pass fast path: no thread of the block overflowed the scratch
+    //     of the count pass, so the accepted outer nodes are simply replayed
+    //     (block-uniform decision; the range search and slab walk below are
+    //     skipped).
+    if constexpr (fill) {
+      if (has_scratch && d_block_overflow[work] == 0u) {
+        if (active) {
+          const unsigned int count =
+              d_edge_counts[work * blockSize + threadIndex];
+          for (unsigned int k = 0u; k < count && cursor < cursor_end; ++k) {
+            const unsigned int node2 = global_scratch[k * blockSize];
+            const float phi2 = d_node_phi[node2];
+            const float4 np2 = d_node_params[node2];
+            float tau, dr, dz, curv;
+            // Recomputes the (identical) derived quantities of the edge.
+            detail::gbts_edge_passes_cuts(np1, np2, phi1, phi2, deltaPhi, ap,
+                                          tau, dr, dz, curv);
+            detail::gbts_emit_edge(cursor, node2, node1, np1, np2, phi1, phi2,
+                                   tau, dr, dz, curv, ap,
+                                   payload.edge_params_maker, d_edge_nodes,
+                                   d_edge_params, d_reindexer);
+            cursor++;
+          }
+        }
+        continue;
+      }
+    }
+
+    // Outer-node index ranges that can pair with any node of the chunk: up to
+    // two (wraparound), the lower-index one first. Computed redundantly by
+    // every thread from block-uniform data.
+    const detail::gbts_phi_window block_window = detail::gbts_make_phi_window(
+        d_node_phi[chunk_begin] - window, d_node_phi[chunk_end - 1u] + window);
+    unsigned int range_begin[2] = {begin2, end2};
+    unsigned int range_end[2] = {end2, end2};
+    if (!block_window.whole) {
+      const bool has_b = block_window.lo_b <= block_window.hi_b;
+      const float values[4] = {block_window.lo_a, block_window.hi_a,
+                               block_window.lo_b, block_window.hi_b};
+      unsigned int bounds[4] = {begin2, end2, end2, end2};
+      // Cooperative search (barriers inside): block-uniform call.
+      detail::gbts_block_find_bounds(
+          barrier, threadIndex, blockSize, d_node_phi, begin2, end2, values,
+          has_b ? 4u : 2u, shared_phi, shared_work_slot, bounds);
+      range_begin[0] = bounds[0];
+      range_end[0] = bounds[1];
+      if (has_b) {
+        range_begin[1] = bounds[2];
+        range_end[1] = bounds[3];
+      }
+    }
+
     // --- Stream the outer-node ranges through shared memory
     // -------------------
     for (unsigned int r = 0u; r < 2u; r++) {
@@ -438,19 +500,20 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
               shared_phi, shared_node_pack, slab_begin, slab_size,
               -traccc::device::PI_F - 1.0f, traccc::device::PI_F + 1.0f, np1,
               phi1, node1, deltaPhi, ap, payload.edge_params_maker,
-              d_edge_nodes, d_edge_params, d_reindexer, cursor, cursor_end);
+              d_edge_nodes, d_edge_params, d_reindexer, cursor, cursor_end,
+              scratch, scratch_stride);
         } else {
           cursor = detail::gbts_walk_slab_interval<fill>(
               shared_phi, shared_node_pack, slab_begin, slab_size,
               my_window.lo_a, my_window.hi_a, np1, phi1, node1, deltaPhi, ap,
               payload.edge_params_maker, d_edge_nodes, d_edge_params,
-              d_reindexer, cursor, cursor_end);
+              d_reindexer, cursor, cursor_end, scratch, scratch_stride);
           if (my_window.lo_b <= my_window.hi_b) {
             cursor = detail::gbts_walk_slab_interval<fill>(
                 shared_phi, shared_node_pack, slab_begin, slab_size,
                 my_window.lo_b, my_window.hi_b, np1, phi1, node1, deltaPhi, ap,
                 payload.edge_params_maker, d_edge_nodes, d_edge_params,
-                d_reindexer, cursor, cursor_end);
+                d_reindexer, cursor, cursor_end, scratch, scratch_stride);
           }
         }
       }
@@ -463,6 +526,25 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
         vecmem::device_atomic_ref<unsigned int>(
             d_num_outgoing_edges[node1 + 1u])
             .fetch_add(count);
+      }
+      if (has_scratch) {
+        // Blocks with a thread beyond the scratch capacity are flagged for
+        // the fill pass to re-walk them (block-wide maximum count).
+        if (threadIndex == 0u) {
+          shared_work_slot[9] = 0u;
+        }
+        barrier.blockBarrier();
+        vecmem::device_atomic_ref<unsigned int,
+                                  vecmem::device_address_space::local>(
+            shared_work_slot[9])
+            .fetch_max(count);
+        barrier.blockBarrier();
+        if (threadIndex == 0u) {
+          d_block_overflow[work] =
+              (shared_work_slot[9] > scratch_edges) ? 1u : 0u;
+        }
+        // The shared maximum is only rewritten after the next item's
+        // barriers.
       }
     }
   }  // work item loop

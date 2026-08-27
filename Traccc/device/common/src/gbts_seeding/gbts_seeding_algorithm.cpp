@@ -205,6 +205,18 @@ auto gbts_seeding_algorithm::create_edges(
   //    pairs).
   vecmem::data::vector_buffer<unsigned int> edge_counts_buf(
       nWorkMax * gbts_consts::node_buffer_length, mr().main);
+  // Scratch of accepted outer nodes recorded by the count pass so the fill
+  // pass can replay them instead of walking the outer nodes again.
+  const unsigned int scratch_work_items =
+      std::min(nWorkMax, gbts_make_graph_edges_max_scratch_items);
+  vecmem::data::vector_buffer<unsigned int> edge_scratch_buf(
+      scratch_work_items * gbts_make_graph_edges_scratch_edges *
+          gbts_consts::node_buffer_length,
+      mr().main);
+  copy().setup(edge_scratch_buf)->ignore();
+  vecmem::data::vector_buffer<unsigned char> block_overflow_buf(
+      scratch_work_items, mr().main);
+  copy().setup(block_overflow_buf)->ignore();
   copy().setup(edge_counts_buf)->ignore();
   // setup edge param converter
   const float max_Kappa =
@@ -236,6 +248,9 @@ auto gbts_seeding_algorithm::create_edges(
       num_incoming_edges_buf,
       {},
       {},
+      edge_scratch_buf,
+      scratch_work_items,
+      block_overflow_buf,
       {},
       0u,
       nullptr,

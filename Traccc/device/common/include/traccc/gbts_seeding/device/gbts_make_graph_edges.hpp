@@ -68,6 +68,17 @@ struct gbts_make_graph_edges_payload {
   /// Fill pass output: packed per-edge [eta, curv, phi_z, phi_w] used by
   /// matching
   vecmem::data::vector_view<short4> edge_params;
+  /// Count pass output / fill pass input: the accepted outer nodes of every
+  /// (work item, thread), up to gbts_make_graph_edges_scratch_edges each,
+  /// slot-major: [(work * K + k) * blockSize + thread]; sized for
+  /// scratch_work_items work items
+  vecmem::data::vector_view<unsigned int> edge_scratch;
+  /// Number of work items covered by edge_scratch / block_overflow
+  unsigned int scratch_work_items;
+  /// Count pass output / fill pass input: per work item, 1 when a thread
+  /// of the block accepted more edges than fit into edge_scratch (the fill
+  /// pass then re-walks the outer nodes for the whole block)
+  vecmem::data::vector_view<unsigned char> block_overflow;
   /// Fill pass output: per-edge "kept" flag, initialised to 0 (later set by
   /// gbts_match_graph_edges)
   vecmem::data::vector_view<unsigned char> reindexer;
@@ -96,6 +107,13 @@ struct gbts_make_graph_edges_shared_payload {
 
 /// Number of entries of gbts_make_graph_edges_shared_payload::work_slot
 inline constexpr unsigned int gbts_make_graph_edges_scratch_size = 16u;
+
+/// Accepted outer nodes recorded per (work item, thread) by the count pass
+inline constexpr unsigned int gbts_make_graph_edges_scratch_edges = 16u;
+
+/// Maximum number of work items covered by the edge scratch (memory cap:
+/// scratch_edges * block size * 4 bytes per item)
+inline constexpr unsigned int gbts_make_graph_edges_max_scratch_items = 16384u;
 
 /// @brief Create candidate edges between node pairs in compatible eta bins.
 ///

@@ -289,3 +289,19 @@ begin/end (and the empty bins in between) at the boundaries; the first
 rejected key marks the node count. The radius accumulators are initialised
 by `gbts_bin_spacepoints`. The work-list kernel keeps only the pair phase:
 26 -> 17 us; sort_nodes unchanged. Seeds identical.
+
+### B9. Fill pass replays the count pass (FASTER)
+~0.80 -> ~0.78 ms/event (on 60c95b7b0); count 108 -> 136 us, fill 168 -> 125 us.
+Measured distribution (event 0): 73% of the (work item, thread) pairs accept
+no edge, the per-block maximum is <= 8 for 75% and <= 16 for 98% of the work
+items. The count pass therefore records up to 16 accepted outer nodes per
+thread (slot-major so the fill pass reads coalesced) plus a per-block
+overflow flag; the fill pass replays them (recomputing the identical derived
+quantities from the node parameters) and only re-walks the outer nodes for
+overflowing blocks. Scratch: 16 x 128 x 4 B per work item, capped at 16384
+work items (134 MB from the cached pool); items beyond the cap re-walk.
+Variants that were SLOWER: packing the block's list through shared memory
+with per-thread offsets (count 165 / fill 140 us: the offset sums, extra
+barriers and a dynamically indexed local array cost more than the scattered
+writes), and a per-thread register buffer written out row by row (the buffer
+spilled to local memory: count 260 us).
