@@ -21,19 +21,15 @@ namespace traccc::cuda::kernels {
 __global__ void ccl_kernel(
     const clustering_config cfg,
     const edm::silicon_cell_collection::const_view cells_view,
-    const detector_design_description::const_view det_desc_view,
-    const detector_conditions_description::const_view det_cond_view,
-    edm::measurement_collection::view measurements_view,
     vecmem::data::vector_view<device::details::fallback_index_t> f_backup_view,
     vecmem::data::vector_view<device::details::fallback_index_t> gf_backup_view,
     vecmem::data::vector_view<unsigned char> adjc_backup_view,
     vecmem::data::vector_view<device::details::fallback_index_t>
         adjv_backup_view,
     unsigned int* backup_mutex_ptr,
-    vecmem::data::vector_view<unsigned int> disjoint_set_view,
-    vecmem::data::vector_view<unsigned int> cluster_size_view) {
-  __shared__ std::size_t partition_start, partition_end;
-  __shared__ std::size_t outi;
+    vecmem::data::vector_view<unsigned int> cluster_flags_view,
+    vecmem::data::vector_view<unsigned int> next_cell_view) {
+  __shared__ unsigned int partition_start, partition_end;
   extern __shared__ device::details::index_t shared_v[];
   vecmem::device_atomic_ref<unsigned int> backup_mutex(*backup_mutex_ptr);
 
@@ -48,10 +44,10 @@ __global__ void ccl_kernel(
   traccc::cuda::barrier barry_r;
   const details::thread_id1 thread_id;
 
-  device::ccl_kernel(cfg, thread_id, cells_view, det_desc_view, det_cond_view,
-                     partition_start, partition_end, outi, f_view, gf_view,
-                     f_backup_view, gf_backup_view, adjc_backup_view,
-                     adjv_backup_view, backup_mutex, disjoint_set_view,
-                     cluster_size_view, barry_r, measurements_view);
+  device::ccl_kernel(cfg, thread_id, cells_view, partition_start,
+                     partition_end, f_view, gf_view, f_backup_view,
+                     gf_backup_view, adjc_backup_view, adjv_backup_view,
+                     backup_mutex, barry_r, cluster_flags_view,
+                     next_cell_view);
 }
 }  // namespace traccc::cuda::kernels

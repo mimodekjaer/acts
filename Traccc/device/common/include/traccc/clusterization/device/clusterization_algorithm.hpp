@@ -154,8 +154,9 @@ class clusterization_algorithm
     const detector_design_description::const_view& det_descr;
     /// The detector conditions description
     const detector_conditions_description::const_view& det_cond;
-    /// The measurement collection to fill
-    edm::measurement_collection::view& measurements;
+    /// The measurement collection to fill (a buffer, so that its size can
+    /// be set by the implementation)
+    edm::measurement_collection::buffer& measurements;
     /// Buffer for backup of the first element links
     vecmem::data::vector_view<details::fallback_index_t>& f_backup;
     /// Buffer for backup of the group first element links
@@ -166,6 +167,11 @@ class clusterization_algorithm
     vecmem::data::vector_view<details::fallback_index_t>& adjv_backup;
     /// Mutex for the backup structures
     unsigned int* backup_mutex;
+    /// Scratch buffer (one element per cell) for the cluster root flags /
+    /// their inclusive prefix sums
+    vecmem::data::vector_view<unsigned int>& cluster_flags;
+    /// Scratch buffer (one element per cell) for the cluster linked lists
+    vecmem::data::vector_view<unsigned int>& next_cell;
     /// Buffer for the disjoint set data structure
     vecmem::data::vector_view<unsigned int>& disjoint_set;
     /// Buffer for the sizes of the clusters
@@ -174,8 +180,17 @@ class clusterization_algorithm
 
   /// Main CCL kernel launcher
   ///
+  /// Implementations must:
+  ///   1. Run @c device::ccl_kernel (one block per partition), filling
+  ///      @c payload.cluster_flags and @c payload.next_cell
+  ///   2. Turn the flags into inclusive prefix sums (in place)
+  ///   3. Set the size of @c payload.measurements to the last prefix sum
+  ///   4. Run @c device::aggregate_clusters (one thread per cell)
+  ///
+  /// This gives every measurement a deterministic position in the output.
+  ///
   /// If the configuration enables cell sorting, implementations must not
-  /// return until the kernel has finished executing: the sorted cell
+  /// return until the kernels have finished executing: the sorted cell
   /// collection and the permutation map are destroyed soon after this call
   /// returns.
   ///

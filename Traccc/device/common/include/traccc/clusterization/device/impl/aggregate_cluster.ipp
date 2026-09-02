@@ -9,26 +9,52 @@
 
 // Project include(s)
 #include "traccc/clusterization/details/measurement_creation.hpp"
-#include "traccc/clusterization/device/ccl_kernel_definitions.hpp"
 #include "traccc/utils/detray_conversion.hpp"
+
+// VecMem include(s).
+#include <vecmem/containers/device_vector.hpp>
 
 namespace traccc::device {
 
-template <typename index_t>
-TRACCC_HOST_DEVICE inline void aggregate_cluster(
-    const clustering_config& cfg,
-    const edm::silicon_cell_collection::const_device& cells,
-    const detector_design_description::const_device& det_desc,
-    const detector_conditions_description::const_device& det_cond,
-    const vecmem::device_vector<index_t>& fll, const unsigned int start,
-    const unsigned int end, const unsigned int cid,
-    edm::measurement_collection::device::proxy_type out,
-    const unsigned int link, vecmem::device_vector<unsigned int>& disjoint_set,
-    std::optional<std::reference_wrapper<unsigned int>> cluster_size) {
+TRACCC_HOST_DEVICE inline void aggregate_clusters(
+    const global_index_t globalIndex, const clustering_config& cfg,
+    const edm::silicon_cell_collection::const_view& cells_view,
+    const detector_design_description::const_view& det_descr_view,
+    const detector_conditions_description::const_view& det_cond_view,
+    const vecmem::data::vector_view<const unsigned int>& cluster_prefix_view,
+    const vecmem::data::vector_view<const unsigned int>& next_cell_view,
+    edm::measurement_collection::view measurements_view,
+    vecmem::data::vector_view<unsigned int> disjoint_set_view,
+    vecmem::data::vector_view<unsigned int> cluster_size_view) {
+  const edm::silicon_cell_collection::const_device cells(cells_view);
+  if (globalIndex >= cells.size()) {
+    return;
+  }
+
+  // Only the threads of the "root" cells do any work. A cell is a root if
+  // the inclusive prefix sum of the root flags changes at its position.
+  const vecmem::device_vector<const unsigned int> cluster_prefix(
+      cluster_prefix_view);
+  const unsigned int prefix = cluster_prefix.at(globalIndex);
+  const unsigned int prefix_before =
+      (globalIndex > 0u) ? cluster_prefix.at(globalIndex - 1u) : 0u;
+  if (prefix == prefix_before) {
+    return;
+  }
+  const unsigned int link = prefix - 1u;
+
+  const vecmem::device_vector<const unsigned int> next_cell(next_cell_view);
+  const detector_design_description::const_device det_desc(det_descr_view);
+  const detector_conditions_description::const_device det_cond(det_cond_view);
+  edm::measurement_collection::device measurements(measurements_view);
+  vecmem::device_vector<unsigned int> disjoint_set(disjoint_set_view);
+  vecmem::device_vector<unsigned int> cluster_size(cluster_size_view);
+
+  assert(link < measurements.size());
+  edm::measurement_collection::device::proxy_type out = measurements.at(link);
+
   /*
-   * Now, we iterate over all other cells to check if they belong to our
-   * cluster. Note that we can start at the current index because no cell is
-   * ever a child of a cluster owned by a cell with a higher ID.
+   * Now, we iterate over all cells of the cluster, in cell order.
    *
    * Implemented here is a weighted version of Welford's algorithm. To read
    * more about this algorithm, see the following sources:
@@ -63,19 +89,15 @@ TRACCC_HOST_DEVICE inline void aggregate_cluster(
   unsigned int min_channel1 = std::numeric_limits<unsigned int>::max();
   unsigned int max_channel1 = std::numeric_limits<unsigned int>::lowest();
 
-  const unsigned int module_idx = cells.module_index().at(cid + start);
+  const unsigned int module_idx = cells.module_index().at(globalIndex);
   const auto module_cd = det_cond.at(module_idx);
   const unsigned int design_idx = module_cd.module_to_design_id();
   const auto module_dd = det_desc.at(design_idx);
 
   unsigned int tmp_cluster_size = 0;
 
-  const unsigned int partition_size = end - start;
-
-  index_t j = static_cast<index_t>(cid);
-
-  while (j < partition_size) {
-    const unsigned int pos = j + start;
+  unsigned int pos = globalIndex;
+  while (pos != details::INVALID_CELL) {
     const edm::silicon_cell cell = cells.at(pos);
     const channel_id c0 = cell.channel0();
     const channel_id c1 = cell.channel1();
@@ -91,7 +113,7 @@ TRACCC_HOST_DEVICE inline void aggregate_cluster(
     max_channel0 = std::max(max_channel0, c0);
     max_channel1 = std::max(max_channel1, c1);
 
-    if (j == cid) {
+    if (pos == globalIndex) {
       offset = cell_position;
     }
 
@@ -112,17 +134,11 @@ TRACCC_HOST_DEVICE inline void aggregate_cluster(
       disjoint_set.at(pos) = link;
     }
 
-    const auto next_j = fll.at(j);
-
-    if (j == next_j) {
-      break;
-    } else {
-      j = next_j;
-    }
+    pos = next_cell.at(pos);
   }
 
-  if (cluster_size.has_value()) {
-    (*cluster_size).get() = tmp_cluster_size;
+  if (cluster_size.capacity()) {
+    cluster_size.at(link) = tmp_cluster_size;
   }
 
   unsigned int delta0 = (max_channel0 - min_channel0) + 1;
@@ -152,10 +168,9 @@ TRACCC_HOST_DEVICE inline void aggregate_cluster(
   out.local_variance() = utils::to_float_array<default_algebra>(var);
   out.surface_link() = module_cd.geometry_id();
   // Set a unique identifier for the measurement: the index of the first
-  // (root) cell of the cluster. Unlike the output slot (@c link), which is
-  // assigned with an atomic counter, this value is deterministic, so the
-  // measurement sorting can use it to produce a deterministic order.
-  out.identifier() = cid + start;
+  // (root) cell of the cluster. This is unique and deterministic, and lets
+  // the measurement sorting define a deterministic total order.
+  out.identifier() = globalIndex;
   // Set the dimensionality of the measurement.
   out.dimensions() = module_dd.dimensions();
   // Set the measurement's subspace.

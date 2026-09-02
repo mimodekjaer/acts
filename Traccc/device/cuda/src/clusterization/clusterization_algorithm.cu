@@ -11,6 +11,7 @@
 #include "../utils/barrier.hpp"
 #include "../utils/cuda_error_handling.hpp"
 #include "../utils/thread_id.hpp"
+#include "./kernels/aggregate_clusters.cuh"
 #include "./kernels/ccl_kernel.cuh"
 #include "./kernels/reify_cluster_data.cuh"
 #include "./kernels/sort_cells.cuh"
@@ -19,12 +20,19 @@
 #include "traccc/utils/projections.hpp"
 #include "traccc/utils/relations.hpp"
 
+// Thrust include(s).
+#include <thrust/execution_policy.h>
+#include <thrust/scan.h>
+
 // Vecmem include(s).
 #include <cstring>
 #include <limits>
 
 #include <vecmem/containers/device_vector.hpp>
 #include <vecmem/utils/copy.hpp>
+
+// System include(s).
+#include <memory_resource>
 
 namespace traccc::cuda {
 
@@ -70,21 +78,51 @@ void clusterization_algorithm::sort_cells_kernel(
 
 void clusterization_algorithm::ccl_kernel(
     const ccl_kernel_payload& payload) const {
+  cudaStream_t cuda_stream = details::get_stream(stream());
+
+  // Run the CCL kernel, one block per partition.
   const unsigned int num_blocks =
       (payload.n_cells + (payload.config.target_partition_size()) - 1) /
       payload.config.target_partition_size();
   kernels::ccl_kernel<<<num_blocks, payload.config.threads_per_partition,
                         2 * payload.config.max_partition_size() *
                             sizeof(device::details::index_t),
-                        details::get_stream(stream())>>>(
-      payload.config, payload.cells, payload.det_descr, payload.det_cond,
-      payload.measurements, payload.f_backup, payload.gf_backup,
+                        cuda_stream>>>(
+      payload.config, payload.cells, payload.f_backup, payload.gf_backup,
       payload.adjc_backup, payload.adjv_backup, payload.backup_mutex,
+      payload.cluster_flags, payload.next_cell);
+  TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
+
+  // Turn the root flags into inclusive prefix sums, in place.
+  auto policy =
+      thrust::cuda::par_nosync(std::pmr::polymorphic_allocator(&(mr().main)))
+          .on(cuda_stream);
+  thrust::inclusive_scan(policy, payload.cluster_flags.ptr(),
+                         payload.cluster_flags.ptr() + payload.n_cells,
+                         payload.cluster_flags.ptr());
+
+  // The last prefix sum is the number of measurements. Copy it into the size
+  // of the output buffer (device-to-device, in stream order).
+  copy()(vecmem::data::vector_view<const char>{
+             static_cast<vecmem::data::vector_view<const char>::size_type>(
+                 sizeof(unsigned int)),
+             reinterpret_cast<const char*>(payload.cluster_flags.ptr() +
+                                           payload.n_cells - 1u)},
+         payload.measurements.size())
+      ->ignore();
+
+  // Create the measurements, one thread per cell.
+  const unsigned int agg_threads = warp_size() * 8u;
+  const unsigned int agg_blocks = (payload.n_cells + agg_threads - 1) / agg_threads;
+  kernels::aggregate_clusters<<<agg_blocks, agg_threads, 0, cuda_stream>>>(
+      payload.config, payload.cells, payload.det_descr, payload.det_cond,
+      payload.cluster_flags, payload.next_cell, payload.measurements,
       payload.disjoint_set, payload.cluster_sizes);
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
-  // With sorting enabled, the kernel reads from sorted cell and permutation
+
+  // With sorting enabled, the kernels read from sorted cell and permutation
   // map buffers that the base class destroys without any further
-  // synchronization, so the kernel must finish before returning.
+  // synchronization, so the kernels must finish before returning.
   if (payload.config.sort_cells) {
     stream().synchronize();
   }

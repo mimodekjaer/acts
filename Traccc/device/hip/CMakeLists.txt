@@ -26,6 +26,8 @@ add_library(
     # Clusterization code.
     "include/traccc/hip/clusterization/clusterization_algorithm.hpp"
     "src/clusterization/clusterization_algorithm.hip"
+    "src/clusterization/kernels/aggregate_clusters.hpp"
+    "src/clusterization/kernels/aggregate_clusters.hip"
     "src/clusterization/kernels/ccl_kernel.hpp"
     "src/clusterization/kernels/ccl_kernel.hip"
     "src/clusterization/kernels/reify_cluster_data.hpp"

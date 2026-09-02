@@ -12,38 +12,23 @@
 
 namespace traccc::device {
 
-TRACCC_HOST_DEVICE inline void fill_measurement_cluster_keys(
+TRACCC_HOST_DEVICE inline void fill_measurement_surface_keys(
     const global_index_t globalIndex,
     const edm::measurement_collection::const_view& measurements_view,
-    vecmem::data::vector_view<measurement_cluster_key_t> keys_view,
+    vecmem::data::vector_view<measurement_surface_key_t> keys_view,
     vecmem::data::vector_view<unsigned int> indices_view) {
   const edm::measurement_collection::const_device measurements{
       measurements_view};
   if (globalIndex >= measurements.size()) {
     return;
   }
-  vecmem::device_vector<measurement_cluster_key_t> keys{keys_view};
-  vecmem::device_vector<unsigned int> indices{indices_view};
-  keys.at(globalIndex) = measurements.identifier().at(globalIndex);
-  indices.at(globalIndex) = globalIndex;
-}
-
-TRACCC_HOST_DEVICE inline void gather_measurement_surface_keys(
-    const global_index_t globalIndex,
-    const edm::measurement_collection::const_view& measurements_view,
-    const vecmem::data::vector_view<const unsigned int>& indices_view,
-    vecmem::data::vector_view<measurement_surface_key_t> keys_view) {
-  const edm::measurement_collection::const_device measurements{
-      measurements_view};
-  if (globalIndex >= measurements.size()) {
-    return;
-  }
-  const vecmem::device_vector<const unsigned int> indices{indices_view};
   vecmem::device_vector<measurement_surface_key_t> keys{keys_view};
+  vecmem::device_vector<unsigned int> indices{indices_view};
   static_assert(sizeof(measurement_surface_key_t) >=
                 sizeof(detray::geometry::identifier::value_t));
   keys.at(globalIndex) = static_cast<measurement_surface_key_t>(
-      measurements.surface_link().at(indices.at(globalIndex)).value());
+      measurements.surface_link().at(globalIndex).value());
+  indices.at(globalIndex) = globalIndex;
 }
 
 TRACCC_HOST_DEVICE inline void fill_sorted_measurements(

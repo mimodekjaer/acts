@@ -49,6 +49,8 @@ traccc_add_library( traccc_cuda cuda TYPE SHARED
   "include/traccc/cuda/clusterization/measurement_sorting_algorithm.hpp"
   "src/clusterization/measurement_sorting_algorithm.cu"
   "src/clusterization/kernels/ccl_kernel.cu"
+  "src/clusterization/kernels/aggregate_clusters.cu"
+  "src/clusterization/kernels/aggregate_clusters.cuh"
   "src/clusterization/kernels/ccl_kernel.cuh"
   "src/clusterization/kernels/reify_cluster_data.cu"
   # Track finding algorithm(s).

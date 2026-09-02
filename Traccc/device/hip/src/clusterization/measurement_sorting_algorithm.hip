@@ -30,22 +30,12 @@
 namespace traccc::hip {
 namespace kernels {
 
-/// Kernel wrapping @c traccc::device::fill_measurement_cluster_keys
-__global__ void fill_measurement_cluster_keys(
+/// Kernel wrapping @c traccc::device::fill_measurement_surface_keys
+__global__ void fill_measurement_surface_keys(
     const edm::measurement_collection::const_view measurements,
-    vecmem::data::vector_view<device::measurement_cluster_key_t> keys,
+    vecmem::data::vector_view<device::measurement_surface_key_t> keys,
     vecmem::data::vector_view<unsigned int> indices) {
-  device::fill_measurement_cluster_keys(
-      details::thread_id1{}.getGlobalThreadId(), measurements, keys, indices);
-}
-
-/// Kernel wrapping @c traccc::device::gather_measurement_surface_keys
-__global__ void gather_measurement_surface_keys(
-    const edm::measurement_collection::const_view measurements,
-    const vecmem::data::vector_view<const unsigned int> indices,
-    vecmem::data::vector_view<device::measurement_surface_key_t> keys) {
-  device::gather_measurement_surface_keys(
-      details::thread_id1{}.getGlobalThreadId(), measurements, indices, keys);
+  device::fill_measurement_surface_keys(details::thread_id1{}.getGlobalThreadId(), measurements, keys, indices);
 }
 
 /// Kernel wrapping @c traccc::device::fill_sorted_measurements
@@ -109,33 +99,21 @@ measurement_sorting_algorithm::operator()(
 #endif
 
   // Sorting keys and index sequence.
-  vecmem::data::vector_buffer<device::measurement_cluster_key_t> cluster_keys(
-      n_measurements, m_mr.main);
   vecmem::data::vector_buffer<device::measurement_surface_key_t> surface_keys(
       n_measurements, m_mr.main);
   vecmem::data::vector_buffer<unsigned int> indices(n_measurements, m_mr.main);
-  m_copy.get().setup(cluster_keys)->ignore();
   m_copy.get().setup(surface_keys)->ignore();
   m_copy.get().setup(indices)->ignore();
 
   static constexpr unsigned int BLOCK_SIZE = 256;
   const unsigned int n_blocks = (n_measurements + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-  // First sort by the deterministic cluster key. This removes the effect of
-  // the non-deterministic order in which the clusterization wrote the
-  // measurements.
-  kernels::fill_measurement_cluster_keys<<<n_blocks, BLOCK_SIZE, 0, stream>>>(
-      measurements_view, cluster_keys, indices);
-  TRACCC_HIP_ERROR_CHECK(hipGetLastError());
-  thrust::stable_sort_by_key(policy, cluster_keys.ptr(),
-                             cluster_keys.ptr() + n_measurements,
-                             indices.ptr());
-
-  // Then (stably) sort by the surface identifier. Both sorts use radix sort
-  // on primitive keys, which is deterministic.
-  kernels::gather_measurement_surface_keys<<<n_blocks, BLOCK_SIZE, 0,
-                                             stream>>>(
-      measurements_view, indices, surface_keys);
+  // Sort the measurement indices by the surface identifier, using a stable
+  // radix sort on primitive keys. The clusterization writes the measurements
+  // in a deterministic order (that of their first cells), so the stable
+  // sort produces a deterministic result.
+  kernels::fill_measurement_surface_keys<<<n_blocks, BLOCK_SIZE, 0, stream>>>(
+      measurements_view, surface_keys, indices);
   TRACCC_HIP_ERROR_CHECK(hipGetLastError());
   thrust::stable_sort_by_key(policy, surface_keys.ptr(),
                              surface_keys.ptr() + n_measurements,

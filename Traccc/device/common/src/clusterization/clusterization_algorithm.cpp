@@ -150,11 +150,19 @@ clusterization_algorithm::execute_impl(
   assert(input_is_contiguous(sorted_cells_view));
   assert(input_is_sorted(sorted_cells_view));
 
-  // Launch the CCL kernel.
+  // Scratch buffers for the cluster root flags / prefix sums and the
+  // cluster linked lists.
+  vecmem::data::vector_buffer<unsigned int> cluster_flags{num_cells,
+                                                          mr().main};
+  vecmem::data::vector_buffer<unsigned int> next_cell{num_cells, mr().main};
+  copy().setup(cluster_flags)->ignore();
+  copy().setup(next_cell)->ignore();
+
+  // Launch the CCL kernel(s).
   ccl_kernel({num_cells, m_config, sorted_cells_view, det_descr, det_cond,
               measurements, m_f_backup, m_gf_backup, m_adjc_backup,
-              m_adjv_backup, m_backup_mutex.get(), disjoint_set,
-              cluster_sizes});
+              m_adjv_backup, m_backup_mutex.get(), cluster_flags, next_cell,
+              disjoint_set, cluster_sizes});
 
   std::optional<edm::silicon_cluster_collection::buffer> cluster_data =
       std::nullopt;

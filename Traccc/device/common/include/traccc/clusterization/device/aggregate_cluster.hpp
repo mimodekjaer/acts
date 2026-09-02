@@ -8,8 +8,10 @@
 #pragma once
 
 // Project include(s).
-#include "traccc/definitions/hints.hpp"
+#include "traccc/clusterization/clustering_config.hpp"
+#include "traccc/clusterization/device/ccl_kernel_definitions.hpp"
 #include "traccc/definitions/qualifiers.hpp"
+#include "traccc/device/global_index.hpp"
 #include "traccc/edm/measurement_collection.hpp"
 #include "traccc/edm/silicon_cell_collection.hpp"
 #include "traccc/geometry/detector_conditions_description.hpp"
@@ -18,40 +20,40 @@
 // VecMem include(s).
 #include <vecmem/containers/data/vector_view.hpp>
 
-// System include(s).
-#include <optional>
-#include <set>
-
 namespace traccc::device {
 
-/// Function which looks for cells which share the same "parent" index and
-/// aggregates them into a cluster.
+/// Function creating one measurement for every cluster
 ///
-/// @param[in] cells     collection of cells
-/// @param[in] det_descr The detector description
-/// @param[in] fll       linked list of all cells in this partition
-/// @param[in] start     partition start point this cell belongs to
-/// @param[in] end       partition end point this cell belongs to
-/// @param[in] cid       current cell id
-/// @param[out] out      cluster to fill
-/// @param[out] disjoint_set Array of unsigned integers of
-///                      length $|cells|$ to which an integer is written
-///                      identifying the measurement index to which each cell
-///                      belongs.
-/// @param[out] cluster_size Optional integer which is filled with the size of
-///                      the measurement that is created.
+/// Runs one thread per cell. Threads of "root" cells (the first cell of a
+/// cluster, flagged by @c ccl_kernel) walk the cluster's linked list and
+/// compute the cluster properties. The output position of the measurement
+/// is given by the inclusive prefix sum of the root flags, so the output
+/// order is deterministic (the order of the clusters' first cells).
 ///
-template <typename index_t>
-TRACCC_HOST_DEVICE inline void aggregate_cluster(
-    const clustering_config& cfg,
-    const edm::silicon_cell_collection::const_device& cells,
-    const detector_design_description::const_device& det_descr,
-    const detector_conditions_description::const_device& det_cond,
-    const vecmem::device_vector<index_t>& f, unsigned int start,
-    unsigned int end, unsigned int cid,
-    edm::measurement_collection::device::proxy_type out, unsigned int link,
-    vecmem::device_vector<unsigned int>& disjoint_set,
-    std::optional<std::reference_wrapper<unsigned int>> cluster_size);
+/// @param[in]  globalIndex     The index of the current thread (cell)
+/// @param[in]  cfg             The clustering configuration
+/// @param[in]  cells_view      Collection of cells
+/// @param[in]  det_descr_view  Detector description
+/// @param[in]  det_cond_view   Detector conditions
+/// @param[in]  cluster_prefix_view Inclusive prefix sums of the root flags
+/// @param[in]  next_cell_view  Cluster linked lists (from @c ccl_kernel)
+/// @param[out] measurements_view Collection of measurements (its size must
+///                             already be set to the number of clusters)
+/// @param[out] disjoint_set_view Optional (may be empty): the measurement
+///                             index for every cell
+/// @param[out] cluster_size_view Optional (may be empty): the number of
+///                             cells for every measurement
+///
+TRACCC_HOST_DEVICE inline void aggregate_clusters(
+    global_index_t globalIndex, const clustering_config& cfg,
+    const edm::silicon_cell_collection::const_view& cells_view,
+    const detector_design_description::const_view& det_descr_view,
+    const detector_conditions_description::const_view& det_cond_view,
+    const vecmem::data::vector_view<const unsigned int>& cluster_prefix_view,
+    const vecmem::data::vector_view<const unsigned int>& next_cell_view,
+    edm::measurement_collection::view measurements_view,
+    vecmem::data::vector_view<unsigned int> disjoint_set_view,
+    vecmem::data::vector_view<unsigned int> cluster_size_view);
 
 }  // namespace traccc::device
 

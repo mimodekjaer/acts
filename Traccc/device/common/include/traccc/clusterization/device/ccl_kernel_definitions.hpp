@@ -10,6 +10,7 @@
 
 // System include(s).
 #include <cstddef>
+#include <limits>
 
 namespace traccc::device::details {
 /// These indices in clusterization will only range from 0 to
@@ -20,4 +21,8 @@ using fallback_index_t = unsigned int;
 
 /// The limit on the stack size in terms of cells per thread.
 static constexpr std::size_t CELLS_PER_THREAD_STACK_LIMIT = 32;
+
+/// Sentinel value terminating the cluster linked lists
+static constexpr unsigned int INVALID_CELL =
+    std::numeric_limits<unsigned int>::max();
 }  // namespace traccc::device::details

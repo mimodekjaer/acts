@@ -10,6 +10,7 @@
 #include "../sanity/ordered_on.hpp"
 #include "../utils/hip_error_handling.hpp"
 #include "../utils/utils.hpp"
+#include "./kernels/aggregate_clusters.hpp"
 #include "./kernels/ccl_kernel.hpp"
 #include "./kernels/reify_cluster_data.hpp"
 #include "traccc/hip/clusterization/clusterization_algorithm.hpp"
@@ -20,6 +21,13 @@
 
 // HIP include(s).
 #include <hip/hip_runtime.h>
+
+// Thrust include(s).
+#include <thrust/execution_policy.h>
+#include <thrust/scan.h>
+
+// System include(s).
+#include <memory_resource>
 
 // System include(s).
 #include <stdexcept>
@@ -55,6 +63,9 @@ void clusterization_algorithm::sort_cells_kernel(
 
 void clusterization_algorithm::ccl_kernel(
     const ccl_kernel_payload& payload) const {
+  hipStream_t hip_stream = details::get_stream(stream());
+
+  // Run the CCL kernel, one block per partition.
   const unsigned int num_blocks =
       (payload.n_cells + (payload.config.target_partition_size()) - 1) /
       payload.config.target_partition_size();
@@ -62,13 +73,59 @@ void clusterization_algorithm::ccl_kernel(
                      dim3{payload.config.threads_per_partition},
                      2 * payload.config.max_partition_size() *
                          sizeof(device::details::index_t),
-                     details::get_stream(stream()), payload.config,
-                     payload.cells, payload.det_descr, payload.det_cond,
-                     payload.measurements, payload.f_backup, payload.gf_backup,
-                     payload.adjc_backup, payload.adjv_backup,
-                     payload.backup_mutex, payload.disjoint_set,
-                     payload.cluster_sizes);
+                     hip_stream, payload.config, payload.cells,
+                     payload.f_backup, payload.gf_backup, payload.adjc_backup,
+                     payload.adjv_backup, payload.backup_mutex,
+                     payload.cluster_flags, payload.next_cell);
   TRACCC_HIP_ERROR_CHECK(hipGetLastError());
+
+  // Turn the root flags into inclusive prefix sums, in place.
+#if defined(__HIP_PLATFORM_AMD__)
+  auto policy =
+      thrust::hip::par_nosync(std::pmr::polymorphic_allocator(&(mr().main)))
+          .on(hip_stream);
+#elif defined(__HIP_PLATFORM_NVIDIA__)
+  auto policy =
+      thrust::cuda::par_nosync(std::pmr::polymorphic_allocator(&(mr().main)))
+          .on(hip_stream);
+#else
+#error "Unrecognised HIP platform."
+#endif
+  thrust::inclusive_scan(policy, payload.cluster_flags.ptr(),
+                         payload.cluster_flags.ptr() + payload.n_cells,
+                         payload.cluster_flags.ptr());
+
+  // The last prefix sum is the number of measurements. Copy it into the size
+  // of the output buffer (device-to-device, in stream order).
+  copy()(vecmem::data::vector_view<const char>{
+             static_cast<vecmem::data::vector_view<const char>::size_type>(
+                 sizeof(unsigned int)),
+             reinterpret_cast<const char*>(payload.cluster_flags.ptr() +
+                                           payload.n_cells - 1u)},
+         payload.measurements.size())
+      ->ignore();
+
+  // Create the measurements, one thread per cell.
+  const unsigned int agg_threads = warp_size() * 8u;
+  const unsigned int agg_blocks =
+      (payload.n_cells + agg_threads - 1) / agg_threads;
+  hipLaunchKernelGGL(kernels::aggregate_clusters, dim3{agg_blocks},
+                     dim3{agg_threads}, 0, hip_stream, payload.config,
+                     payload.cells, payload.det_descr, payload.det_cond,
+                     vecmem::data::vector_view<const unsigned int>(
+                         payload.cluster_flags),
+                     vecmem::data::vector_view<const unsigned int>(
+                         payload.next_cell),
+                     vecmem::get_data(payload.measurements),
+                     payload.disjoint_set, payload.cluster_sizes);
+  TRACCC_HIP_ERROR_CHECK(hipGetLastError());
+
+  // With sorting enabled, the kernels read from sorted cell and permutation
+  // map buffers that the base class destroys without any further
+  // synchronization, so the kernels must finish before returning.
+  if (payload.config.sort_cells) {
+    stream().synchronize();
+  }
 }
 
 void clusterization_algorithm::cluster_maker_kernel(

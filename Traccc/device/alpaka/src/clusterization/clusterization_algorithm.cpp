@@ -10,11 +10,13 @@
 
 #include "../utils/barrier.hpp"
 #include "../utils/get_queue.hpp"
+#include "../utils/parallel_algorithms.hpp"
 #include "../utils/thread_id.hpp"
 #include "../utils/utils.hpp"
 
 // Project include(s)
 #include "traccc/clusterization/clustering_config.hpp"
+#include "traccc/clusterization/device/aggregate_cluster.hpp"
 #include "traccc/clusterization/device/ccl_kernel.hpp"
 #include "traccc/clusterization/device/reify_cluster_data.hpp"
 #include "traccc/utils/projections.hpp"
@@ -32,8 +34,6 @@ struct ccl_kernel {
   ALPAKA_FN_ACC void operator()(
       TAcc const& acc, const clustering_config cfg,
       const edm::silicon_cell_collection::const_view cells_view,
-      const detector_design_description::const_view det_descr_view,
-      const detector_conditions_description::const_view det_cond_view,
       vecmem::data::vector_view<device::details::fallback_index_t>
           f_backup_view,
       vecmem::data::vector_view<device::details::fallback_index_t>
@@ -42,16 +42,14 @@ struct ccl_kernel {
       vecmem::data::vector_view<device::details::fallback_index_t>
           adjv_backup_view,
       uint32_t* backup_mutex_ptr,
-      vecmem::data::vector_view<unsigned int> disjoint_set_view,
-      vecmem::data::vector_view<unsigned int> cluster_size_view,
-      edm::measurement_collection::view measurements_view) const {
+      vecmem::data::vector_view<unsigned int> cluster_flags_view,
+      vecmem::data::vector_view<unsigned int> next_cell_view) const {
     details::thread_id1 thread_id(acc);
 
     auto& partition_start =
-        ::alpaka::declareSharedVar<std::size_t, __COUNTER__>(acc);
+        ::alpaka::declareSharedVar<unsigned int, __COUNTER__>(acc);
     auto& partition_end =
-        ::alpaka::declareSharedVar<std::size_t, __COUNTER__>(acc);
-    auto& outi = ::alpaka::declareSharedVar<std::size_t, __COUNTER__>(acc);
+        ::alpaka::declareSharedVar<unsigned int, __COUNTER__>(acc);
 
     device::details::index_t* const shared_v =
         ::alpaka::getDynSharedMem<device::details::index_t>(acc);
@@ -64,14 +62,36 @@ struct ccl_kernel {
 
     alpaka::barrier<TAcc> barry_r(&acc);
 
-    device::ccl_kernel(
-        cfg, thread_id, cells_view, det_descr_view, det_cond_view,
-        partition_start, partition_end, outi, f_view, gf_view, f_backup_view,
-        gf_backup_view, adjc_backup_view, adjv_backup_view, backup_mutex,
-        disjoint_set_view, cluster_size_view, barry_r, measurements_view);
+    device::ccl_kernel(cfg, thread_id, cells_view, partition_start,
+                       partition_end, f_view, gf_view, f_backup_view,
+                       gf_backup_view, adjc_backup_view, adjv_backup_view,
+                       backup_mutex, barry_r, cluster_flags_view,
+                       next_cell_view);
   }
 
 };  // struct ccl_kernel
+
+/// Alpaka kernel for running @c traccc::device::aggregate_clusters
+struct aggregate_clusters {
+  template <typename TAcc>
+  ALPAKA_FN_ACC void operator()(
+      TAcc const& acc, const clustering_config cfg,
+      const edm::silicon_cell_collection::const_view cells_view,
+      const detector_design_description::const_view det_descr_view,
+      const detector_conditions_description::const_view det_cond_view,
+      const vecmem::data::vector_view<const unsigned int> cluster_prefix_view,
+      const vecmem::data::vector_view<const unsigned int> next_cell_view,
+      edm::measurement_collection::view measurements_view,
+      vecmem::data::vector_view<unsigned int> disjoint_set_view,
+      vecmem::data::vector_view<unsigned int> cluster_size_view) const {
+    device::aggregate_clusters(details::thread_id1{acc}.getGlobalThreadId(),
+                               cfg, cells_view, det_descr_view, det_cond_view,
+                               cluster_prefix_view, next_cell_view,
+                               measurements_view, disjoint_set_view,
+                               cluster_size_view);
+  }
+
+};  // struct aggregate_clusters
 
 /// Alpaka kernel for running @c traccc::device::reify_cluster_data
 struct reify_cluster_data {
@@ -119,20 +139,56 @@ void clusterization_algorithm::sort_cells_kernel(
 
 void clusterization_algorithm::ccl_kernel(
     const ccl_kernel_payload& payload) const {
-  Idx num_blocks =
-      (payload.n_cells + (payload.config.target_partition_size()) - 1) /
-      payload.config.target_partition_size();
   static_assert(::alpaka::isMultiThreadAcc<Acc>,
                 "Clustering algorithm must be compiled for an accelerator "
                 "with support for multi-thread blocks.");
+  auto queue = details::get_queue(this->queue());
+
+  // Run the CCL kernel, one block per partition.
+  Idx num_blocks =
+      (payload.n_cells + (payload.config.target_partition_size()) - 1) /
+      payload.config.target_partition_size();
   auto workDiv =
       makeWorkDiv<Acc>(num_blocks, payload.config.threads_per_partition);
+  ::alpaka::exec<Acc>(queue, workDiv, kernels::ccl_kernel{}, payload.config,
+                      payload.cells, payload.f_backup, payload.gf_backup,
+                      payload.adjc_backup, payload.adjv_backup,
+                      payload.backup_mutex, payload.cluster_flags,
+                      payload.next_cell);
+
+  // Turn the root flags into inclusive prefix sums, in place.
+  details::inclusive_scan(queue, mr(), payload.cluster_flags.ptr(),
+                          payload.cluster_flags.ptr() + payload.n_cells,
+                          payload.cluster_flags.ptr());
+
+  // The last prefix sum is the number of measurements. Copy it into the size
+  // of the output buffer.
+  copy()(vecmem::data::vector_view<const char>{
+             static_cast<vecmem::data::vector_view<const char>::size_type>(
+                 sizeof(unsigned int)),
+             reinterpret_cast<const char*>(payload.cluster_flags.ptr() +
+                                           payload.n_cells - 1u)},
+         payload.measurements.size())
+      ->wait();
+
+  // Create the measurements, one thread per cell.
+  const unsigned int agg_threads = warp_size() * 8u;
+  const Idx agg_blocks = (payload.n_cells + agg_threads - 1) / agg_threads;
   ::alpaka::exec<Acc>(
-      details::get_queue(queue()), workDiv, kernels::ccl_kernel{},
-      payload.config, payload.cells, payload.det_descr, payload.det_cond,
-      payload.f_backup, payload.gf_backup, payload.adjc_backup,
-      payload.adjv_backup, payload.backup_mutex, payload.disjoint_set,
-      payload.cluster_sizes, payload.measurements);
+      queue, makeWorkDiv<Acc>(agg_blocks, agg_threads),
+      kernels::aggregate_clusters{}, payload.config, payload.cells,
+      payload.det_descr, payload.det_cond,
+      vecmem::data::vector_view<const unsigned int>(payload.cluster_flags),
+      vecmem::data::vector_view<const unsigned int>(payload.next_cell),
+      vecmem::get_data(payload.measurements), payload.disjoint_set,
+      payload.cluster_sizes);
+
+  // With sorting enabled, the kernels read from sorted cell and permutation
+  // map buffers that the base class destroys without any further
+  // synchronization, so the kernels must finish before returning.
+  if (payload.config.sort_cells) {
+    this->queue().synchronize();
+  }
 }
 
 void clusterization_algorithm::cluster_maker_kernel(

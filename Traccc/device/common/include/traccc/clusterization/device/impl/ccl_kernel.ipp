@@ -9,10 +9,10 @@
 
 #include <mutex>
 
+#include <vecmem/memory/device_address_space.hpp>
 #include <vecmem/memory/device_atomic_ref.hpp>
 
 #include "traccc/clusterization/clustering_config.hpp"
-#include "traccc/clusterization/device/aggregate_cluster.hpp"
 #include "traccc/clusterization/device/ccl_kernel_definitions.hpp"
 #include "traccc/clusterization/device/reduce_problem_cell.hpp"
 #include "traccc/device/concepts/barrier.hpp"
@@ -144,17 +144,13 @@ TRACCC_HOST_DEVICE void fast_sv_1(const thread_id_t& thread_id,
 template <device::concepts::barrier barrier_t,
           device::concepts::thread_id1 thread_id_t, typename index_t>
 TRACCC_HOST_DEVICE inline void ccl_core(
-    const clustering_config& cfg, const thread_id_t& thread_id,
-    std::size_t& partition_start, std::size_t& partition_end,
-    vecmem::device_vector<index_t> f, vecmem::device_vector<index_t> gf,
-    index_t* adjv, unsigned char* adjc,
+    const thread_id_t& thread_id, const unsigned int partition_start,
+    const unsigned int partition_end, vecmem::device_vector<index_t> f,
+    vecmem::device_vector<index_t> gf, index_t* adjv, unsigned char* adjc,
     const edm::silicon_cell_collection::const_device& cells_device,
-    const detector_design_description::const_device& det_desc,
-    const detector_conditions_description::const_device& det_cond,
-    edm::measurement_collection::device measurements_device,
-    const barrier_t& barrier, vecmem::device_vector<unsigned int>& disjoint_set,
-    vecmem::device_vector<unsigned int>& cluster_size) {
-  const auto size = static_cast<unsigned int>(partition_end - partition_start);
+    const barrier_t& barrier, vecmem::device_vector<unsigned int>& cluster_flags,
+    vecmem::device_vector<unsigned int>& next_cell) {
+  const unsigned int size = partition_end - partition_start;
 
   assert(size <= f.size());
   assert(size <= gf.size());
@@ -171,9 +167,8 @@ TRACCC_HOST_DEVICE inline void ccl_core(
         tst * thread_id.getBlockDimX() + thread_id.getLocalThreadIdX();
     adjc[tst] = 0;
 
-    reduce_problem_cell(
-        cells_device, cid, static_cast<unsigned int>(partition_start),
-        static_cast<unsigned int>(partition_end), adjc[tst], &adjv[4 * tst]);
+    reduce_problem_cell(cells_device, cid, partition_start, partition_end,
+                        adjc[tst], &adjv[4 * tst]);
 
     f.at(cid) = static_cast<index_t>(cid);
     gf.at(cid) = static_cast<index_t>(cid);
@@ -221,7 +216,7 @@ TRACCC_HOST_DEVICE inline void ccl_core(
    */
   for (unsigned int i = thread_id.getLocalThreadIdX(); i < size;
        i += thread_id.getBlockDimX()) {
-    gf.at(i) = static_cast<index_t>(partition_end - partition_start);
+    gf.at(i) = static_cast<index_t>(size);
   }
 
   barrier.blockBarrier();
@@ -233,8 +228,7 @@ TRACCC_HOST_DEVICE inline void ccl_core(
    */
   for (unsigned int i = thread_id.getLocalThreadIdX(); i < size;
        i += thread_id.getBlockDimX()) {
-    const index_t effi =
-        static_cast<index_t>((partition_end - partition_start) - (i + 1));
+    const index_t effi = static_cast<index_t>(size - (i + 1));
 
     const auto fid = f.at(effi);
 
@@ -250,28 +244,70 @@ TRACCC_HOST_DEVICE inline void ccl_core(
 
   barrier.blockBarrier();
 
-  for (details::index_t tst = 0; tst < thread_cell_count; ++tst) {
-    const auto cid = static_cast<details::index_t>(
-        tst * thread_id.getBlockDimX() + thread_id.getLocalThreadIdX());
-
-    if (f.at(cid) == cid) {
-      // Add a new measurement to the output buffer. Remembering its
-      // position inside of the container.
-      const edm::measurement_collection::device::size_type meas_pos =
-          measurements_device.push_back_default();
-      // Set up the measurement under the appropriate index.
-      aggregate_cluster(
-          cfg, cells_device, det_desc, det_cond, gf,
-          static_cast<unsigned int>(partition_start),
-          static_cast<unsigned int>(partition_end), cid,
-          measurements_device.at(meas_pos), meas_pos, disjoint_set,
-          (cluster_size.capacity()
-               ? std::optional<
-                     std::reference_wrapper<unsigned int>>{cluster_size.at(
-                     meas_pos)}
-               : std::nullopt));
-    }
+  /*
+   * Finally, write out the root flags and the linked list in global
+   * (cell) indices. The measurements are created by a separate kernel
+   * (@c aggregate_clusters), once the root flags have been turned into
+   * prefix sums, which gives every measurement a deterministic position.
+   */
+  for (unsigned int i = thread_id.getLocalThreadIdX(); i < size;
+       i += thread_id.getBlockDimX()) {
+    const unsigned int pos = partition_start + i;
+    cluster_flags.at(pos) = (f.at(i) == i) ? 1u : 0u;
+    const unsigned int next = gf.at(i);
+    next_cell.at(pos) =
+        (next < size) ? (partition_start + next) : details::INVALID_CELL;
   }
+}
+
+/// Check whether a partition may start at a given cell
+///
+/// Partitions may only be split at module boundaries, or at gaps in the
+/// channel1 coordinate: a cell can never be adjacent to a cell in front of
+/// such a position.
+///
+TRACCC_HOST_DEVICE inline bool is_partition_split(
+    const edm::silicon_cell_collection::const_device& cells,
+    const unsigned int i) {
+  if (i == 0u || i >= cells.size()) {
+    return true;
+  }
+  return (cells.module_index().at(i - 1) != cells.module_index().at(i)) ||
+         (cells.channel1().at(i) > cells.channel1().at(i - 1) + 1);
+}
+
+/// Find the first valid partition split point at or after a given position
+///
+/// Parallel search: every thread of the block tests one candidate position
+/// per iteration, and the minimum valid position is collected with an atomic
+/// operation on the shared memory variable. The result is exactly the same as
+/// that of a sequential walk from @c from.
+///
+/// @param[in]    thread_id The thread identifier object
+/// @param[in]    barrier   The block barrier
+/// @param[in]    cells     The cell collection
+/// @param[in]    from      The position to start the search from
+/// @param[inout] result    Shared memory variable, initialised to
+///                         @c cells.size() by the caller, receiving the
+///                         result
+///
+template <device::concepts::barrier barrier_t,
+          device::concepts::thread_id1 thread_id_t>
+TRACCC_HOST_DEVICE inline void find_partition_split(
+    const thread_id_t& thread_id, const barrier_t& barrier,
+    const edm::silicon_cell_collection::const_device& cells,
+    const unsigned int from, unsigned int& result) {
+  vecmem::device_atomic_ref<unsigned int, vecmem::device_address_space::local>
+      atomic_result(result);
+  unsigned int i = from + thread_id.getLocalThreadIdX();
+  bool valid = false;
+  do {
+    valid = is_partition_split(cells, i);
+    if (valid) {
+      atomic_result.fetch_min(i);
+    }
+    i += thread_id.getBlockDimX();
+  } while (!barrier.blockOr(valid));
 }
 
 template <device::concepts::barrier barrier_t,
@@ -279,25 +315,18 @@ template <device::concepts::barrier barrier_t,
 TRACCC_HOST_DEVICE inline void ccl_kernel(
     const clustering_config cfg, const thread_id_t& thread_id,
     const edm::silicon_cell_collection::const_view& cells_view,
-    const detector_design_description::const_view& det_desc_view,
-    const detector_conditions_description::const_view& det_cond_view,
-    std::size_t& partition_start, std::size_t& partition_end, std::size_t& outi,
+    unsigned int& partition_start, unsigned int& partition_end,
     vecmem::data::vector_view<details::index_t> f_view,
     vecmem::data::vector_view<details::index_t> gf_view,
     vecmem::data::vector_view<details::fallback_index_t> f_backup_view,
     vecmem::data::vector_view<details::fallback_index_t> gf_backup_view,
     vecmem::data::vector_view<unsigned char> adjc_backup_view,
     vecmem::data::vector_view<details::fallback_index_t> adjv_backup_view,
-    vecmem::device_atomic_ref<uint32_t> backup_mutex,
-    vecmem::data::vector_view<unsigned int> disjoint_set_view,
-    vecmem::data::vector_view<unsigned int> cluster_size_view,
-    const barrier_t& barrier,
-    edm::measurement_collection::view measurements_view) {
+    vecmem::device_atomic_ref<uint32_t> backup_mutex, const barrier_t& barrier,
+    vecmem::data::vector_view<unsigned int> cluster_flags_view,
+    vecmem::data::vector_view<unsigned int> next_cell_view) {
   // Construct device containers around the views.
   const edm::silicon_cell_collection::const_device cells_device(cells_view);
-  const detector_design_description::const_device det_desc(det_desc_view);
-  const detector_conditions_description::const_device det_cond(det_cond_view);
-  edm::measurement_collection::device measurements_device(measurements_view);
   vecmem::device_vector<details::index_t> f_primary(f_view);
   vecmem::device_vector<details::index_t> gf_primary(gf_view);
   vecmem::device_vector<details::fallback_index_t> f_backup(f_backup_view);
@@ -305,8 +334,8 @@ TRACCC_HOST_DEVICE inline void ccl_kernel(
   vecmem::device_vector<unsigned char> adjc_backup(adjc_backup_view);
   vecmem::device_vector<details::fallback_index_t> adjv_backup(
       adjv_backup_view);
-  vecmem::device_vector<unsigned int> disjoint_set(disjoint_set_view);
-  vecmem::device_vector<unsigned int> cluster_size(cluster_size_view);
+  vecmem::device_vector<unsigned int> cluster_flags(cluster_flags_view);
+  vecmem::device_vector<unsigned int> next_cell(next_cell_view);
 
   mutex<uint32_t> mutex(backup_mutex);
   unique_lock lock(mutex, std::defer_lock);
@@ -318,54 +347,40 @@ TRACCC_HOST_DEVICE inline void ccl_kernel(
    * by this block of threads. We start from an initial range determined
    * by the block index multiplied by the target number of cells per
    * block. We then shift both the start and the end of the block forward
-   * (to a later point in the array); start and end may be moved different
-   * amounts.
+   * (to a later point in the array) to the first positions where a
+   * partition may be split. Start and end may be moved different amounts.
+   *
+   * The end of this partition is the start of the next one, so the
+   * partitions tile the cell collection exactly.
    */
+  const unsigned int naive_start =
+      thread_id.getBlockIdX() * cfg.target_partition_size();
+  assert(naive_start < num_cells);
+  const unsigned int naive_end =
+      std::min(num_cells, naive_start + cfg.target_partition_size());
+
   if (thread_id.getLocalThreadIdX() == 0) {
-    unsigned int start = thread_id.getBlockIdX() * cfg.target_partition_size();
-    assert(start < num_cells);
-    unsigned int end = std::min(num_cells, start + cfg.target_partition_size());
-    outi = 0;
-
-    /*
-     * Next, shift the starting point to a position further in the
-     * array; the purpose of this is to ensure that we are not operating
-     * on any cells that have been claimed by the previous block (if
-     * any).
-     */
-    while (start != 0 && start < num_cells &&
-           cells_device.module_index().at(start - 1) ==
-               cells_device.module_index().at(start) &&
-           cells_device.channel1().at(start) <=
-               cells_device.channel1().at(start - 1) + 1) {
-      ++start;
-    }
-
-    /*
-     * Then, claim as many cells as we need past the naive end of the
-     * current block to ensure that we do not end our partition on a
-     * cell that is not a possible boundary!
-     */
-    while (end < num_cells &&
-           cells_device.module_index().at(end - 1) ==
-               cells_device.module_index().at(end) &&
-           cells_device.channel1().at(end) <=
-               cells_device.channel1().at(end - 1) + 1) {
-      ++end;
-    }
-    partition_start = start;
-    partition_end = end;
-    assert(partition_start <= partition_end);
+    partition_start = num_cells;
+    partition_end = num_cells;
   }
 
   barrier.blockBarrier();
+
+  find_partition_split(thread_id, barrier, cells_device, naive_start,
+                       partition_start);
+  find_partition_split(thread_id, barrier, cells_device, naive_end,
+                       partition_end);
+
+  barrier.blockBarrier();
+
+  assert(partition_start <= partition_end);
 
   // It seems that sycl runs into undefined behaviour when calling
   // group synchronisation functions when some threads have already run
   // into a return. As such, we cannot use returns in this kernel.
 
   // Get partition for this thread group
-  const auto size = static_cast<unsigned int>(partition_end - partition_start);
+  const unsigned int size = partition_end - partition_start;
 
   // If the size is zero, we can just retire the whole block.
   if (size == 0) {
@@ -394,9 +409,8 @@ TRACCC_HOST_DEVICE inline void ccl_kernel(
         adjv_backup.data() +
         (thread_id.getLocalThreadIdX() * 4 * cfg.max_cells_per_thread *
          cfg.backup_size_multiplier);
-    ccl_core(cfg, thread_id, partition_start, partition_end, f_backup,
-             gf_backup, adjv, adjc, cells_device, det_desc, det_cond,
-             measurements_device, barrier, disjoint_set, cluster_size);
+    ccl_core(thread_id, partition_start, partition_end, f_backup, gf_backup,
+             adjv, adjc, cells_device, barrier, cluster_flags, next_cell);
   } else {
     /*
      * Vector of indices of the adjacent cells.
@@ -411,9 +425,8 @@ TRACCC_HOST_DEVICE inline void ccl_kernel(
      */
     unsigned char adjc[details::CELLS_PER_THREAD_STACK_LIMIT];
 
-    ccl_core(cfg, thread_id, partition_start, partition_end, f_primary,
-             gf_primary, adjv, adjc, cells_device, det_desc, det_cond,
-             measurements_device, barrier, disjoint_set, cluster_size);
+    ccl_core(thread_id, partition_start, partition_end, f_primary, gf_primary,
+             adjv, adjc, cells_device, barrier, cluster_flags, next_cell);
   }
 
   barrier.blockBarrier();
