@@ -70,8 +70,13 @@ struct clustering_config {
    * This sets the desired thread coarsening factor for the CCA algorithm.
    * Decreasing this may decrease occupancy. Increasing this increases the
    * probability that scratch space will need to be used.
+   *
+   * With the measurement creation moved out of the CCL kernel, smaller
+   * partitions (more blocks) give the latency bound CCL kernel more
+   * parallelism: 4 cells per thread was measured ~13% faster than 8 on an
+   * H100 with ttbar mu200 ITk events, with identical results.
    */
-  unsigned int target_cells_per_thread{8};
+  unsigned int target_cells_per_thread{4};
 
   /**
    * @brief The upscaling factor for the scratch space.
