@@ -58,6 +58,8 @@ TRACCC_HOST_DEVICE inline bool gbts_bin_one_spacepoint(
     reducedSP[globalIndex].w = -CHAR_MAX - 1;
     return false;
   }
+  // NOTE: a surface missing from its volume's block keeps layer 0 (as the
+  // linear scan of the original implementation did).
   unsigned int layerIdx = 0u;
   if (begin_or_bin < 0) {
     const unsigned int surface_index =
@@ -93,12 +95,12 @@ TRACCC_HOST_DEVICE inline bool gbts_bin_one_spacepoint(
   const int type = static_cast<int>(layerType[layerIdx]);
   if (type == 1 &&
       cluster_diameter >
-          payload.gbts_count_spacepoints_by_layer_params.type1_max_width) {
+          payload.gbts_bin_spacepoints_params.type1_max_width) {
     reducedSP[globalIndex].w = -CHAR_MAX - 1;
     return false;
   }
   cluster_diameter =
-      (payload.gbts_count_spacepoints_by_layer_params.doTauCut && type != 0)
+      (payload.gbts_bin_spacepoints_params.doTauCut && type != 0)
           ? static_cast<float>(-1 * type)
           : cluster_diameter;
 
@@ -169,7 +171,7 @@ TRACCC_HOST_DEVICE inline void gbts_bin_spacepoints(
   // float bits order like the values).
   vecmem::device_vector<unsigned int> d_bin_rads_bits(payload.bin_rads_bits);
   for (unsigned int bin = globalIdx; bin < payload.nEtaBins; bin += stride) {
-    d_bin_rads_bits[2u * bin] = gbts_float_bits(1e8f);
+    d_bin_rads_bits[2u * bin] = gbts_float_bits(gbts_bin_rad_min_init);
     d_bin_rads_bits[2u * bin + 1u] = gbts_float_bits(0.0f);
   }
 

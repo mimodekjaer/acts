@@ -23,7 +23,7 @@ namespace traccc::device {
 /// (Global Event Data) Payload for the @c traccc::device::gbts_sort_nodes
 /// function
 struct gbts_sort_nodes_payload {
-  /// Number of key / value slots to sort (the spacepoint capacity)
+  /// Number of key slots (the spacepoint capacity)
   unsigned int nKeys;
   /// Number of eta bins (bounds the significant key bits)
   unsigned int nEtaBins;
@@ -32,7 +32,7 @@ struct gbts_sort_nodes_payload {
   /// Output: per eta bin (begin, end) node ranges, flat
   vecmem::data::vector_view<unsigned int> eta_bin_views;
   /// In/out: per eta bin (min r, max r) as float bits, initialised by
-  /// gbts_bin_spacepoints to (1e8, 0) and accumulated here
+  /// gbts_bin_spacepoints to (gbts_bin_rad_min_init, 0) and accumulated here
   vecmem::data::vector_view<unsigned int> bin_rads_bits;
   /// Reduced (x, y, z, cluster width) per spacepoint, in original order
   vecmem::data::vector_view<const float4> reducedSP;
@@ -70,8 +70,11 @@ struct gbts_sort_nodes_shared_payload {
 /// The keys were sorted on their (eta bin, quantised phi) bits (stable in
 /// the spacepoint index); thread i reads the spacepoint index of key i and
 /// writes that spacepoint's node data at rank i, except inside a run of
-/// equal (eta bin, quantised phi) where the exact (phi, index) rank is used
-/// -- no atomics, deterministic node order.
+/// equal (eta bin, quantised phi) where the exact (phi, r, z, width,
+/// spacepoint index) rank is used -- no atomics, deterministic node order.
+/// The intrinsic data come before the spacepoint index because the upstream
+/// spacepoint order is not reproducible run to run (see
+/// detail::gbts_rank_in_phi_run).
 ///
 /// The per-eta-bin node ranges and the node count come from the key
 /// boundaries: a thread whose key starts a new eta bin (or is the first

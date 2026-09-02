@@ -19,7 +19,6 @@
 #include <vecmem/containers/data/vector_view.hpp>
 
 // System include(s).
-#include <bit>
 #include <cstring>
 #include <utility>
 
@@ -32,8 +31,8 @@ using gbts_sort_key_t = unsigned long long int;
 /// quantised phi, then the eta bin. Only the bits above the index are radix
 /// sorted (a stable sort of the (eta bin, phi) fields), so ties in
 /// (eta bin, quantised phi) keep the spacepoint index order; gbts_sort_nodes
-/// restores the exact (phi, spacepoint index) order inside every run of
-/// equal (eta bin, quantised phi).
+/// then ranks every run of equal (eta bin, quantised phi) by the exact
+/// (phi, r, z, width, spacepoint index) order (see gbts_sort_nodes.hpp).
 inline constexpr unsigned int gbts_sort_key_index_bits = 32u;
 inline constexpr unsigned int gbts_sort_key_phi_bits = 12u;
 inline constexpr unsigned int gbts_sort_key_phi_shift =
@@ -44,9 +43,12 @@ inline constexpr unsigned int gbts_sort_key_eta_bits =
     64u - gbts_sort_key_eta_shift;
 /// Largest number of eta bins the key's eta field can hold (one value is
 /// reserved for the "rejected" key)
-inline constexpr unsigned int gbts_sort_key_max_eta_bins = (1u << 20u) - 1u;
+inline constexpr unsigned int gbts_sort_key_max_eta_bins =
+    (1u << gbts_sort_key_eta_bits) - 1u;
 /// Key of a rejected spacepoint / unused slot: sorts after every node key
 inline constexpr gbts_sort_key_t gbts_sort_key_rejected = ~0ull;
+/// Initial value of the per-eta-bin minimum radius (larger than any radius)
+inline constexpr float gbts_bin_rad_min_init = 1e8f;
 /// The (eta bin, quantised phi) part of a key
 TRACCC_HOST_DEVICE inline unsigned int gbts_sort_key_bin_phi(
     const gbts_sort_key_t key) {
@@ -106,7 +108,7 @@ struct gbts_bin_spacepoints_payload {
   /// Per-layer (first eta bin, number of eta bins) pair
   vecmem::data::vector_view<const std::pair<unsigned int, unsigned int>>
       layer_info;
-  /// Per-layer geometry pair used to compute eta (e.g. (rmin, zmax))
+  /// Per-layer (first eta value, eta bin width) pair used to bin in eta
   vecmem::data::vector_view<const std::pair<float, float>> layer_geo;
   /// Output: reduced (x, y, z, cluster width) per spacepoint after filtering
   vecmem::data::vector_view<float4> reducedSP;
@@ -122,12 +124,11 @@ struct gbts_bin_spacepoints_payload {
   /// Size of the surface-to-layer map (for bounds checking)
   unsigned long int surfaceMapSize;
   /// Output: per eta bin (min r, max r) as float bits, initialised here to
-  /// (1e8, 0) and accumulated by gbts_sort_nodes
+  /// (gbts_bin_rad_min_init, 0) and accumulated by gbts_sort_nodes
   vecmem::data::vector_view<unsigned int> bin_rads_bits;
   /// Parameters for SP filtering (passed through from config, used for tau
   /// cut if enabled)
-  traccc::gbts_count_spacepoints_by_layer_params
-      gbts_count_spacepoints_by_layer_params;
+  traccc::gbts_bin_spacepoints_params gbts_bin_spacepoints_params;
 };
 
 /// @brief Per-spacepoint binning kernel: look up the GBTS layer via the

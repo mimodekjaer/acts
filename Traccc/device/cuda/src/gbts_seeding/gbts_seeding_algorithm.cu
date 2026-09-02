@@ -200,7 +200,7 @@ void gbts_seeding_algorithm::gbts_bin_spacepoints_kernel(
 void gbts_seeding_algorithm::gbts_sort_node_keys_kernel(
     const device::gbts_sort_nodes_payload& payload) const {
   // Keys-only radix sort of the (eta bin, quantised phi) bits above the
-  // spacepoint index: 3 one-sweep passes at most, stable in the index.
+  // spacepoint index (typically 3 one-sweep passes), stable in the index.
   unsigned int eta_bits = 0u;
   while ((1u << eta_bits) <= payload.nEtaBins) {
     ++eta_bits;

@@ -95,7 +95,7 @@ auto gbts_seeding_algorithm::make_nodes(
        surfaceToLayerMap_buf, layerType_buf, layer_info_buf, layer_geo_buf,
        reducedSP_buf, sort_keys_buf, cfg.volumeToLayerMap.size(),
        cfg.surfaceToLayerMap.size(), bin_rads_bits,
-       cfg.gbts_count_spacepoints_by_layer_params});
+       cfg.gbts_bin_spacepoints_params});
 
   // Per-node outputs of the gather (node sorting) kernel.
   vecmem::data::vector_buffer<float4> node_params_buf(nSp, mr().main);
@@ -140,8 +140,7 @@ auto gbts_seeding_algorithm::make_nodes(
   copy().setup(work_items_buf)->ignore();
 
   gbts_build_edge_work_list_kernel(
-      {cfg.n_eta_bins, m_nBinPairs, gbts_consts::node_buffer_length,
-       bin_pairs_buf, eta_bin_views_buf, pair_work_begin_buf, work_items_buf,
+      {m_nBinPairs, gbts_consts::node_buffer_length, bin_pairs_buf, eta_bin_views_buf, pair_work_begin_buf, work_items_buf,
        d_counters + gbts_counter::nWork});
 
   return node_making_output{std::move(reducedSP_buf),

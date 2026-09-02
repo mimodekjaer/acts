@@ -14,9 +14,6 @@
 #include "traccc/gbts_seeding/device/gbts_bin_spacepoints.hpp"
 #include "traccc/gbts_seeding/gbts_types.hpp"
 
-// System include(s).
-#include <cstring>
-
 // VecMem include(s).
 #include <vecmem/containers/data/vector_view.hpp>
 
@@ -29,8 +26,6 @@ inline constexpr unsigned int gbts_build_edge_work_list_block_size = 1024u;
 /// (Global Event Data) Payload for the @c
 /// traccc::device::gbts_build_edge_work_list function
 struct gbts_build_edge_work_list_payload {
-  /// Number of eta bins
-  unsigned int nEtaBins;
   /// Number of bin pairs
   unsigned int nBinPairs;
   /// Chunk size of the inner bin of a graph-making work item

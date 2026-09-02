@@ -35,27 +35,6 @@ TRACCC_HOST_DEVICE inline unsigned int gbts_block_inclusive_scan(
   return scratch[threadIndex];
 }
 
-/// First index in [begin, end) of the sorted keys with key >= value
-template <typename vector_t>
-TRACCC_HOST_DEVICE inline unsigned int gbts_key_lower_bound(
-    const vector_t& keys, unsigned int begin, unsigned int end,
-    const gbts_sort_key_t value) {
-  while (begin < end) {
-    const unsigned int mid = begin + (end - begin) / 2u;
-    if (keys[mid] < value) {
-      begin = mid + 1u;
-    } else {
-      end = mid;
-    }
-  }
-  return begin;
-}
-template <typename vector_t>
-TRACCC_HOST_DEVICE inline unsigned int gbts_key_lower_bound(
-    const vector_t& keys, unsigned int end, const gbts_sort_key_t value) {
-  return gbts_key_lower_bound(keys, 0u, end, value);
-}
-
 }  // namespace detail
 
 template <concepts::thread_id1 thread_id_t, concepts::barrier barrier_t>

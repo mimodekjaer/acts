@@ -46,7 +46,7 @@ struct gbts_layerInfo {
 // Named indices into the flat device counter buffer (the head of the single
 // zeroed scratch buffer of an event; one memset zeros all of them).
 enum gbts_counter : unsigned int {
-  nNodes,           // accepted spacepoints (gbts_build_edge_work_list)
+  nNodes,           // accepted spacepoints (gbts_sort_nodes)
   nWork,            // graph-making work items (gbts_build_edge_work_list)
   workCursorCount,  // next work item to grab (gbts_make_graph_edges<false>)
   workCursorFill,   // next work item to grab (gbts_make_graph_edges<true>)
@@ -233,10 +233,11 @@ struct gbts_convert_seeds_params {
 };
 
 // SP counting cuts for device::gbts_count_spacepoints_by_layer
-struct gbts_count_spacepoints_by_layer_params {
+// Spacepoint acceptance cuts of gbts_bin_spacepoints.
+struct gbts_bin_spacepoints_params {
   // Maximum cluster width allowed on "type 1" layers.
   float type1_max_width = 0.2f;
-  // If true, apply the cluster-width / tau cut at SP-counting time.
+  // If true, apply the cluster-width / tau cut when binning the spacepoints.
   bool doTauCut = true;
 };
 
@@ -265,8 +266,8 @@ struct gbts_seedfinder_config {
   traccc::gbts_make_graph_edges_params gbts_make_graph_edges_params{};
   traccc::gbts_match_graph_edges_params gbts_match_graph_edges_params{};
   traccc::gbts_dphi_window_params gbts_dphi_window_params{};
-  traccc::gbts_count_spacepoints_by_layer_params
-      gbts_count_spacepoints_by_layer_params{};
+  traccc::gbts_bin_spacepoints_params
+      gbts_bin_spacepoints_params{};
   traccc::gbts_fit_segments_params gbts_fit_segments_params{};
   traccc::gbts_convert_seeds_params gbts_convert_seeds_params{};
 
@@ -278,9 +279,6 @@ struct gbts_seedfinder_config {
   // node making bin counts
   // calculated from input layerInfo (geometry)
   unsigned int n_eta_bins = 0;
-
-  // Phi bin width
-  unsigned int n_phi_bins = 128;
 
   // Edge buffer capacity per spacepoint (capacity = factor * number of
   // spacepoints). Lets the graph making run without a host synchronisation;

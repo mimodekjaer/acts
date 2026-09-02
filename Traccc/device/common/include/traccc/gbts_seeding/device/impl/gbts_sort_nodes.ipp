@@ -21,6 +21,109 @@
 
 namespace traccc::device {
 
+namespace detail {
+
+/// Eta-bin ranges from the key boundaries: the thread whose bin differs from
+/// the previous slot's bin writes the begin of its bin, the end of the
+/// previous one and the (empty) ranges of the bins in between; the first
+/// rejected key (bin == nEtaBins) also sets the node count.
+///
+/// @param bin_of  Eta bin of a key slot (nEtaBins for a rejected key)
+///
+template <typename bin_of_t>
+TRACCC_HOST_DEVICE inline void gbts_write_eta_bin_ranges(
+    const bin_of_t& bin_of, const unsigned int globalIndex,
+    const unsigned int nKeys, const unsigned int nEtaBins,
+    vecmem::device_vector<unsigned int>& d_eta_bin_views,
+    unsigned int* nNodes) {
+  const unsigned int cur = bin_of(globalIndex);
+  const unsigned int prev = (globalIndex == 0u) ? 0u : bin_of(globalIndex - 1u);
+  if ((globalIndex == 0u) || (cur != prev)) {
+    const unsigned int first_begin = (globalIndex == 0u) ? 0u : prev + 1u;
+    for (unsigned int b = first_begin; (b <= cur) && (b < nEtaBins); b++) {
+      d_eta_bin_views[2u * b] = globalIndex;
+    }
+    const unsigned int first_end = (globalIndex == 0u) ? 0u : prev;
+    for (unsigned int b = first_end; (b < cur) && (b < nEtaBins); b++) {
+      d_eta_bin_views[2u * b + 1u] = globalIndex;
+    }
+    if (cur == nEtaBins) {
+      *nNodes = globalIndex;
+    }
+  }
+  if ((globalIndex + 1u == nKeys) && (cur < nEtaBins)) {
+    // No rejected key at all: close the last bins at the capacity.
+    for (unsigned int b = cur; b < nEtaBins; b++) {
+      d_eta_bin_views[2u * b + 1u] = nKeys;
+      if (b > cur) {
+        d_eta_bin_views[2u * b] = nKeys;
+      }
+    }
+    *nNodes = nKeys;
+  }
+}
+
+/// Sorted slot of node @c globalIndex: its key slot, unless the key sits in
+/// a run of equal (eta bin, quantised phi) keys, where the exact
+/// (phi, r, z, width, spacepoint index) rank inside the run decides.
+///
+/// The intrinsic node data come before the spacepoint index on purpose: the
+/// spacepoint order produced by the upstream (GPU) clusterization is not
+/// reproducible run to run, so an index tie-break would make the node order
+/// - and through it every index-based tie-break downstream - schedule
+/// dependent. Only nodes with identical parameters still fall back to the
+/// index, and those are interchangeable for the seeding.
+///
+template <typename keys_t, typename spacepoints_t>
+TRACCC_HOST_DEVICE inline unsigned int gbts_rank_in_phi_run(
+    const keys_t& d_sort_keys, const spacepoints_t& d_reducedSP,
+    const unsigned int globalIndex, const unsigned int nKeys,
+    const unsigned int bin_phi, const unsigned int srcIdx, const float Phi,
+    const float r, const float z, const float w) {
+  const bool in_run =
+      ((globalIndex > 0u) &&
+       (gbts_sort_key_bin_phi(d_sort_keys[globalIndex - 1u]) == bin_phi)) ||
+      ((globalIndex + 1u < nKeys) &&
+       (gbts_sort_key_bin_phi(d_sort_keys[globalIndex + 1u]) == bin_phi));
+  if (!in_run) {
+    return globalIndex;
+  }
+  unsigned int start = globalIndex;
+  while ((start > 0u) &&
+         (gbts_sort_key_bin_phi(d_sort_keys[start - 1u]) == bin_phi)) {
+    --start;
+  }
+  unsigned int end = globalIndex + 1u;
+  while ((end < nKeys) &&
+         (gbts_sort_key_bin_phi(d_sort_keys[end]) == bin_phi)) {
+    ++end;
+  }
+  unsigned int rank = 0u;
+  for (unsigned int j = start; j < end; j++) {
+    if (j == globalIndex) {
+      continue;
+    }
+    const unsigned int otherIdx = gbts_sort_key_index(d_sort_keys[j]);
+    const float4 other = d_reducedSP[otherIdx];
+    const float otherPhi = math::atan2(other.y, other.x);
+    bool before = otherPhi < Phi;
+    if (otherPhi == Phi) {
+      const float otherR = math::sqrt(other.x * other.x + other.y * other.y);
+      before = (otherR < r) ||
+               ((otherR == r) &&
+                ((other.z < z) ||
+                 ((other.z == z) &&
+                  ((other.w < w) || ((other.w == w) && (otherIdx < srcIdx))))));
+    }
+    if (before) {
+      ++rank;
+    }
+  }
+  return start + rank;
+}
+
+}  // namespace detail
+
 template <concepts::thread_id1 thread_id_t, concepts::barrier barrier_t>
 TRACCC_HOST_DEVICE inline void gbts_sort_nodes(
     const thread_id_t& thread_id, const barrier_t& barrier,
@@ -59,36 +162,9 @@ TRACCC_HOST_DEVICE inline void gbts_sort_nodes(
        base += stride) {
     const unsigned int globalIndex = base + threadIndex;
 
-    // Eta-bin boundaries: the thread whose bin differs from the previous
-    // slot's bin writes the ranges. Empty bins between the two get an empty
-    // range; the first rejected key marks the node count.
     if (globalIndex < nKeys) {
-      const unsigned int cur = bin_of(globalIndex);
-      const unsigned int prev =
-          (globalIndex == 0u) ? 0u : bin_of(globalIndex - 1u);
-      if ((globalIndex == 0u) || (cur != prev)) {
-        const unsigned int first_begin = (globalIndex == 0u) ? 0u : prev + 1u;
-        for (unsigned int b = first_begin; (b <= cur) && (b < nEtaBins); b++) {
-          d_eta_bin_views[2u * b] = globalIndex;
-        }
-        const unsigned int first_end = (globalIndex == 0u) ? 0u : prev;
-        for (unsigned int b = first_end; (b < cur) && (b < nEtaBins); b++) {
-          d_eta_bin_views[2u * b + 1u] = globalIndex;
-        }
-        if (cur == nEtaBins) {
-          *payload.nNodes = globalIndex;
-        }
-      }
-      if ((globalIndex + 1u == nKeys) && (cur < nEtaBins)) {
-        // No rejected key at all: close the last bins at the capacity.
-        for (unsigned int b = cur; b < nEtaBins; b++) {
-          d_eta_bin_views[2u * b + 1u] = nKeys;
-          if (b > cur) {
-            d_eta_bin_views[2u * b] = nKeys;
-          }
-        }
-        *payload.nNodes = nKeys;
-      }
+      detail::gbts_write_eta_bin_ranges(bin_of, globalIndex, nKeys, nEtaBins,
+                                        d_eta_bin_views, payload.nNodes);
     }
 
     // Nodes of this block: the slots before the first rejected key.
@@ -106,7 +182,7 @@ TRACCC_HOST_DEVICE inline void gbts_sort_nodes(
     // Shared reduction only when the spanned bins fit the scratch arrays.
     const bool use_shared = n_bins <= blockSize;
     if (use_shared && (threadIndex < n_bins)) {
-      shared_min[threadIndex] = gbts_float_bits(1e8f);
+      shared_min[threadIndex] = gbts_float_bits(gbts_bin_rad_min_init);
       shared_max[threadIndex] = gbts_float_bits(0.0f);
     }
     barrier.blockBarrier();
@@ -156,58 +232,12 @@ TRACCC_HOST_DEVICE inline void gbts_sort_nodes(
         }
       }
 
-      // The keys order the nodes by quantised phi; inside a run of equal
-      // (eta bin, quantised phi) the exact (phi, r, z, width, spacepoint
-      // index) rank decides the slot, so the nodes of an eta bin end up
-      // exactly sorted by phi. The intrinsic node data come before the
-      // spacepoint index on purpose: the spacepoint order produced by the
-      // upstream (GPU) clusterization is not reproducible run to run, so an
-      // index tie-break would make the node order - and through it every
-      // index-based tie-break downstream - schedule dependent. Only nodes
-      // with identical parameters still fall back to the index, and those
-      // are interchangeable for the seeding.
-      unsigned int pos = globalIndex;
-      const bool in_run =
-          ((globalIndex > 0u) &&
-           (gbts_sort_key_bin_phi(d_sort_keys[globalIndex - 1u]) == bin_phi)) ||
-          ((globalIndex + 1u < nKeys) &&
-           (gbts_sort_key_bin_phi(d_sort_keys[globalIndex + 1u]) == bin_phi));
-      if (in_run) {
-        unsigned int start = globalIndex;
-        while ((start > 0u) &&
-               (gbts_sort_key_bin_phi(d_sort_keys[start - 1u]) == bin_phi)) {
-          --start;
-        }
-        unsigned int end = globalIndex + 1u;
-        while ((end < nKeys) &&
-               (gbts_sort_key_bin_phi(d_sort_keys[end]) == bin_phi)) {
-          ++end;
-        }
-        unsigned int rank = 0u;
-        for (unsigned int j = start; j < end; j++) {
-          if (j == globalIndex) {
-            continue;
-          }
-          const unsigned int otherIdx = gbts_sort_key_index(d_sort_keys[j]);
-          const float4 other = d_reducedSP[otherIdx];
-          const float otherPhi = math::atan2(other.y, other.x);
-          bool before = otherPhi < Phi;
-          if (otherPhi == Phi) {
-            const float otherR =
-                math::sqrt(other.x * other.x + other.y * other.y);
-            before = (otherR < r) ||
-                     ((otherR == r) &&
-                      ((other.z < z) ||
-                       ((other.z == z) &&
-                        ((other.w < sp.w) ||
-                         ((other.w == sp.w) && (otherIdx < srcIdx))))));
-          }
-          if (before) {
-            ++rank;
-          }
-        }
-        pos = start + rank;
-      }
+      // The keys order the nodes by quantised phi; the exact rank inside a
+      // run of equal (eta bin, quantised phi) makes the nodes of an eta bin
+      // come out exactly sorted by phi (no atomics, deterministic order).
+      const unsigned int pos = detail::gbts_rank_in_phi_run(
+          d_sort_keys, d_reducedSP, globalIndex, nKeys, bin_phi, srcIdx, Phi,
+          r, z, sp.w);
       d_node_params[pos] = float4{min_tau, max_tau, r, z};
       d_node_phi[pos] = Phi;
       d_node_index[pos] = srcIdx;

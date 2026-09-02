@@ -113,8 +113,8 @@ class gbts_seeding_algorithm
   virtual void gbts_sort_nodes_kernel(
       const gbts_sort_nodes_payload& payload) const = 0;
 
-  /// Node key sorting launcher: sorts (sort_keys, sort_values) of the
-  /// payload in place (a library sort, no kernel of our own)
+  /// Node key sorting launcher: sorts payload.sort_keys in place (a library
+  /// sort, no kernel of our own)
   ///
   /// @param payload The payload for the kernel
   ///
