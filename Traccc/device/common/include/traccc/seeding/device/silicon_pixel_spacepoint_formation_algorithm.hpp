@@ -18,6 +18,9 @@
 #include "traccc/utils/memory_resource.hpp"
 #include "traccc/utils/messaging.hpp"
 
+// VecMem include(s).
+#include <vecmem/containers/data/vector_view.hpp>
+
 namespace traccc::device {
 
 /// Algorithm forming space points out of measurements
@@ -66,13 +69,24 @@ class silicon_pixel_spacepoint_formation_algorithm
     const detector_buffer& detector;
     /// The input measurements
     const edm::measurement_collection::const_view& measurements;
-    /// The output spacepoints
-    edm::spacepoint_collection::view& spacepoints;
+    /// Scratch buffer (one element per measurement) for the measurement
+    /// flags / their inclusive prefix sums
+    vecmem::data::vector_view<unsigned int>& offsets;
+    /// The output spacepoints (buffer, so that its size can be set)
+    edm::spacepoint_collection::buffer& spacepoints;
   };
 
-  /// Launch the spacepoint formation kernel
+  /// Launch the spacepoint formation kernels
   ///
-  /// @param payload The payload for the kernel
+  /// Implementations must:
+  ///   1. Fill @c payload.offsets using @c device::flag_spacepoint_measurements
+  ///   2. Turn the flags into inclusive prefix sums (in place)
+  ///   3. Set the size of @c payload.spacepoints to the last prefix sum
+  ///   4. Run @c device::form_spacepoints
+  ///
+  /// This gives every spacepoint a deterministic position in the output.
+  ///
+  /// @param payload The payload for the kernels
   ///
   virtual void form_spacepoints_kernel(
       const form_spacepoints_kernel_payload& payload) const = 0;

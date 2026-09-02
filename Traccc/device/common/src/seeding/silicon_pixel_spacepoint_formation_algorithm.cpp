@@ -8,6 +8,9 @@
 // Local include(s).
 #include "traccc/seeding/device/silicon_pixel_spacepoint_formation_algorithm.hpp"
 
+// VecMem include(s).
+#include <vecmem/containers/data/vector_buffer.hpp>
+
 namespace traccc::device {
 
 silicon_pixel_spacepoint_formation_algorithm::
@@ -41,8 +44,13 @@ auto silicon_pixel_spacepoint_formation_algorithm::operator()(
       n_measurements, mr().main, vecmem::data::buffer_type::resizable);
   copy().setup(spacepoints)->ignore();
 
-  // Launch the spacepoint formation kernel.
-  form_spacepoints_kernel({n_measurements, det, measurements, spacepoints});
+  // Scratch buffer for the measurement flags / prefix sums.
+  vecmem::data::vector_buffer<unsigned int> offsets(n_measurements, mr().main);
+  copy().setup(offsets)->ignore();
+
+  // Launch the spacepoint formation kernel(s).
+  form_spacepoints_kernel(
+      {n_measurements, det, measurements, offsets, spacepoints});
 
   // Return the reconstructed spacepoints.
   return spacepoints;

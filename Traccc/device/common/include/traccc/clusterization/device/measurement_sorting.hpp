@@ -26,6 +26,37 @@ using measurement_surface_key_t = std::uint64_t;
 /// surface (the index of the first cell of the cluster)
 using measurement_cluster_key_t = unsigned int;
 
+/// Comparison functor giving measurements a deterministic total order
+///
+/// Measurements are ordered by their surface identifier first, and by their
+/// (unique, deterministic) cluster key second. Since no two measurements share
+/// both keys, any correct sorting algorithm produces the same permutation.
+///
+class measurement_order_sorter {
+ public:
+  /// Constructor, capturing the (unsorted) measurements
+  explicit measurement_order_sorter(
+      const edm::measurement_collection::const_view& measurements)
+      : m_measurements(measurements) {}
+
+  /// Index comparison operator
+  TRACCC_HOST_DEVICE bool operator()(unsigned int lhs, unsigned int rhs) const {
+    const edm::measurement_collection::const_device measurements{
+        m_measurements};
+    const auto lhs_surface = measurements.surface_link().at(lhs);
+    const auto rhs_surface = measurements.surface_link().at(rhs);
+    if (lhs_surface != rhs_surface) {
+      return lhs_surface < rhs_surface;
+    }
+    return measurements.identifier().at(lhs) < measurements.identifier().at(rhs);
+  }
+
+ private:
+  /// The (unsorted) measurements
+  edm::measurement_collection::const_view m_measurements;
+
+};  // class measurement_order_sorter
+
 /// Fill the primary sort keys and the identity index sequence
 ///
 /// The primary key of a measurement is the (unique, deterministic) identifier

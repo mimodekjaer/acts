@@ -12,14 +12,13 @@
 #include "traccc/hip/clusterization/measurement_sorting_algorithm.hpp"
 
 // Project include(s).
-#include "traccc/clusterization/device/geo_id_based_sorter.hpp"
-#include "traccc/clusterization/device/sorting_index_filler.hpp"
+#include "traccc/clusterization/device/measurement_sorting.hpp"
 
 // VecMem include(s).
 #include <vecmem/containers/data/vector_buffer.hpp>
 
-// (Roc)Thrust include(s).
-#include <thrust/for_each.h>
+// Thrust include(s).
+#include <thrust/execution_policy.h>
 #include <thrust/sort.h>
 
 // HIP include(s).
@@ -31,30 +30,31 @@
 namespace traccc::hip {
 namespace kernels {
 
-/// Kernel filling the output buffer with sorted measurements.
-///
-/// @param[in] input_view View of the input measurements
-/// @param[out] output_view View of the output measurements
-/// @param[in] sorted_indices_view View of the sorted measurement indices
-///
+/// Kernel wrapping @c traccc::device::fill_measurement_cluster_keys
+__global__ void fill_measurement_cluster_keys(
+    const edm::measurement_collection::const_view measurements,
+    vecmem::data::vector_view<device::measurement_cluster_key_t> keys,
+    vecmem::data::vector_view<unsigned int> indices) {
+  device::fill_measurement_cluster_keys(
+      details::thread_id1{}.getGlobalThreadId(), measurements, keys, indices);
+}
+
+/// Kernel wrapping @c traccc::device::gather_measurement_surface_keys
+__global__ void gather_measurement_surface_keys(
+    const edm::measurement_collection::const_view measurements,
+    const vecmem::data::vector_view<const unsigned int> indices,
+    vecmem::data::vector_view<device::measurement_surface_key_t> keys) {
+  device::gather_measurement_surface_keys(
+      details::thread_id1{}.getGlobalThreadId(), measurements, indices, keys);
+}
+
+/// Kernel wrapping @c traccc::device::fill_sorted_measurements
 __global__ void fill_sorted_measurements(
-    const edm::measurement_collection::const_view input_view,
-    edm::measurement_collection::view output_view,
-    const vecmem::data::vector_view<const unsigned int> sorted_indices_view) {
-  // Create the device objects.
-  const edm::measurement_collection::const_device input{input_view};
-  edm::measurement_collection::device output{output_view};
-  const vecmem::device_vector<const unsigned int> sorted_indices{
-      sorted_indices_view};
-
-  // Stop early if we can.
-  const unsigned int index = details::thread_id1{}.getGlobalThreadId();
-  if (index >= input.size()) {
-    return;
-  }
-
-  // Copy one measurement into the correct position.
-  output.at(index) = input.at(sorted_indices.at(index));
+    const edm::measurement_collection::const_view input,
+    edm::measurement_collection::view output,
+    const vecmem::data::vector_view<const unsigned int> sorted_indices) {
+  device::fill_sorted_measurements(details::thread_id1{}.getGlobalThreadId(),
+                                   input, output, sorted_indices);
 }
 
 }  // namespace kernels
@@ -72,6 +72,26 @@ measurement_sorting_algorithm::operator()(
     return {};
   }
 
+  // Get the number of measurements. In an asynchronous way if possible.
+  // (The radix sorts need to know the number of elements on the host.)
+  edm::measurement_collection::const_view::size_type n_measurements = 0u;
+  if (m_mr.host) {
+    const vecmem::async_size size =
+        m_copy.get().get_size(measurements_view, *(m_mr.host));
+    n_measurements = size.get();
+  } else {
+    n_measurements = m_copy.get().get_size(measurements_view);
+  }
+
+  // Create the output buffer, sized exactly for the measurements.
+  output_type result{n_measurements, m_mr.main,
+                     vecmem::data::buffer_type::resizable};
+  m_copy.get().setup(result)->ignore();
+  if (n_measurements == 0) {
+    return result;
+  }
+  m_copy.get()(measurements_view.size(), result.size())->ignore();
+
   // Get a convenience variable for the stream that we'll be using.
   hipStream_t stream = details::get_stream(m_stream);
   // Set up the Thrust execution policy. Unfortunately this has to be done in
@@ -88,34 +108,42 @@ measurement_sorting_algorithm::operator()(
 #error "Unrecognised HIP platform."
 #endif
 
-  // Create a device container on top of the view.
-  const edm::measurement_collection::const_device measurements{
-      measurements_view};
-
-  // Create a vector of measurement indices, which would be sorted.
-  vecmem::data::vector_buffer<unsigned int> indices(
-      measurements_view.capacity(), m_mr.main);
+  // Sorting keys and index sequence.
+  vecmem::data::vector_buffer<device::measurement_cluster_key_t> cluster_keys(
+      n_measurements, m_mr.main);
+  vecmem::data::vector_buffer<device::measurement_surface_key_t> surface_keys(
+      n_measurements, m_mr.main);
+  vecmem::data::vector_buffer<unsigned int> indices(n_measurements, m_mr.main);
+  m_copy.get().setup(cluster_keys)->ignore();
+  m_copy.get().setup(surface_keys)->ignore();
   m_copy.get().setup(indices)->ignore();
-  thrust::for_each(policy, indices.ptr(), indices.ptr() + indices.capacity(),
-                   device::sorting_index_filler{indices});
 
-  // Sort the indices according to the surface identifiers of the
-  // measurements.
-  thrust::sort(policy, indices.ptr(), indices.ptr() + indices.capacity(),
-               device::geo_id_based_sorter{measurements.surface_link()});
-
-  // Create the output buffer.
-  output_type result{measurements_view.capacity(), m_mr.main,
-                     vecmem::data::buffer_type::resizable};
-  m_copy.get().setup(result)->ignore();
-  m_copy.get()(measurements_view.size(), result.size())->ignore();
-
-  // Fill it with the sorted measurements.
   static constexpr unsigned int BLOCK_SIZE = 256;
-  const unsigned int n_blocks =
-      (measurements_view.capacity() + BLOCK_SIZE - 1) / BLOCK_SIZE;
-  hipLaunchKernelGGL(kernels::fill_sorted_measurements, n_blocks, BLOCK_SIZE, 0,
-                     stream, measurements_view, result, indices);
+  const unsigned int n_blocks = (n_measurements + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+  // First sort by the deterministic cluster key. This removes the effect of
+  // the non-deterministic order in which the clusterization wrote the
+  // measurements.
+  kernels::fill_measurement_cluster_keys<<<n_blocks, BLOCK_SIZE, 0, stream>>>(
+      measurements_view, cluster_keys, indices);
+  TRACCC_HIP_ERROR_CHECK(hipGetLastError());
+  thrust::stable_sort_by_key(policy, cluster_keys.ptr(),
+                             cluster_keys.ptr() + n_measurements,
+                             indices.ptr());
+
+  // Then (stably) sort by the surface identifier. Both sorts use radix sort
+  // on primitive keys, which is deterministic.
+  kernels::gather_measurement_surface_keys<<<n_blocks, BLOCK_SIZE, 0,
+                                             stream>>>(
+      measurements_view, indices, surface_keys);
+  TRACCC_HIP_ERROR_CHECK(hipGetLastError());
+  thrust::stable_sort_by_key(policy, surface_keys.ptr(),
+                             surface_keys.ptr() + n_measurements,
+                             indices.ptr());
+
+  // Fill the output with the sorted measurements.
+  kernels::fill_sorted_measurements<<<n_blocks, BLOCK_SIZE, 0, stream>>>(
+      measurements_view, result, indices);
   TRACCC_HIP_ERROR_CHECK(hipGetLastError());
 
   // Return the sorted buffer.

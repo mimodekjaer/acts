@@ -12,6 +12,7 @@
 #include "../utils/calculate1DimNdRange.hpp"
 #include "../utils/get_queue.hpp"
 #include "../utils/global_index.hpp"
+#include "../utils/oneDPL.hpp"
 #include "traccc/sycl/seeding/silicon_pixel_spacepoint_formation_algorithm.hpp"
 
 // Project include(s).
@@ -19,6 +20,10 @@
 #include "traccc/seeding/device/form_spacepoints.hpp"
 
 namespace traccc::sycl {
+namespace kernels {
+/// Kernel flagging the measurements that produce spacepoints
+class flag_spacepoint_measurements;
+}  // namespace kernels
 
 silicon_pixel_spacepoint_formation_algorithm::
     silicon_pixel_spacepoint_formation_algorithm(
@@ -32,6 +37,38 @@ void silicon_pixel_spacepoint_formation_algorithm::form_spacepoints_kernel(
     const form_spacepoints_kernel_payload& payload) const {
   ::sycl::queue& squeue = details::get_queue(queue());
   squeue.throw_asynchronous();
+
+  // Flag the measurements that produce spacepoints.
+  squeue
+      .submit([&](::sycl::handler& h) {
+        h.parallel_for<kernels::flag_spacepoint_measurements>(
+            details::calculate1DimNdRange(payload.n_measurements,
+                                          warp_size() * 8),
+            [measurements = payload.measurements,
+             flags = payload.offsets](::sycl::nd_item<1> item) {
+              device::flag_spacepoint_measurements(details::global_index(item),
+                                                   measurements, flags);
+            });
+      })
+      .wait_and_throw();
+
+  // Turn the flags into inclusive prefix sums, in place.
+  auto policy = oneapi::dpl::execution::device_policy{squeue};
+  oneapi::dpl::inclusive_scan(policy, payload.offsets.ptr(),
+                              payload.offsets.ptr() + payload.n_measurements,
+                              payload.offsets.ptr());
+
+  // The last prefix sum is the number of spacepoints. Copy it into the size
+  // of the output buffer.
+  copy()(vecmem::data::vector_view<const char>{
+             static_cast<vecmem::data::vector_view<const char>::size_type>(
+                 sizeof(unsigned int)),
+             reinterpret_cast<const char*>(payload.offsets.ptr() +
+                                           payload.n_measurements - 1u)},
+         payload.spacepoints.size())
+      ->wait();
+
+  // Form the spacepoints.
   detector_buffer_visitor<detector_type_list>(
       payload.detector, [&]<typename detector_traits_t>(
                             const typename detector_traits_t::view& det) {
@@ -51,10 +88,13 @@ void silicon_pixel_spacepoint_formation_algorithm::form_spacepoints_kernel(
               details::calculate1DimNdRange(payload.n_measurements,
                                             warp_size() * 8),
               [det_ptr = device_det.ptr(), measurements = payload.measurements,
-               spacepoints = payload.spacepoints](::sycl::nd_item<1> item) {
+               offsets = vecmem::data::vector_view<const unsigned int>(
+                   payload.offsets),
+               spacepoints = vecmem::get_data(payload.spacepoints)](
+                  ::sycl::nd_item<1> item) {
                 device::form_spacepoints<detector_traits_t>(
                     details::global_index(item), *det_ptr, measurements,
-                    spacepoints);
+                    offsets, spacepoints);
               });
         });
       });
