@@ -94,15 +94,13 @@ TRACCC_HOST_DEVICE inline bool gbts_bin_one_spacepoint(
   float cluster_diameter = measurement.diameter();
   const int type = static_cast<int>(layerType[layerIdx]);
   if (type == 1 &&
-      cluster_diameter >
-          payload.gbts_bin_spacepoints_params.type1_max_width) {
+      cluster_diameter > payload.gbts_bin_spacepoints_params.type1_max_width) {
     reducedSP[globalIndex].w = -CHAR_MAX - 1;
     return false;
   }
-  cluster_diameter =
-      (payload.gbts_bin_spacepoints_params.doTauCut && type != 0)
-          ? static_cast<float>(-1 * type)
-          : cluster_diameter;
+  cluster_diameter = (payload.gbts_bin_spacepoints_params.doTauCut && type != 0)
+                         ? static_cast<float>(-1 * type)
+                         : cluster_diameter;
 
   const std::array<float, 3u> pos = spacepoint.global();
   reducedSP[globalIndex] = float4{pos[0], pos[1], pos[2], cluster_diameter};

@@ -235,9 +235,9 @@ TRACCC_HOST_DEVICE inline void gbts_sort_nodes(
       // The keys order the nodes by quantised phi; the exact rank inside a
       // run of equal (eta bin, quantised phi) makes the nodes of an eta bin
       // come out exactly sorted by phi (no atomics, deterministic order).
-      const unsigned int pos = detail::gbts_rank_in_phi_run(
-          d_sort_keys, d_reducedSP, globalIndex, nKeys, bin_phi, srcIdx, Phi,
-          r, z, sp.w);
+      const unsigned int pos =
+          detail::gbts_rank_in_phi_run(d_sort_keys, d_reducedSP, globalIndex,
+                                       nKeys, bin_phi, srcIdx, Phi, r, z, sp.w);
       d_node_params[pos] = float4{min_tau, max_tau, r, z};
       d_node_phi[pos] = Phi;
       d_node_index[pos] = srcIdx;

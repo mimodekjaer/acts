@@ -469,8 +469,8 @@ TRACCC_HOST_DEVICE inline void gbts_make_graph_edges(
         cursor = detail::gbts_walk_range_interval<fill>(
             d_node_phi, d_node_params, begin2, end2, my_window.lo_a,
             my_window.hi_a, np1, phi1, node1, deltaPhi, ap,
-            payload.edge_params_maker, d_edge_nodes, d_edge_params,
-            d_reindexer, cursor, cursor_end, scratch, scratch_stride, my_wraps);
+            payload.edge_params_maker, d_edge_nodes, d_edge_params, d_reindexer,
+            cursor, cursor_end, scratch, scratch_stride, my_wraps);
         if (my_window.lo_b <= my_window.hi_b) {
           cursor = detail::gbts_walk_range_interval<fill>(
               d_node_phi, d_node_params, begin2, end2, my_window.lo_b,
