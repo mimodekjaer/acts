@@ -18,8 +18,19 @@
 #include "traccc/clusterization/device/measurement_sorting.hpp"
 #include "traccc/clusterization/device/sorting_index_filler.hpp"
 
+// VecMem include(s).
+#include <vecmem/containers/data/vector_buffer.hpp>
+#include <vecmem/containers/vector.hpp>
+
+// System include(s).
+#include <memory_resource>
+
 namespace traccc::sycl {
 namespace kernels {
+/// Kernel flagging an unsorted measurement collection.
+class flag_unsorted_measurements;
+/// Kernel copying an already sorted measurement collection.
+class copy_measurements;
 /// Kernel filling the output buffer with sorted measurements.
 class fill_sorted_measurements;
 }  // namespace kernels
@@ -36,6 +47,31 @@ measurement_sorting_algorithm::operator()(
   if (measurements_view.capacity() == 0) {
     return {};
   }
+
+  ::sycl::queue& queue = details::get_queue(m_queue.get());
+
+  // Check on the device whether the measurements are already sorted by
+  // surface identifier. (Frequently the case, e.g. when the cells were read
+  // grouped by surface.)
+  vecmem::data::vector_buffer<unsigned int> unsorted_flag(1u, m_mr.main);
+  m_copy.get().setup(unsorted_flag)->wait();
+  m_copy.get().memset(unsorted_flag, 0)->wait();
+  queue
+      .submit([&](::sycl::handler& h) {
+        h.parallel_for<kernels::flag_unsorted_measurements>(
+            details::calculate1DimNdRange(measurements_view.capacity(), 256),
+            [measurements_view, unsorted_view = vecmem::get_data(
+                                    unsorted_flag)](::sycl::nd_item<1> item) {
+              device::flag_unsorted_measurements(
+                  static_cast<unsigned int>(item.get_global_id(0)),
+                  measurements_view, unsorted_view);
+            });
+      })
+      .wait_and_throw();
+  vecmem::vector<unsigned int> unsorted_flag_host(
+      1u, (m_mr.host != nullptr) ? m_mr.host : std::pmr::get_default_resource());
+  m_copy.get()(unsorted_flag, unsorted_flag_host)->wait();
+  const bool already_sorted = (unsorted_flag_host.at(0) == 0u);
 
   // Get the number of measurements. In an asynchronous way if possible.
   edm::measurement_collection::const_view::size_type n_measurements = 0u;
@@ -56,7 +92,22 @@ measurement_sorting_algorithm::operator()(
     return result;
   }
 
-  ::sycl::queue& queue = details::get_queue(m_queue.get());
+  // Fast path: the input is already sorted, so just copy it.
+  if (already_sorted) {
+    queue
+        .submit([&](::sycl::handler& h) {
+          h.parallel_for<kernels::copy_measurements>(
+              details::calculate1DimNdRange(n_measurements, 256),
+              [measurements_view, output_view = vecmem::get_data(result)](
+                  ::sycl::nd_item<1> item) {
+                device::copy_measurements(
+                    static_cast<unsigned int>(item.get_global_id(0)),
+                    measurements_view, output_view);
+              });
+        })
+        .wait_and_throw();
+    return result;
+  }
   auto policy = oneapi::dpl::execution::device_policy{queue};
 
   // Create a vector of measurement indices, which would be sorted.

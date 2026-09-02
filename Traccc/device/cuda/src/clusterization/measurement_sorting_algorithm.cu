@@ -16,6 +16,7 @@
 
 // VecMem include(s).
 #include <vecmem/containers/data/vector_buffer.hpp>
+#include <vecmem/containers/vector.hpp>
 #include <vecmem/utils/copy.hpp>
 
 // Thrust include(s).
@@ -34,6 +35,20 @@ __global__ void fill_measurement_surface_keys(
     vecmem::data::vector_view<device::measurement_surface_key_t> keys,
     vecmem::data::vector_view<unsigned int> indices) {
   device::fill_measurement_surface_keys(details::global_index1(), measurements, keys, indices);
+}
+
+/// Kernel wrapping @c traccc::device::flag_unsorted_measurements
+__global__ void flag_unsorted_measurements(
+    const edm::measurement_collection::const_view measurements,
+    vecmem::data::vector_view<unsigned int> unsorted) {
+  device::flag_unsorted_measurements(details::global_index1(), measurements, unsorted);
+}
+
+/// Kernel wrapping @c traccc::device::copy_measurements
+__global__ void copy_measurements(
+    const edm::measurement_collection::const_view input,
+    edm::measurement_collection::view output) {
+  device::copy_measurements(details::global_index1(), input, output);
 }
 
 /// Kernel wrapping @c traccc::device::fill_sorted_measurements
@@ -60,16 +75,39 @@ measurement_sorting_algorithm::operator()(
     return {};
   }
 
-  // Get the number of measurements. In an asynchronous way if possible.
-  // (The radix sorts need to know the number of elements on the host.)
+  // Get a convenience variable for the stream that we'll be using.
+  cudaStream_t stream = details::get_stream(m_stream);
+
+  // Check on the device whether the measurements are already sorted by
+  // surface identifier. (Frequently the case, e.g. when the cells were read
+  // grouped by surface.) The flag is read together with the size below.
+  static constexpr unsigned int BLOCK_SIZE = 256;
+  vecmem::data::vector_buffer<unsigned int> unsorted_flag(1u, m_mr.main);
+  m_copy.get().setup(unsorted_flag)->ignore();
+  m_copy.get().memset(unsorted_flag, 0)->ignore();
+  {
+    const unsigned int n_blocks =
+        (measurements_view.capacity() + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    kernels::flag_unsorted_measurements<<<n_blocks, BLOCK_SIZE, 0, stream>>>(
+        measurements_view, unsorted_flag);
+    TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
+  }
+
+  // Get the number of measurements and the sortedness flag. In an
+  // asynchronous way if possible, with a single synchronisation.
+  vecmem::vector<unsigned int> unsorted_flag_host(
+      1u, (m_mr.host != nullptr) ? m_mr.host : std::pmr::get_default_resource());
   edm::measurement_collection::const_view::size_type n_measurements = 0u;
   if (m_mr.host) {
     const vecmem::async_size size =
         m_copy.get().get_size(measurements_view, *(m_mr.host));
+    m_copy.get()(unsorted_flag, unsorted_flag_host)->wait();
     n_measurements = size.get();
   } else {
     n_measurements = m_copy.get().get_size(measurements_view);
+    m_copy.get()(unsorted_flag, unsorted_flag_host)->wait();
   }
+  const bool already_sorted = (unsorted_flag_host.at(0) == 0u);
 
   // Create the output buffer, sized exactly for the measurements. It is not
   // resizable, so that its size is known on the host without a device
@@ -80,8 +118,16 @@ measurement_sorting_algorithm::operator()(
     return result;
   }
 
-  // Get a convenience variable for the stream that we'll be using.
-  cudaStream_t stream = details::get_stream(m_stream);
+  const unsigned int n_blocks = (n_measurements + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+  // Fast path: the input is already sorted, so just copy it.
+  if (already_sorted) {
+    kernels::copy_measurements<<<n_blocks, BLOCK_SIZE, 0, stream>>>(
+        measurements_view, result);
+    TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
+    return result;
+  }
+
   // Set up the Thrust execution policy.
   auto policy =
       thrust::cuda::par_nosync(std::pmr::polymorphic_allocator(&(m_mr.main)))
@@ -94,8 +140,6 @@ measurement_sorting_algorithm::operator()(
   m_copy.get().setup(surface_keys)->ignore();
   m_copy.get().setup(indices)->ignore();
 
-  static constexpr unsigned int BLOCK_SIZE = 256;
-  const unsigned int n_blocks = (n_measurements + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
   // Sort the measurement indices by the surface identifier, using a stable
   // radix sort on primitive keys. The clusterization writes the measurements

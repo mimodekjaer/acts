@@ -31,6 +31,37 @@ TRACCC_HOST_DEVICE inline void fill_measurement_surface_keys(
   indices.at(globalIndex) = globalIndex;
 }
 
+TRACCC_HOST_DEVICE inline void flag_unsorted_measurements(
+    const global_index_t globalIndex,
+    const edm::measurement_collection::const_view& measurements_view,
+    vecmem::data::vector_view<unsigned int> unsorted_view) {
+  const edm::measurement_collection::const_device measurements{
+      measurements_view};
+  if (globalIndex + 1u >= measurements.size()) {
+    return;
+  }
+  if (measurements.surface_link().at(globalIndex + 1u) <
+      measurements.surface_link().at(globalIndex)) {
+    vecmem::device_vector<unsigned int> unsorted{unsorted_view};
+    unsorted.at(0) = 1u;
+  }
+}
+
+TRACCC_HOST_DEVICE inline void copy_measurements(
+    const global_index_t globalIndex,
+    const edm::measurement_collection::const_view& input_view,
+    edm::measurement_collection::view output_view) {
+  const edm::measurement_collection::const_device input{input_view};
+  if (globalIndex >= input.size()) {
+    return;
+  }
+  edm::measurement_collection::device output{output_view};
+  auto out = output.at(globalIndex);
+  out = input.at(globalIndex);
+  out.identifier() = globalIndex;
+  out.cluster_index() = globalIndex;
+}
+
 TRACCC_HOST_DEVICE inline void fill_sorted_measurements(
     const global_index_t globalIndex,
     const edm::measurement_collection::const_view& input_view,
