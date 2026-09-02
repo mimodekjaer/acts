@@ -321,7 +321,6 @@ class gbts_seeding_algorithm
     /// nConnectedEdgesMax; the second CCA levels buffer starts at this
     /// offset)
     const unsigned int* d_nConnectedEdges = nullptr;
-    /// Number of edges that survived re-indexing (0 == nothing to do)
   };
 
   /// Stage 1: count, bin, sort and characterise nodes. Fully asynchronous:
@@ -355,7 +354,6 @@ class gbts_seeding_algorithm
       const unsigned int nConnectedEdgesMax,
       const unsigned int* d_nConnectedEdges, const unsigned int nSp,
       const vecmem::data::vector_view<unsigned int>& counters_view,
-      vecmem::vector<unsigned int>& h_counters,
       unsigned int* cca_scratch) const;
 
   /// @}

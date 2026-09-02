@@ -24,7 +24,6 @@
 #include "traccc/gbts_seeding/device/gbts_convert_seeds.hpp"
 #include "traccc/gbts_seeding/device/gbts_count_terminus_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_fill_path_store.hpp"
-#include "traccc/gbts_seeding/device/gbts_fit_segments.hpp"
 #include "traccc/gbts_seeding/device/gbts_make_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_match_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_rebid_seeds_for_edges.hpp"
@@ -162,8 +161,8 @@ void gbts_seeding_algorithm::gbts_sort_node_keys_kernel(
   ::sycl::queue& squeue = details::get_queue(queue());
   squeue.throw_asynchronous();
 
-  // Order the nodes by their (eta bin, phi, spacepoint index bits) keys,
-  // carrying the full spacepoint index along as the value.
+  // Keys-only sort: the (eta bin, quantised phi) bits sit above the
+  // spacepoint index bits, so a full-key sort is stable in the index.
   oneapi::dpl::sort(oneapi::dpl::execution::device_policy{squeue},
                     payload.sort_keys.ptr(),
                     payload.sort_keys.ptr() + payload.nKeys);
@@ -341,7 +340,7 @@ void gbts_seeding_algorithm::gbts_count_terminus_edges_kernel(
                               payload.row_sizes.ptr());
   // Publish the total row count (last entry of the scanned row sizes).
   squeue.memcpy(payload.row_count,
-                d_row_sizes.data() + payload.nConnectedEdges - 1u,
+                payload.row_sizes.ptr() + payload.nConnectedEdges - 1u,
                 sizeof(unsigned int));
 }
 

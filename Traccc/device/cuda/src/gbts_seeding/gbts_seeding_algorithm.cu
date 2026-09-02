@@ -37,8 +37,6 @@
 #include <algorithm>
 #include <memory_resource>
 
-// CUDA include(s).
-
 // CUB include(s).
 #include <cub/device/device_radix_sort.cuh>
 
@@ -46,7 +44,6 @@
 #include <thrust/execution_policy.h>
 #include <thrust/iterator/transform_iterator.h>
 #include <thrust/scan.h>
-#include <thrust/sort.h>
 
 namespace traccc::cuda {
 
@@ -318,8 +315,6 @@ void gbts_seeding_algorithm::gbts_compress_graph_kernel(
                                  details::get_stream(stream())>>>(payload);
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
 }
-
-namespace {}  // namespace
 
 void gbts_seeding_algorithm::gbts_run_cca_iteration_kernel(
     const device::gbts_run_cca_iteration_payload& payload) const {

@@ -16,15 +16,9 @@
 
 // System include(s).
 #include <algorithm>
-#include <atomic>
-#include <cmath>
-#include <cstdint>
-#include <cstdlib>
 #include <cstring>
-#include <fstream>
 #include <functional>
 #include <memory_resource>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -50,17 +44,8 @@ auto gbts_seeding_algorithm::make_nodes(
   // Every per-node buffer is sized for the capacity of the spacepoint
   // collection; the actual counts are only ever read on the device.
   const unsigned int nSp = spacepoints.capacity();
-  // Layout of the zeroed buffer: [counters | edge CSR]
+  // The named counters are the head of the zeroed buffer (see operator()).
   unsigned int* d_counters = zero_buf.ptr();
-
-  // Check that the number of eta bins is compatible with the node sort key
-  // field width.
-  if (cfg.n_eta_bins > gbts_sort_key_max_eta_bins) {
-    TRACCC_ERROR("Too many eta bins (" << cfg.n_eta_bins << ") for the "
-                                       << gbts_sort_key_eta_bits
-                                       << "-bit node sort key field");
-    return node_making_output{};
-  }
 
   // 0. Upload the static tables (one copy).
   vecmem::data::vector_buffer<unsigned char> static_blob(
@@ -377,12 +362,9 @@ auto gbts_seeding_algorithm::extract_seeds(
     const unsigned int nConnectedEdgesMax,
     const unsigned int* d_nConnectedEdges, const unsigned int nSp,
     const vecmem::data::vector_view<unsigned int>& counters_view,
-    vecmem::vector<unsigned int>& h_counters, unsigned int* cca_scratch) const
-    -> edm::seed_collection::buffer {
+    unsigned int* cca_scratch) const -> edm::seed_collection::buffer {
   const gbts_seedfinder_config& cfg = m_config;
   unsigned int* d_counters = counters_view.ptr();
-  // The device counters of this stage are only used by the kernels.
-  static_cast<void>(h_counters);
 
   // 6. Find longest segments with the CCA (deterministic longest-path
   //    relaxation), then count the terminus rows.
@@ -456,8 +438,7 @@ auto gbts_seeding_algorithm::extract_seeds(
       2 * nSeeds, mr().main, vecmem::data::buffer_type::resizable);
   copy().setup(output_seeds)->ignore();
 
-  // Bidding rounds, hit bidding and seed conversion (fused by the CUDA
-  // backend into one cooperative kernel).
+  // Bidding rounds (none by default), hit bidding and seed conversion.
   const unsigned int edge_size = 1u + 2u + cfg.max_num_neighbours;
   gbts_finish_seeds_kernel(
       {nRows, nRowsGrid, row_count, nConnectedEdgesMax, d_nConnectedEdges,
@@ -653,6 +634,13 @@ auto gbts_seeding_algorithm::operator()(
     TRACCC_WARNING("No spacepoints were found in the event");
     return {0, mr().main};
   }
+  // The eta bin index has to fit into its node sort key field.
+  if (m_config.n_eta_bins > gbts_sort_key_max_eta_bins) {
+    TRACCC_ERROR("Too many eta bins (" << m_config.n_eta_bins << ") for the "
+                                       << gbts_sort_key_eta_bits
+                                       << "-bit node sort key field");
+    return {0, mr().main};
+  }
 
   // Capacity checks of the previous event (its counters were read back
   // asynchronously; the caller has synchronised since).
@@ -678,8 +666,9 @@ auto gbts_seeding_algorithm::operator()(
     m_have_last_counters = false;
   }
 
-  // One zeroed buffer for the named counters, the eta node counters, the
-  // edge CSR and the CCA scratch: a single memset per event.
+  // One zeroed buffer, [named counters | edge CSR (nSp + 1) | CCA scratch],
+  // so a single memset per event initialises everything the kernels do not
+  // initialise themselves.
   vecmem::data::vector_buffer<unsigned int> zero_buf(
       gbts_counter::nCounters + nSp + 1 +
           traccc::device::gbts_run_cca_scratch_size,
@@ -688,23 +677,22 @@ auto gbts_seeding_algorithm::operator()(
   copy().memset(zero_buf, 0)->ignore();
   const vecmem::data::vector_view<unsigned int> counters_view(
       gbts_counter::nCounters, zero_buf.ptr());
-  vecmem::vector<unsigned int> h_counters(gbts_counter::nCounters,
-                                          mr().host ? mr().host : &(mr().main));
+  unsigned int* cca_scratch = zero_buf.ptr() + gbts_counter::nCounters + nSp + 1;
 
   // Stage 1: bin spacepoints and create nodes with the parameters (eta, phi,
   // r, z). No synchronisation: an event without nodes produces no edges.
   node_making_output nodes = make_nodes(spacepoints, measurements, zero_buf);
 
   // Stage 2: graph. The per-node buffers are moved in so they are released
-  // when create_gbts_edges_from_nodes returns, along with all the edge/link
-  // transients.
+  // when create_edges returns, along with all the edge transients.
   graph_making_output graph = create_edges(
       std::move(nodes.node_params), std::move(nodes.node_phi),
       std::move(nodes.node_index), nodes.bin_rads, nodes.eta_bin_views_buf,
       nodes.pair_work_begin_buf, nodes.work_items_buf, nodes.nWorkMax,
       nodes.nSp, nodes.static_blob, zero_buf);
   if (graph.nConnectedEdgesMax == 0) {
-    // No connected edges survived graph making -> no seeds.
+    // A zero compacted-graph capacity (max_connected_edges_per_spacepoint
+    // == 0) leaves nothing for seed extraction.
     return {0, mr().main};
   }
 
@@ -712,8 +700,7 @@ auto gbts_seeding_algorithm::operator()(
   return extract_seeds(graph.output_graph, graph.levels, graph.has_parent,
                        graph.nei_cache, nodes.reducedSP,
                        graph.nConnectedEdgesMax, graph.d_nConnectedEdges, nSp,
-                       counters_view, h_counters,
-                       zero_buf.ptr() + gbts_counter::nCounters + nSp + 1);
+                       counters_view, cca_scratch);
 }
 
 }  // namespace traccc::device

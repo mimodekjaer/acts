@@ -22,7 +22,6 @@
 #include "traccc/gbts_seeding/device/gbts_convert_seeds.hpp"
 #include "traccc/gbts_seeding/device/gbts_count_terminus_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_fill_path_store.hpp"
-#include "traccc/gbts_seeding/device/gbts_fit_segments.hpp"
 #include "traccc/gbts_seeding/device/gbts_make_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_match_graph_edges.hpp"
 #include "traccc/gbts_seeding/device/gbts_rebid_seeds_for_edges.hpp"
@@ -251,8 +250,8 @@ void gbts_seeding_algorithm::gbts_bin_spacepoints_kernel(
 
 void gbts_seeding_algorithm::gbts_sort_node_keys_kernel(
     const device::gbts_sort_nodes_payload& payload) const {
-  // Order the nodes by their (eta bin, phi, spacepoint index bits) keys,
-  // carrying the full spacepoint index along as the value.
+  // Keys-only sort: the (eta bin, quantised phi) bits sit above the
+  // spacepoint index bits, so a full-key sort is stable in the index.
   details::sort(details::get_queue(queue()), mr(), payload.sort_keys.ptr(),
                 payload.sort_keys.ptr() + payload.nKeys);
 }
