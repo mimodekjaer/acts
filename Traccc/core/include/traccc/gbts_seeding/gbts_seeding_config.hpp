@@ -48,8 +48,7 @@ struct gbts_layerInfo {
 enum gbts_counter : unsigned int {
   nNodes,           // accepted spacepoints (gbts_sort_nodes)
   nWork,            // graph-making work items (gbts_build_edge_work_list)
-  workCursorCount,  // next work item to grab (gbts_make_graph_edges<false>)
-  workCursorFill,   // next work item to grab (gbts_make_graph_edges<true>)
+  workCursorFill,   // next overflow item to grab (gbts_make_graph_edges<true>)
   nEdges,           // edges kept by gbts_make_graph_edges (capped)
   nEdgesTotal,      // edges found by gbts_make_graph_edges (uncapped)
   nConnectedEdges,  // edges kept after gbts_reindex_edges (capped)
@@ -62,7 +61,7 @@ enum gbts_counter : unsigned int {
 struct gbts_consts {
   // CCA max iterations -> maximum seed length (in edges).
   static constexpr unsigned short max_cca_iter = 15;
-  // node cache in gbts_make_graph_edges.
+  // Inner-bin chunk size (= block size) of gbts_make_graph_edges.
   static constexpr unsigned short node_buffer_length = 128;
 
   // Per-edge offsets into the row-major output graph
@@ -155,8 +154,8 @@ struct gbts_match_graph_edges_params {
   float cut_ratio_sum_max = 1.3f;
 };
 
-// Host-side dphi window used to compute bin_pair_dphi before launching
-// device::gbts_make_graph_edges.
+// Delta-phi window of a bin pair, computed per work item by
+// device::gbts_make_graph_edges from the radial separation of the bins.
 struct gbts_dphi_window_params {
   // deltaPhi = min_delta_phi + dphi_coeff * maxDeltaR, where maxDeltaR is the
   // maximum radial separation of the pair of nodes.

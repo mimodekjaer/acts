@@ -53,8 +53,7 @@ struct gbts_match_graph_edges_payload {
 /// One thread per edge pair-tests the edge against every edge entering its
 /// outer node (a contiguous canonical index range) using the packed edge
 /// parameters, recording up to nMaxNei accepted neighbours in canonical
-/// order, marking the edge as "kept", and atomically incrementing the
-/// connection counter.
+/// order and marking the edge (and its neighbours) as "kept".
 ///
 /// @param[in] thread_id Thread identifier for the kernel launch
 /// @param[in] payload   The global memory payload

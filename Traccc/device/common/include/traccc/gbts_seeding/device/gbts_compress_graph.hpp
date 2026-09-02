@@ -24,8 +24,6 @@ struct gbts_compress_graph_payload {
   unsigned int nEdgesMax;
   /// Number of original (uncompressed) edges, on the device
   const unsigned int* nEdges;
-  /// Number of kept edges (size of one CCA levels buffer)
-  const unsigned int* nConnectedEdges;
   /// Capacity of the compacted graph (edges with a compact index beyond it
   /// are dropped)
   unsigned int nConnectedEdgesMax;
@@ -48,7 +46,7 @@ struct gbts_compress_graph_payload {
   vecmem::data::vector_view<unsigned int> output_graph;
   /// Output: per-edge "has a settled parent" CCA mark, zero-initialised
   vecmem::data::vector_view<unsigned char> has_parent;
-  /// Output: CCA levels (2 * nConnectedEdges), initialised to 1
+  /// Output: CCA levels (nConnectedEdgesMax entries), initialised to 1
   vecmem::data::vector_view<unsigned char> levels;
   /// Output: per compacted edge (neighbour count, first three neighbours):
   /// the CCA sweeps read this 16-byte record instead of the graph row
@@ -60,7 +58,8 @@ struct gbts_compress_graph_payload {
 /// Each thread processes one original edge; if it survived re-indexing, the
 /// thread writes a record at its compact slot containing the
 /// source/destination original-SP indices, the neighbour count, and up to
-/// nMaxNei remapped neighbour indices.
+/// nMaxNei remapped neighbour indices (neighbours beyond the capacity are
+/// dropped with the edges they refer to).
 ///
 /// @param[in] thread_id Thread identifier for the kernel launch
 /// @param[in] payload   The global memory payload

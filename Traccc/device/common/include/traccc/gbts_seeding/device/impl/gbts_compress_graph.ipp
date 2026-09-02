@@ -66,22 +66,31 @@ TRACCC_HOST_DEVICE inline void gbts_compress_graph(
     d_output_graph[pos + gbts_consts::node2] = d_orig_node_index[edge_nodes.y];
 
     const unsigned char nNei = d_num_neighbours[globalIndex];
-    d_output_graph[pos + gbts_consts::nNei] = nNei;
     const unsigned int nei_pos = payload.nMaxNei * globalIndex;
-    uint4 cache{nNei, 0u, 0u, 0u};
+    // Neighbours with a compact index beyond the capacity were dropped above
+    // and are dropped from the row too, so every index in the compacted
+    // graph stays in bounds.
+    unsigned int kept = 0u;
+    uint4 cache{0u, 0u, 0u, 0u};
     for (unsigned int k = 0u; k < nNei; k++) {
       // Every recorded neighbour is itself kept (match flagged it).
       const unsigned int nei =
           static_cast<unsigned int>(d_reIndexer[d_neighbours[nei_pos + k]] - 1);
-      d_output_graph[pos + gbts_consts::nei_start + k] = nei;
-      if (k == 0u) {
+      if (nei >= payload.nConnectedEdgesMax) {
+        continue;
+      }
+      d_output_graph[pos + gbts_consts::nei_start + kept] = nei;
+      if (kept == 0u) {
         cache.y = nei;
-      } else if (k == 1u) {
+      } else if (kept == 1u) {
         cache.z = nei;
-      } else if (k == 2u) {
+      } else if (kept == 2u) {
         cache.w = nei;
       }
+      ++kept;
     }
+    d_output_graph[pos + gbts_consts::nNei] = kept;
+    cache.x = kept;
     d_nei_cache[static_cast<unsigned int>(newIdx)] = cache;
   }
 }

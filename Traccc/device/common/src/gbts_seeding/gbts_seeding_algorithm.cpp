@@ -223,7 +223,7 @@ auto gbts_seeding_algorithm::create_edges(
   gbts_make_graph_edges_payload make_graph_edges_payload{
       nWorkMax,
       d_counters + gbts_counter::nWork,
-      d_counters + gbts_counter::workCursorCount,
+      nullptr,  // work cursor (fill pass only)
       work_items_buf,
       pair_work_begin_buf,
       bin_pairs_buf,
@@ -312,24 +312,24 @@ auto gbts_seeding_algorithm::create_edges(
       nConnectedEdgesMax * nIntsPerEdge, mr().main);
   copy().setup(output_graph_buf)->ignore();
 
-  // CCA levels (double buffered); initialised to 1 by the compression
-  // kernel so a level counts the maximum number of edge segments for a seed
-  // originating at the edge.
+  // CCA levels, initialised to 1 by the compression kernel so a level counts
+  // the maximum number of edge segments for a seed originating at the edge.
   vecmem::data::vector_buffer<unsigned char> levels_buf(nConnectedEdgesMax,
                                                         mr().main);
   copy().setup(levels_buf)->ignore();
-  // Per-edge "has a settled parent" CCA marks (zero-initialised for the
-  // kept edges by the compression kernel).
+  // Per-edge (neighbour count, first three neighbours) read by the CCA.
   vecmem::data::vector_buffer<uint4> nei_cache_buf(nConnectedEdgesMax,
                                                    mr().main);
   copy().setup(nei_cache_buf)->ignore();
+  // Per-edge "has a settled parent" CCA marks (zero-initialised for the
+  // kept edges by the compression kernel).
   vecmem::data::vector_buffer<unsigned char> has_parent_buf(nConnectedEdgesMax,
                                                             mr().main);
   copy().setup(has_parent_buf)->ignore();
 
   gbts_compress_graph_kernel(
-      {nEdgesMax, d_counters + gbts_counter::nEdges, d_nConnectedEdges,
-       nConnectedEdgesMax, cfg.max_num_neighbours, node_index, edge_nodes_buf,
+      {nEdgesMax, d_counters + gbts_counter::nEdges, nConnectedEdgesMax,
+       cfg.max_num_neighbours, node_index, edge_nodes_buf,
        num_neighbours_buf, neighbours_buf, reIndexer_buf, output_graph_buf,
        has_parent_buf, levels_buf, nei_cache_buf});
 
@@ -631,6 +631,10 @@ auto gbts_seeding_algorithm::operator()(
   TRACCC_DEBUG("nSp (capacity) " << nSp);
   if (nSp == 0) {
     TRACCC_WARNING("No spacepoints were found in the event");
+    return {0, mr().main};
+  }
+  if (m_nBinPairs == 0u) {
+    TRACCC_ERROR("No (valid) bin pairs in the GBTS configuration");
     return {0, mr().main};
   }
   // The eta bin index has to fit into its node sort key field.

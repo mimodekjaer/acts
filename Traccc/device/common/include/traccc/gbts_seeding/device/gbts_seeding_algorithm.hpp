@@ -317,9 +317,8 @@ class gbts_seeding_algorithm
     vecmem::data::vector_buffer<unsigned char> has_parent;
     /// Capacity of the compacted graph (sizes output_graph / levels)
     unsigned int nConnectedEdgesMax = 0;
-    /// Number of edges that survived re-indexing, on the device (capped at
-    /// nConnectedEdgesMax; the second CCA levels buffer starts at this
-    /// offset)
+    /// Number of edges that survived re-indexing, on the device (the
+    /// kernels clamp it to nConnectedEdgesMax)
     const unsigned int* d_nConnectedEdges = nullptr;
   };
 
@@ -330,7 +329,7 @@ class gbts_seeding_algorithm
       const edm::measurement_collection::const_view& measurements,
       vecmem::data::vector_buffer<unsigned int>& zero_buf) const;
 
-  /// Stage 2: build, link, match and compress the edge graph. The per-node
+  /// Stage 2: build, match and compress the edge graph. The per-node
   /// buffers are taken by value so they are released when this stage returns.
   graph_making_output create_edges(
       vecmem::data::vector_buffer<float4> node_params,

@@ -34,8 +34,8 @@ struct gbts_make_graph_edges_payload {
   unsigned int nWorkMax;
   /// Number of work items, on the device (from gbts_build_edge_work_list)
   const unsigned int* nWork;
-  /// In/out: next work item to process; the blocks grab work items from it
-  /// (must be zero at launch; one per pass)
+  /// In/out (fill pass only): next overflow item to process; the blocks
+  /// grab the re-walked items from it (must be zero at launch)
   unsigned int* work_cursor;
   /// Per work item: (bin-pair index, chunk index within bin 1)
   vecmem::data::vector_view<const uint2> work_items;
@@ -105,16 +105,20 @@ struct gbts_make_graph_edges_payload {
 
 /// (Shared Event Data) Payload for the @c traccc::device::gbts_make_graph_edges
 /// function
-///
-/// Shared-memory scratch: one slab of bin-2 (outer) nodes.
 struct gbts_make_graph_edges_shared_payload {
-  /// gbts_make_graph_edges_scratch_size unsigned ints: [0] the work item
-  /// grabbed by the block, [9] the block-wide maximum edge count
+  /// gbts_make_graph_edges_scratch_size unsigned ints, see the slot
+  /// constants below
   vecmem::data::vector_view<unsigned int> work_slot;
 };
 
 /// Number of entries of gbts_make_graph_edges_shared_payload::work_slot
 inline constexpr unsigned int gbts_make_graph_edges_scratch_size = 16u;
+/// Slots of the shared work_slot array: the work item grabbed by the block
+/// (fill pass) and the block-wide maximum edge count (count pass). Each use
+/// alternates between its slot and the next one, so a slot is never
+/// rewritten before every thread of the block has read it.
+inline constexpr unsigned int gbts_make_graph_edges_slot_work = 0u;
+inline constexpr unsigned int gbts_make_graph_edges_slot_max_count = 8u;
 
 /// Accepted outer nodes recorded per (work item, thread) by the count pass
 inline constexpr unsigned int gbts_make_graph_edges_scratch_edges = 16u;
@@ -122,14 +126,18 @@ inline constexpr unsigned int gbts_make_graph_edges_scratch_edges = 16u;
 /// Maximum number of work items covered by the edge scratch (memory cap:
 /// scratch_edges * block size * 4 bytes per item)
 inline constexpr unsigned int gbts_make_graph_edges_max_scratch_items = 16384u;
+// A replayable item is only ever replayed by the block of the same index.
+static_assert(gbts_make_graph_edges_max_fill_blocks >=
+                  gbts_make_graph_edges_max_scratch_items,
+              "every item with a scratch record needs a fill block");
 
 /// @brief Create candidate edges between node pairs in compatible eta bins.
 ///
 /// The blocks stride over the work items; a work item is a bin pair and one
 /// gbts_consts::node_buffer_length-sized chunk of the pair's inner bin. Every
-/// thread owns one inner node of the chunk and walks the phi-sorted outer bin,
-/// which is streamed through shared memory in slabs, testing the nodes inside
-/// its delta-phi window against the geometric and kinematic cuts.
+/// thread owns one inner node of the chunk and walks the phi-sorted outer bin
+/// directly in global memory, testing the nodes inside its delta-phi window
+/// against the geometric and kinematic cuts.
 ///
 /// The function is run twice with the same decomposition:
 /// - @c fill == false counts the edges of every thread (edge_counts) and
