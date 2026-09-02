@@ -66,3 +66,9 @@ traccc_add_executable( truth_fitting_example_cuda "apps/truth_fitting_example_cu
                   traccc::core traccc::device_common traccc::cuda_utils traccc::cuda
                   traccc::options traccc::examples_common
 )
+traccc_add_executable( dump_seeding_cuda "apps/dump_seeding_cuda.cpp"
+   LINK_LIBRARIES vecmem::core vecmem::cuda traccc::io traccc::performance
+                  traccc::core traccc::device_common traccc::cuda_utils traccc::cuda
+                  traccc::options detray::detectors detray::io
+                  traccc::examples_common
+)
