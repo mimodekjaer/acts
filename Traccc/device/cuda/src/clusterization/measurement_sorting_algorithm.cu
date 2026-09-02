@@ -81,14 +81,14 @@ measurement_sorting_algorithm::operator()(
     n_measurements = m_copy.get().get_size(measurements_view);
   }
 
-  // Create the output buffer, sized exactly for the measurements.
-  output_type result{n_measurements, m_mr.main,
-                     vecmem::data::buffer_type::resizable};
+  // Create the output buffer, sized exactly for the measurements. It is not
+  // resizable, so that its size is known on the host without a device
+  // synchronisation.
+  output_type result{n_measurements, m_mr.main};
   m_copy.get().setup(result)->ignore();
   if (n_measurements == 0) {
     return result;
   }
-  m_copy.get()(measurements_view.size(), result.size())->ignore();
 
   // Get a convenience variable for the stream that we'll be using.
   cudaStream_t stream = details::get_stream(m_stream);
