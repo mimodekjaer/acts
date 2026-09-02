@@ -151,8 +151,11 @@ TRACCC_HOST_DEVICE inline void aggregate_cluster(
   out.local_position() = utils::to_float_array<default_algebra>(position);
   out.local_variance() = utils::to_float_array<default_algebra>(var);
   out.surface_link() = module_cd.geometry_id();
-  // Set a unique identifier for the measurement.
-  out.identifier() = link;
+  // Set a unique identifier for the measurement: the index of the first
+  // (root) cell of the cluster. Unlike the output slot (@c link), which is
+  // assigned with an atomic counter, this value is deterministic, so the
+  // measurement sorting can use it to produce a deterministic order.
+  out.identifier() = cid + start;
   // Set the dimensionality of the measurement.
   out.dimensions() = module_dd.dimensions();
   // Set the measurement's subspace.
