@@ -265,3 +265,31 @@ common headers).
 
 Speed-up: 3.3x on the "seeding" throughput stage, of which ~1.5 ms/event is now the
 (unchanged) GBTS seeding.
+
+## Attempt 12: aggregation kernel block size 128 / 64 instead of 256 — neutral (FAILED)
+
+`aggregate_clusters` 96.2 / 96.4 us vs 96.5 us. Reverted.
+
+## Attempt 13: hoist the jagged bin-edge vectors out of the aggregation cell loop — neutral (FAILED)
+
+`aggregate_clusters` 95.8 us vs 96.5 us (noise); bit-identical output. Reverted to avoid
+duplicating `position_from_cell`. The kernel is bound by the dependent-load chain per
+cluster (SoA cell loads, `next_cell`, bin edges), not by descriptor reloads.
+
+## Portability check: Alpaka backend (CUDA accelerator) compiled and validated
+
+A separate build with the `alpaka-fp32-cuda` preset (same detectors, sm_90) compiled the
+Alpaka versions of all changed algorithms (`traccc_throughput_mt_alpaka` target). A new
+`traccc_dump_seeding_alpaka` helper (same as the CUDA one) dumped events 0-4:
+
+* measurement and spacepoint lines bit-identical between the CUDA and the Alpaka builds
+  (0 differing lines), track parameters identical on all common seeds;
+* note for harness writers: the algorithms enqueue everything on the Alpaka queue, so the
+  copy object handed to them must be the queue-ordered `vecmem_objects::async_copy()`
+  (with the synchronous `copy()` the size copies raced with the scans and two events had
+  wrong spacepoints). The full-chain and sequential examples already use the async copy.
+* `traccc_throughput_mt_alpaka` (same command, 300 events): 14.15 ms/event. (No Alpaka
+  baseline was measured; the Alpaka backend synchronises much more than the CUDA one.)
+
+SYCL and HIP could not be compiled here (no SYCL compiler / ROCm); their changes mirror the
+Alpaka/CUDA ones and were reviewed by hand.

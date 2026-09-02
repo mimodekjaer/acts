@@ -79,3 +79,6 @@ add_test(
         traccc_throughput_mt_alpaka --finding-run-smoother=none
         --read-bfield-from-file --cold-run-events=1 --processed-events=1
 )
+traccc_add_executable( dump_seeding_alpaka "apps/dump_seeding_alpaka.cpp"
+    LINK_LIBRARIES ${LIBRARIES} ${DETRAY}
+)
