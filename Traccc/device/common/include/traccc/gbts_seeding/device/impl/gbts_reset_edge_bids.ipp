@@ -77,8 +77,6 @@ TRACCC_HOST_DEVICE inline void gbts_reset_edge_bids(
     } else {
       // definite fake
       d_seed_ambiguity[prop_idx] = -2;
-      vecmem::device_atomic_ref<unsigned int>(*payload.nRejectedPropsCounter)
-          .fetch_add(1u);
     }
   }
 }

@@ -19,7 +19,7 @@
 namespace traccc::device {
 
 /// Payload of the whole seed-vs-edge bidding sequence: the initial bid
-/// (gbts_bid_seeds_for_edges) followed by nRounds rounds of
+/// (placed by gbts_fill_path_store) followed by nRounds rounds of
 /// gbts_rebid_seeds_for_edges + gbts_reset_edge_bids. The edge bids are
 /// double buffered: the initial bid uses half 0, round r uses half
 /// (r + 1) % 2 and its reset zeroes the other half for the next round.
@@ -47,8 +47,6 @@ struct gbts_seed_bidding_payload {
   /// In/out: per-edge highest-bidder seed proposal, 2 * nConnectedEdges
   /// entries (both halves zeroed on input)
   vecmem::data::vector_view<unsigned long long int> edge_bids;
-  /// In/out: global atomic counter of rejected proposals
-  unsigned int* nRejectedPropsCounter;
 };
 
 /// One half of the double-buffered edge bids
@@ -67,8 +65,7 @@ gbts_make_rebid_seeds_for_edges_payload(const gbts_seed_bidding_payload& p,
   return {p.nRows,          p.nRowsGrid,
           p.row_count,      p.path_store,
           p.seed_proposals, gbts_edge_bids_half(p, (round + 1u) % 2u),
-          p.seed_ambiguity, p.nRejectedPropsCounter,
-          first_round};
+          p.seed_ambiguity, first_round};
 }
 
 /// Payload of the reset of round @c round
@@ -85,8 +82,7 @@ gbts_make_reset_edge_bids_payload(const gbts_seed_bidding_payload& p,
           p.seed_proposals,
           gbts_edge_bids_half(p, half),
           gbts_edge_bids_half(p, 1u - half),
-          p.seed_ambiguity,
-          p.nRejectedPropsCounter};
+          p.seed_ambiguity};
 }
 
 }  // namespace traccc::device

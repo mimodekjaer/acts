@@ -8,11 +8,9 @@
 #pragma once
 
 // Project include(s).
-#include "traccc/gbts_seeding/device/gbts_fit_segments.hpp"
-
-// Project include(s).
 #include "traccc/definitions/qualifiers.hpp"
 #include "traccc/device/concepts/thread_id.hpp"
+#include "traccc/gbts_seeding/device/gbts_fit_segments.hpp"
 #include "traccc/gbts_seeding/gbts_seeding_config.hpp"
 #include "traccc/gbts_seeding/gbts_types.hpp"
 
@@ -170,8 +168,6 @@ TRACCC_HOST_DEVICE inline void gbts_fill_path_store(
     }
     const int qual = static_cast<int>(fit_params.qual_scale * state1.m_J);
     d_seed_proposals[row] = int2{qual, static_cast<int>(row)};
-    vecmem::device_atomic_ref<unsigned int>(*payload.nPropsCounter)
-        .fetch_add(1u);
 
     // Initial bid for the row's own edge (the ambiguity flags were zeroed
     // by the terminus kernel; the marks below only ever write -1, so they

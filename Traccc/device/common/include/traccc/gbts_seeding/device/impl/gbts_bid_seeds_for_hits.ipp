@@ -51,8 +51,6 @@ TRACCC_HOST_DEVICE inline void gbts_bid_seeds_for_hits(
       d_seed_ambiguity[prop_idx] = 1;
     } else if (ambi == -1) {
       d_seed_ambiguity[prop_idx] = -2;
-      vecmem::device_atomic_ref<unsigned int>(*payload.nRejectedPropsCounter)
-          .fetch_add(1u);
       continue;
     } else if (ambi == -2) {
       continue;

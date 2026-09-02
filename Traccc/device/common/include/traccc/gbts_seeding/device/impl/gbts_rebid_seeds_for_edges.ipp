@@ -49,9 +49,6 @@ TRACCC_HOST_DEVICE inline void gbts_rebid_seeds_for_edges(
         d_seed_ambiguity[prop_idx] = 1;
       } else {
         d_seed_ambiguity[prop_idx] = -2;
-        // count rejected props to calculate nSeeds
-        vecmem::device_atomic_ref<unsigned int>(*payload.nRejectedPropsCounter)
-            .fetch_add(1u);
       }
       continue;
     }

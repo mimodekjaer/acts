@@ -22,7 +22,7 @@
 namespace traccc::device {
 
 /// Scratch of the CCA sweeps (gbts_run_cca_iteration_payload::counters):
-/// [0, max_cca_iter) the number of blocks that changed something in sweep i,
+/// [0, max_cca_iter] the number of blocks that changed something in sweep i,
 /// [gbts_run_cca_row_count_slot] the path-store row count published by the
 /// terminus step. Must be zero at the start of the event.
 inline constexpr unsigned int gbts_run_cca_row_count_slot =
@@ -43,7 +43,7 @@ struct gbts_run_cca_iteration_payload {
   const unsigned int* d_nConnectedEdges;
   /// Maximum number of neighbours retained per edge
   unsigned int max_num_neighbours;
-  /// Minimum path length required for an edge to be considered active
+  /// Minimum level (path length in edges) of a seed root
   unsigned char minLevel;
   /// Compacted graph from gbts_compress_graph
   vecmem::data::vector_view<const unsigned int> output_graph;

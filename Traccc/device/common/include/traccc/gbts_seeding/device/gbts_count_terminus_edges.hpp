@@ -20,7 +20,7 @@ namespace traccc::device {
 /// (Global Event Data) Payload for the @c
 /// traccc::device::gbts_count_terminus_edges function
 struct gbts_count_terminus_edges_payload {
-  /// Number of edges in the compacted graph
+  /// Capacity of the compacted graph
   unsigned int nConnectedEdges;
   /// Device-side number of edges in the compacted graph (clamped to
   /// nConnectedEdges, the capacity, by the kernels)
@@ -40,7 +40,7 @@ struct gbts_count_terminus_edges_payload {
   /// Output: per-spacepoint hit bids, zeroed
   vecmem::data::vector_view<unsigned long long int> hit_bids;
   /// Output: total number of path-store rows (written by the launcher after
-  /// the scan, or by a fused implementation)
+  /// the scan)
   unsigned int* row_count;
   /// Capacity of the path store (rows)
   unsigned int nRows;

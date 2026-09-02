@@ -26,14 +26,14 @@ struct gbts_reset_edge_bids_payload {
   unsigned int nRowsGrid;
   /// Device-side number of rows (clamped to nRows by the kernel)
   const unsigned int* row_count;
-  /// Number of connected edges (size of one edge-bid buffer)
+  /// Capacity of one edge-bid buffer
   unsigned int nConnectedEdges;
   /// Device-side number of connected edges (only that many next-round bids
   /// are zeroed)
   const unsigned int* d_nConnectedEdges;
   /// Per-path (edge index, parent path-store index or -1) entries
   vecmem::data::vector_view<const int2> path_store;
-  /// In/out: per-seed-proposal (path_store index, level)
+  /// In/out: per-seed-proposal (quality, path-store index)
   vecmem::data::vector_view<int2> seed_proposals;
   /// In/out: per-edge highest-bidder seed proposal (cleared between
   /// rounds)
@@ -42,16 +42,12 @@ struct gbts_reset_edge_bids_payload {
   vecmem::data::vector_view<unsigned long long int> edge_bids_next;
   /// In/out: per-seed-proposal ambiguity tag
   vecmem::data::vector_view<char> seed_ambiguity;
-  /// In/out: global atomic counter of rejected proposals
-  unsigned int* nRejectedPropsCounter;
 };
 
 /// @brief Mark a losing seed proposal against the current edge bids.
 ///
-/// Processes one proposal (the grid-stride loop lives in the kernel wrapper):
-/// compares it against the winning bid recorded in the edge bids, and either
-/// updates the ambiguity tag or atomically increments the rejected counter
-/// if it loses.
+/// Grid-stride loop over the proposals: compares each one against the
+/// winning bids recorded in the edge bids and updates its ambiguity tag.
 ///
 /// @param[in] thread_id Thread identifier for the kernel launch
 /// @param[in] payload   The global memory payload

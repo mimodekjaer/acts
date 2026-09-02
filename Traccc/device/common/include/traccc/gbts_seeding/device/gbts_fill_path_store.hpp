@@ -27,7 +27,7 @@ struct gbts_fill_path_store_payload {
   unsigned int nRowsGrid;
   /// Device-side number of rows (clamped to nRows by the kernel)
   const unsigned int* row_count;
-  /// Number of edges in the compacted graph
+  /// Capacity of the compacted graph
   unsigned int nConnectedEdges;
   /// Device-side number of edges in the compacted graph (clamped)
   const unsigned int* d_nConnectedEdges;
@@ -55,8 +55,6 @@ struct gbts_fill_path_store_payload {
   unsigned char minLevel;
   /// Reduced (x, y, z, w) per original spacepoint
   vecmem::data::vector_view<const float4> reducedSP;
-  /// In/out: global atomic count of accepted seed proposals
-  unsigned int* nPropsCounter;
   /// Curvature / pT / chi-squared cut parameters
   traccc::gbts_fit_segments_params gbts_fit_segments_params;
   /// Maximum |z0| at the beamline for extrapolation cuts

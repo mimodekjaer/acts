@@ -52,8 +52,6 @@ enum gbts_counter : unsigned int {
   nEdges,           // edges kept by gbts_make_graph_edges (capped)
   nEdgesTotal,      // edges found by gbts_make_graph_edges (uncapped)
   nConnectedEdges,  // edges kept after gbts_reindex_edges (capped)
-  nProps,           // seed proposals from gbts_fill_path_store
-  nRejected,        // rejected seed proposals
   nOverflowItems,   // work items the fill pass has to re-walk
   nCounters         // total number of counters
 };
@@ -265,8 +263,7 @@ struct gbts_seedfinder_config {
   traccc::gbts_make_graph_edges_params gbts_make_graph_edges_params{};
   traccc::gbts_match_graph_edges_params gbts_match_graph_edges_params{};
   traccc::gbts_dphi_window_params gbts_dphi_window_params{};
-  traccc::gbts_bin_spacepoints_params
-      gbts_bin_spacepoints_params{};
+  traccc::gbts_bin_spacepoints_params gbts_bin_spacepoints_params{};
   traccc::gbts_fit_segments_params gbts_fit_segments_params{};
   traccc::gbts_convert_seeds_params gbts_convert_seeds_params{};
 

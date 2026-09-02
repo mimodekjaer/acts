@@ -28,11 +28,9 @@ struct gbts_convert_seeds_payload {
   unsigned int nRowsGrid;
   /// Device-side number of rows (clamped to nRows by the kernel)
   const unsigned int* row_count;
-  /// Number of accepted seeds (nProps - nRejectedProps)
-  unsigned int nSeeds;
   /// Maximum number of neighbours retained per edge
   unsigned int max_num_neighbours;
-  /// Per-seed-proposal (path_store index, level)
+  /// Per-seed-proposal (quality, path-store index), (-, -1) for an empty row
   vecmem::data::vector_view<const int2> seed_proposals;
   /// Per-seed-proposal ambiguity tag
   vecmem::data::vector_view<const char> seed_ambiguity;
@@ -40,9 +38,10 @@ struct gbts_convert_seeds_payload {
   vecmem::data::vector_view<const int2> path_store;
   /// Compacted graph from gbts_compress_graph
   vecmem::data::vector_view<const unsigned int> output_graph;
-  /// Reduced (x, y, z, r) per original spacepoint
+  /// Reduced (x, y, z, width) per original spacepoint
   vecmem::data::vector_view<const float4> reducedSP;
-  /// Output: 3-SP seeds appended to this resizable buffer
+  /// Output: 3-SP seeds appended to this resizable buffer (at most three
+  /// per proposal)
   edm::seed_collection::view output_seeds;
   /// Per-hit highest-bidder seed (read for dropout decisions)
   vecmem::data::vector_view<unsigned long long int> hit_bids;

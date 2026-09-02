@@ -140,7 +140,8 @@ auto gbts_seeding_algorithm::make_nodes(
   copy().setup(work_items_buf)->ignore();
 
   gbts_build_edge_work_list_kernel(
-      {m_nBinPairs, gbts_consts::node_buffer_length, bin_pairs_buf, eta_bin_views_buf, pair_work_begin_buf, work_items_buf,
+      {m_nBinPairs, gbts_consts::node_buffer_length, bin_pairs_buf,
+       eta_bin_views_buf, pair_work_begin_buf, work_items_buf,
        d_counters + gbts_counter::nWork});
 
   return node_making_output{std::move(reducedSP_buf),
@@ -327,11 +328,11 @@ auto gbts_seeding_algorithm::create_edges(
                                                             mr().main);
   copy().setup(has_parent_buf)->ignore();
 
-  gbts_compress_graph_kernel(
-      {nEdgesMax, d_counters + gbts_counter::nEdges, nConnectedEdgesMax,
-       cfg.max_num_neighbours, node_index, edge_nodes_buf,
-       num_neighbours_buf, neighbours_buf, reIndexer_buf, output_graph_buf,
-       has_parent_buf, levels_buf, nei_cache_buf});
+  gbts_compress_graph_kernel({nEdgesMax, d_counters + gbts_counter::nEdges,
+                              nConnectedEdgesMax, cfg.max_num_neighbours,
+                              node_index, edge_nodes_buf, num_neighbours_buf,
+                              neighbours_buf, reIndexer_buf, output_graph_buf,
+                              has_parent_buf, levels_buf, nei_cache_buf});
 
   // The kept-edge count must outlive this stage's transient buffers: keep
   // a device-side copy in the (persistent) counters.
@@ -363,7 +364,6 @@ auto gbts_seeding_algorithm::extract_seeds(
     const vecmem::data::vector_view<unsigned int>& counters_view,
     unsigned int* cca_scratch) const -> edm::seed_collection::buffer {
   const gbts_seedfinder_config& cfg = m_config;
-  unsigned int* d_counters = counters_view.ptr();
 
   // 6. Find longest segments with the CCA (deterministic longest-path
   //    relaxation), then count the terminus rows.
@@ -392,12 +392,12 @@ auto gbts_seeding_algorithm::extract_seeds(
   vecmem::data::vector_buffer<char> seed_ambiguity_buf(nRows, mr().main);
   copy().setup(seed_ambiguity_buf)->ignore();
 
-  // CCA sweeps + finishing pass, terminus counting (also zeroes the bids and
-  // the ambiguity flags) and the row-size scan.
-  gbts_run_cca_and_count_kernel(
-      {nConnectedEdgesMax, d_nConnectedEdges, cfg.max_num_neighbours,
-       cfg.minLevel, output_graph, levels_buf, outgoing_paths_buf, has_parent,
-       0u, cca_scratch, nei_cache},
+  // CCA sweeps + finishing pass, then the terminus counting (also zeroes the
+  // bids and the ambiguity flags) and the row-size scan.
+  run_cca({nConnectedEdgesMax, d_nConnectedEdges, cfg.max_num_neighbours,
+           cfg.minLevel, output_graph, levels_buf, outgoing_paths_buf,
+           has_parent, 0u, cca_scratch, nei_cache});
+  gbts_count_terminus_edges_kernel(
       {nConnectedEdgesMax, d_nConnectedEdges, outgoing_paths_buf, has_parent,
        row_sizes_buf, edge_bids_buf, hit_bids_buf,
        cca_scratch + traccc::device::gbts_run_cca_row_count_slot, nRows,
@@ -408,7 +408,7 @@ auto gbts_seeding_algorithm::extract_seeds(
   const unsigned int* row_count =
       cca_scratch + traccc::device::gbts_run_cca_row_count_slot;
   // Launch-size hint only (the kernels grid-stride to the device count).
-  const unsigned int nRowsGrid = nSp / 2u;
+  const unsigned int nRowsGrid = std::max(nSp / 2u, 1u);
 
   vecmem::data::vector_buffer<int2> path_store_buf(nRows, mr().main);
   copy().setup(path_store_buf)->ignore();
@@ -421,34 +421,42 @@ auto gbts_seeding_algorithm::extract_seeds(
        cfg.max_num_neighbours, path_store_buf, output_graph, levels_buf,
        outgoing_paths_buf, row_sizes_buf, seed_proposals_buf,
        seed_ambiguity_buf, cfg.minLevel, reducedSP,
-       d_counters + gbts_counter::nProps, cfg.gbts_fit_segments_params,
-       cfg.gbts_make_graph_edges_params.max_z0,
+       cfg.gbts_fit_segments_params, cfg.gbts_make_graph_edges_params.max_z0,
        vecmem::data::vector_view<unsigned long long int>(nConnectedEdgesMax,
                                                          edge_bids_buf.ptr())});
 
-  // 7. Disambiguate seeds through the initial bid and repeated seed-vs-edge
-  //    bidding rounds. The proposal / rejection counts are not read back:
-  //    every later kernel loops over the rows and the seed output is sized
-  //    by the (upper bound) row count, which saves two synchronisations.
-  // 8. Output buffer (at most two seeds per proposal, at most one proposal
-  //    per row).
-  const unsigned int nSeeds = nRows;
+  // 7. Disambiguate the seeds: the initial bid (placed by the fill kernel),
+  //    the optional bidding rounds, then the hit bidding. No proposal count
+  //    is read back: every kernel loops over the rows and the seed output is
+  //    sized by the row capacity (at most one proposal per row, at most
+  //    three seeds per proposal; two per proposal is the historical bound).
   edm::seed_collection::buffer output_seeds(
-      2 * nSeeds, mr().main, vecmem::data::buffer_type::resizable);
+      2 * nRows, mr().main, vecmem::data::buffer_type::resizable);
   copy().setup(output_seeds)->ignore();
 
-  // Bidding rounds (none by default), hit bidding and seed conversion.
+  const gbts_seed_bidding_payload bidding{nRows,
+                                          nRowsGrid,
+                                          row_count,
+                                          nConnectedEdgesMax,
+                                          d_nConnectedEdges,
+                                          cfg.edge_bidding_rounds,
+                                          path_store_buf,
+                                          seed_proposals_buf,
+                                          seed_ambiguity_buf,
+                                          edge_bids_buf};
+  if (bidding.nRounds > 0u) {
+    run_bidding_rounds(bidding);
+  }
   const unsigned int edge_size = 1u + 2u + cfg.max_num_neighbours;
-  gbts_finish_seeds_kernel(
-      {nRows, nRowsGrid, row_count, nConnectedEdgesMax, d_nConnectedEdges,
-       cfg.edge_bidding_rounds, path_store_buf, seed_proposals_buf,
-       seed_ambiguity_buf, edge_bids_buf, d_counters + gbts_counter::nRejected},
-      {nRows, nRowsGrid, row_count, nSeeds, edge_size, output_graph,
-       seed_proposals_buf, path_store_buf, seed_ambiguity_buf, hit_bids_buf,
-       d_counters + gbts_counter::nRejected},
-      {nRows, nRowsGrid, row_count, nSeeds, cfg.max_num_neighbours,
-       seed_proposals_buf, seed_ambiguity_buf, path_store_buf, output_graph,
-       reducedSP, output_seeds, hit_bids_buf, cfg.gbts_convert_seeds_params});
+  gbts_bid_seeds_for_hits_kernel(
+      {nRows, nRowsGrid, row_count, edge_size, output_graph, seed_proposals_buf,
+       path_store_buf, seed_ambiguity_buf, hit_bids_buf});
+
+  // 8. Convert the winning proposals into 3-spacepoint seeds.
+  gbts_convert_seeds_kernel(
+      {nRows, nRowsGrid, row_count, cfg.max_num_neighbours, seed_proposals_buf,
+       seed_ambiguity_buf, path_store_buf, output_graph, reducedSP,
+       output_seeds, hit_bids_buf, cfg.gbts_convert_seeds_params});
 
   // Deferred capacity checks: the counters of this event (including the
   // device-side connected-edge count copied into them) are read back
@@ -461,14 +469,7 @@ auto gbts_seeding_algorithm::extract_seeds(
   return output_seeds;
 }
 
-void gbts_seeding_algorithm::gbts_run_cca_and_count_kernel(
-    const gbts_run_cca_iteration_payload& cca,
-    const gbts_count_terminus_edges_payload& terminus) const {
-  gbts_run_cca_kernel(cca);
-  gbts_count_terminus_edges_kernel(terminus);
-}
-
-void gbts_seeding_algorithm::gbts_run_cca_kernel(
+void gbts_seeding_algorithm::run_cca(
     const gbts_run_cca_iteration_payload& payload) const {
   gbts_run_cca_iteration_payload iteration = payload;
   // The relaxation sweeps (a sweep after convergence returns at once; at
@@ -487,24 +488,11 @@ void gbts_seeding_algorithm::gbts_run_cca_kernel(
   gbts_run_cca_iteration_kernel(iteration);
 }
 
-void gbts_seeding_algorithm::gbts_finish_seeds_kernel(
-    const gbts_seed_bidding_payload& bidding,
-    const gbts_bid_seeds_for_hits_payload& hits,
-    const gbts_convert_seeds_payload& convert) const {
-  // The initial bid is placed by gbts_fill_path_store and the classification
-  // by the hit bidding; the (optional) bidding rounds need the classification
-  // first.
-  if (bidding.nRounds > 0u) {
-    gbts_bid_seeds_kernel(bidding);
-  }
-  gbts_bid_seeds_for_hits_kernel(hits);
-  gbts_convert_seeds_kernel(convert);
-}
-
-void gbts_seeding_algorithm::gbts_bid_seeds_kernel(
+void gbts_seeding_algorithm::run_bidding_rounds(
     const gbts_seed_bidding_payload& payload) const {
   // Classify the proposals in a launch of their own (deterministic: no
-  // bidding marks are written concurrently).
+  // bidding marks are written concurrently). Without rounds the hit bidding
+  // does the classification itself.
   gbts_rebid_seeds_for_edges_kernel(
       gbts_make_rebid_seeds_for_edges_payload(payload, 0u, true));
   for (unsigned int round = 0; round < payload.nRounds; ++round) {
@@ -548,17 +536,26 @@ gbts_seeding_algorithm::gbts_seeding_algorithm(
   }
   m_nBinPairs = static_cast<unsigned int>(binTables.size());
   // Depth of the bin DAG (pairs go from an inner to an outer bin): the
-  // longest chain of edges is at most the longest path through the pairs.
-  // Memoised longest path from every bin; the pairs are sorted by bin1.
+  // longest chain of edges is at most the longest path through the pairs,
+  // which bounds the number of CCA sweeps. Memoised longest path from every
+  // bin (the pairs are sorted by bin1); a cycle in the table would make the
+  // bound meaningless, so the CCA then runs the maximum number of sweeps.
   {
+    constexpr unsigned char in_progress = 1u;
+    constexpr unsigned char finished = 2u;
     std::vector<unsigned int> depth(m_config.n_eta_bins, 0u);
-    std::vector<unsigned char> done(m_config.n_eta_bins, 0u);
+    std::vector<unsigned char> state(m_config.n_eta_bins, 0u);
+    bool cyclic = false;
     std::function<unsigned int(unsigned int)> longest =
         [&](unsigned int bin) -> unsigned int {
-      if (done[bin] != 0u) {
+      if (state[bin] == finished) {
         return depth[bin];
       }
-      done[bin] = 1u;  // (cycles are impossible: pairs go outward)
+      if (state[bin] == in_progress) {
+        cyclic = true;
+        return 0u;
+      }
+      state[bin] = in_progress;
       auto first =
           std::lower_bound(binTables.begin(), binTables.end(),
                            std::pair<unsigned int, unsigned int>{bin, 0u});
@@ -567,10 +564,15 @@ gbts_seeding_algorithm::gbts_seeding_algorithm(
         best = std::max(best, 1u + longest(it->second));
       }
       depth[bin] = best;
+      state[bin] = finished;
       return best;
     };
     for (unsigned int bin = 0; bin < m_config.n_eta_bins; ++bin) {
       m_maxChainLength = std::max(m_maxChainLength, longest(bin));
+    }
+    if (cyclic) {
+      TRACCC_WARNING("Cyclic GBTS bin table: the CCA runs every sweep");
+      m_maxChainLength = traccc::device::gbts_consts::max_cca_iter + 1u;
     }
   }
   m_maxPairsPerBin1 = 0;
@@ -680,7 +682,8 @@ auto gbts_seeding_algorithm::operator()(
   copy().memset(zero_buf, 0)->ignore();
   const vecmem::data::vector_view<unsigned int> counters_view(
       gbts_counter::nCounters, zero_buf.ptr());
-  unsigned int* cca_scratch = zero_buf.ptr() + gbts_counter::nCounters + nSp + 1;
+  unsigned int* cca_scratch =
+      zero_buf.ptr() + gbts_counter::nCounters + nSp + 1;
 
   // Stage 1: bin spacepoints and create nodes with the parameters (eta, phi,
   // r, z). No synchronisation: an event without nodes produces no edges.

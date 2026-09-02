@@ -173,55 +173,21 @@ class gbts_seeding_algorithm
   virtual void gbts_run_cca_iteration_kernel(
       const gbts_run_cca_iteration_payload& payload) const = 0;
 
-  /// Launcher of the complete CCA (gbts_consts::max_cca_iter iterations)
+  /// The complete CCA: the relaxation sweeps (gbts_run_cca_iteration_kernel
+  /// once per sweep, at most gbts_consts::max_cca_iter + 1) and the
+  /// finishing pass
   ///
-  /// The default implementation launches gbts_run_cca_iteration_kernel once
-  /// per iteration; backends may fuse the iterations into one kernel.
+  /// @param payload The payload of the first sweep (payload.iter == 0)
   ///
-  /// @param payload The payload of the first iteration (payload.iter == 0)
-  ///
-  virtual void gbts_run_cca_kernel(
-      const gbts_run_cca_iteration_payload& payload) const;
+  void run_cca(const gbts_run_cca_iteration_payload& payload) const;
 
-  /// Launcher of the CCA followed by the terminus-edge counting and the
-  /// inclusive scan of the row sizes (see gbts_count_terminus_edges_kernel)
-  ///
-  /// The default implementation calls gbts_run_cca_kernel and
-  /// gbts_count_terminus_edges_kernel; backends may fuse everything.
-  ///
-  /// @param cca      The payload of the first CCA iteration
-  /// @param terminus The payload of the terminus counting
-  ///
-  virtual void gbts_run_cca_and_count_kernel(
-      const gbts_run_cca_iteration_payload& cca,
-      const gbts_count_terminus_edges_payload& terminus) const;
-
-  /// Launcher of the complete seed-vs-edge bidding sequence (initial bid +
-  /// payload.nRounds rebid / reset rounds)
-  ///
-  /// The default implementation launches the three per-round kernels;
-  /// backends may fuse the sequence into one kernel.
+  /// The seed-vs-edge bidding rounds: the classification launch followed by
+  /// payload.nRounds rebid / reset rounds (the initial bid is placed by
+  /// gbts_fill_path_store)
   ///
   /// @param payload The payload of the bidding sequence
   ///
-  virtual void gbts_bid_seeds_kernel(
-      const gbts_seed_bidding_payload& payload) const;
-
-  /// Launcher of the whole seed finishing sequence: bidding (see
-  /// gbts_bid_seeds_kernel), then gbts_bid_seeds_for_hits, then
-  /// gbts_convert_seeds
-  ///
-  /// The default implementation launches the three steps separately;
-  /// backends may fuse them into one kernel.
-  ///
-  /// @param bidding The payload of the bidding sequence
-  /// @param hits    The payload of the hit bidding
-  /// @param convert The payload of the seed conversion
-  ///
-  virtual void gbts_finish_seeds_kernel(
-      const gbts_seed_bidding_payload& bidding,
-      const gbts_bid_seeds_for_hits_payload& hits,
-      const gbts_convert_seeds_payload& convert) const;
+  void run_bidding_rounds(const gbts_seed_bidding_payload& payload) const;
 
   /// Terminus-edge counting / path-store layout kernel launcher
   ///

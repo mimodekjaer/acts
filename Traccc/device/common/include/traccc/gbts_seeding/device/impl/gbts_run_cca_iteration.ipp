@@ -85,14 +85,12 @@ TRACCC_HOST_DEVICE inline void gbts_run_cca_iteration(
   if (threadIndex == 0u) {
     shared_changed[0] = 0u;
   }
-  if ((globalIdx == 0u) && (iter + 1u <= max_iter)) {
-    // The counter of the next sweep (nobody writes it before that sweep).
-    counters[iter + 1u] = 0u;
-  }
   barrier.blockBarrier();
 
   bool changed = false;
-  // Descending index order: an edge's neighbours have higher indices.
+  // Descending index order: a scheduling heuristic only (neighbours tend to
+  // have higher indices, so their levels are often already updated within
+  // the sweep); the fixed point does not depend on the order.
   for (unsigned int g = globalIdx; g < n; g += stride) {
     const unsigned int e = n - 1u - g;
     const unsigned int edge_pos = edge_size * e;
