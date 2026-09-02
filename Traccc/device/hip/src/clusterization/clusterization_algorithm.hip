@@ -97,27 +97,27 @@ void clusterization_algorithm::ccl_kernel(
 
   // The last prefix sum is the number of measurements. Copy it into the size
   // of the output buffer (device-to-device, in stream order).
-  copy()(vecmem::data::vector_view<const char>{
-             static_cast<vecmem::data::vector_view<const char>::size_type>(
-                 sizeof(unsigned int)),
-             reinterpret_cast<const char*>(payload.cluster_flags.ptr() +
-                                           payload.n_cells - 1u)},
-         payload.measurements.size())
+  copy()(
+      vecmem::data::vector_view<const char>{
+          static_cast<vecmem::data::vector_view<const char>::size_type>(
+              sizeof(unsigned int)),
+          reinterpret_cast<const char*>(payload.cluster_flags.ptr() +
+                                        payload.n_cells - 1u)},
+      payload.measurements.size())
       ->ignore();
 
   // Create the measurements, one thread per cell.
   const unsigned int agg_threads = warp_size() * 8u;
   const unsigned int agg_blocks =
       (payload.n_cells + agg_threads - 1) / agg_threads;
-  hipLaunchKernelGGL(kernels::aggregate_clusters, dim3{agg_blocks},
-                     dim3{agg_threads}, 0, hip_stream, payload.config,
-                     payload.cells, payload.det_descr, payload.det_cond,
-                     vecmem::data::vector_view<const unsigned int>(
-                         payload.cluster_flags),
-                     vecmem::data::vector_view<const unsigned int>(
-                         payload.next_cell),
-                     vecmem::get_data(payload.measurements),
-                     payload.disjoint_set, payload.cluster_sizes);
+  hipLaunchKernelGGL(
+      kernels::aggregate_clusters, dim3{agg_blocks}, dim3{agg_threads}, 0,
+      hip_stream, payload.config, payload.cells, payload.det_descr,
+      payload.det_cond,
+      vecmem::data::vector_view<const unsigned int>(payload.cluster_flags),
+      vecmem::data::vector_view<const unsigned int>(payload.next_cell),
+      vecmem::get_data(payload.measurements), payload.disjoint_set,
+      payload.cluster_sizes);
   TRACCC_HIP_ERROR_CHECK(hipGetLastError());
 
   // With sorting enabled, the kernels read from sorted cell and permutation

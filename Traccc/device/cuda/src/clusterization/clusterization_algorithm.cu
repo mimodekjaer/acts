@@ -103,17 +103,19 @@ void clusterization_algorithm::ccl_kernel(
 
   // The last prefix sum is the number of measurements. Copy it into the size
   // of the output buffer (device-to-device, in stream order).
-  copy()(vecmem::data::vector_view<const char>{
-             static_cast<vecmem::data::vector_view<const char>::size_type>(
-                 sizeof(unsigned int)),
-             reinterpret_cast<const char*>(payload.cluster_flags.ptr() +
-                                           payload.n_cells - 1u)},
-         payload.measurements.size())
+  copy()(
+      vecmem::data::vector_view<const char>{
+          static_cast<vecmem::data::vector_view<const char>::size_type>(
+              sizeof(unsigned int)),
+          reinterpret_cast<const char*>(payload.cluster_flags.ptr() +
+                                        payload.n_cells - 1u)},
+      payload.measurements.size())
       ->ignore();
 
   // Create the measurements, one thread per cell.
   const unsigned int agg_threads = warp_size() * 8u;
-  const unsigned int agg_blocks = (payload.n_cells + agg_threads - 1) / agg_threads;
+  const unsigned int agg_blocks =
+      (payload.n_cells + agg_threads - 1) / agg_threads;
   kernels::aggregate_clusters<<<agg_blocks, agg_threads, 0, cuda_stream>>>(
       payload.config, payload.cells, payload.det_descr, payload.det_cond,
       payload.cluster_flags, payload.next_cell, payload.measurements,

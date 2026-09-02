@@ -7,6 +7,7 @@
 
 // Local include(s).
 #include "traccc/examples/sycl/full_chain_algorithm.hpp"
+
 #include "traccc/examples/copy_cells.hpp"
 
 // Project include(s).

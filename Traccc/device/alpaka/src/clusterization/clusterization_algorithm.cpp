@@ -84,11 +84,10 @@ struct aggregate_clusters {
       edm::measurement_collection::view measurements_view,
       vecmem::data::vector_view<unsigned int> disjoint_set_view,
       vecmem::data::vector_view<unsigned int> cluster_size_view) const {
-    device::aggregate_clusters(details::thread_id1{acc}.getGlobalThreadId(),
-                               cfg, cells_view, det_descr_view, det_cond_view,
-                               cluster_prefix_view, next_cell_view,
-                               measurements_view, disjoint_set_view,
-                               cluster_size_view);
+    device::aggregate_clusters(
+        details::thread_id1{acc}.getGlobalThreadId(), cfg, cells_view,
+        det_descr_view, det_cond_view, cluster_prefix_view, next_cell_view,
+        measurements_view, disjoint_set_view, cluster_size_view);
   }
 
 };  // struct aggregate_clusters
@@ -163,12 +162,13 @@ void clusterization_algorithm::ccl_kernel(
 
   // The last prefix sum is the number of measurements. Copy it into the size
   // of the output buffer.
-  copy()(vecmem::data::vector_view<const char>{
-             static_cast<vecmem::data::vector_view<const char>::size_type>(
-                 sizeof(unsigned int)),
-             reinterpret_cast<const char*>(payload.cluster_flags.ptr() +
-                                           payload.n_cells - 1u)},
-         payload.measurements.size())
+  copy()(
+      vecmem::data::vector_view<const char>{
+          static_cast<vecmem::data::vector_view<const char>::size_type>(
+              sizeof(unsigned int)),
+          reinterpret_cast<const char*>(payload.cluster_flags.ptr() +
+                                        payload.n_cells - 1u)},
+      payload.measurements.size())
       ->wait();
 
   // Create the measurements, one thread per cell.

@@ -99,7 +99,8 @@ measurement_sorting_algorithm::operator()(
   // Get the number of measurements and the sortedness flag. In an
   // asynchronous way if possible.
   vecmem::vector<unsigned int> unsorted_flag_host(
-      1u, (m_mr.host != nullptr) ? m_mr.host : std::pmr::get_default_resource());
+      1u,
+      (m_mr.host != nullptr) ? m_mr.host : std::pmr::get_default_resource());
   edm::measurement_collection::const_view::size_type n_measurements = 0u;
   if (m_mr.host) {
     const vecmem::async_size size =

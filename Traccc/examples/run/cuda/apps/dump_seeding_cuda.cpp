@@ -133,15 +133,13 @@ int main(int argc, char* argv[]) {
                                                  logger->clone("MS"));
   traccc::cuda::silicon_pixel_spacepoint_formation_algorithm sf(
       mr, copy, stream, logger->clone("SF"));
-  traccc::cuda::triplet_seeding_algorithm sa(seedfinder_config,
-                                             spacepoint_grid_config,
-                                             seedfilter_config, mr, copy,
-                                             stream, logger->clone("SA"));
+  traccc::cuda::triplet_seeding_algorithm sa(
+      seedfinder_config, spacepoint_grid_config, seedfilter_config, mr, copy,
+      stream, logger->clone("SA"));
   traccc::cuda::gbts_seeding_algorithm gbts(gbts_config, mr, copy, stream,
                                             logger->clone("GBTS"));
-  traccc::cuda::seed_parameter_estimation_algorithm tp(tp_config, mr, copy,
-                                                       stream,
-                                                       logger->clone("TP"));
+  traccc::cuda::seed_parameter_estimation_algorithm tp(
+      tp_config, mr, copy, stream, logger->clone("TP"));
 
   std::FILE* out = std::fopen(out_name.c_str(), "w");
   if (out == nullptr) {

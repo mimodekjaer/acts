@@ -144,12 +144,13 @@ void clusterization_algorithm::ccl_kernel(
 
   // The last prefix sum is the number of measurements. Copy it into the size
   // of the output buffer.
-  copy()(vecmem::data::vector_view<const char>{
-             static_cast<vecmem::data::vector_view<const char>::size_type>(
-                 sizeof(unsigned int)),
-             reinterpret_cast<const char*>(payload.cluster_flags.ptr() +
-                                           payload.n_cells - 1u)},
-         payload.measurements.size())
+  copy()(
+      vecmem::data::vector_view<const char>{
+          static_cast<vecmem::data::vector_view<const char>::size_type>(
+              sizeof(unsigned int)),
+          reinterpret_cast<const char*>(payload.cluster_flags.ptr() +
+                                        payload.n_cells - 1u)},
+      payload.measurements.size())
       ->wait();
 
   // Create the measurements, one work item per cell.
@@ -170,8 +171,8 @@ void clusterization_algorithm::ccl_kernel(
              cluster_sizes = payload.cluster_sizes](::sycl::nd_item<1> item) {
               device::aggregate_clusters(
                   static_cast<unsigned int>(item.get_global_linear_id()),
-                  config, cells, det_descr, det_cond, cluster_prefix,
-                  next_cell, measurements, disjoint_set, cluster_sizes);
+                  config, cells, det_descr, det_cond, cluster_prefix, next_cell,
+                  measurements, disjoint_set, cluster_sizes);
             });
       })
       .wait_and_throw();

@@ -152,8 +152,7 @@ clusterization_algorithm::execute_impl(
 
   // Scratch buffers for the cluster root flags / prefix sums and the
   // cluster linked lists.
-  vecmem::data::vector_buffer<unsigned int> cluster_flags{num_cells,
-                                                          mr().main};
+  vecmem::data::vector_buffer<unsigned int> cluster_flags{num_cells, mr().main};
   vecmem::data::vector_buffer<unsigned int> next_cell{num_cells, mr().main};
   copy().setup(cluster_flags)->ignore();
   copy().setup(next_cell)->ignore();

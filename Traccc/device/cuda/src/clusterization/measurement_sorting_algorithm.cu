@@ -34,14 +34,16 @@ __global__ void fill_measurement_surface_keys(
     const edm::measurement_collection::const_view measurements,
     vecmem::data::vector_view<device::measurement_surface_key_t> keys,
     vecmem::data::vector_view<unsigned int> indices) {
-  device::fill_measurement_surface_keys(details::global_index1(), measurements, keys, indices);
+  device::fill_measurement_surface_keys(details::global_index1(), measurements,
+                                        keys, indices);
 }
 
 /// Kernel wrapping @c traccc::device::flag_unsorted_measurements
 __global__ void flag_unsorted_measurements(
     const edm::measurement_collection::const_view measurements,
     vecmem::data::vector_view<unsigned int> unsorted) {
-  device::flag_unsorted_measurements(details::global_index1(), measurements, unsorted);
+  device::flag_unsorted_measurements(details::global_index1(), measurements,
+                                     unsorted);
 }
 
 /// Kernel wrapping @c traccc::device::copy_measurements
@@ -96,7 +98,8 @@ measurement_sorting_algorithm::operator()(
   // Get the number of measurements and the sortedness flag. In an
   // asynchronous way if possible, with a single synchronisation.
   vecmem::vector<unsigned int> unsorted_flag_host(
-      1u, (m_mr.host != nullptr) ? m_mr.host : std::pmr::get_default_resource());
+      1u,
+      (m_mr.host != nullptr) ? m_mr.host : std::pmr::get_default_resource());
   edm::measurement_collection::const_view::size_type n_measurements = 0u;
   if (m_mr.host) {
     const vecmem::async_size size =
@@ -139,7 +142,6 @@ measurement_sorting_algorithm::operator()(
   vecmem::data::vector_buffer<unsigned int> indices(n_measurements, m_mr.main);
   m_copy.get().setup(surface_keys)->ignore();
   m_copy.get().setup(indices)->ignore();
-
 
   // Sort the measurement indices by the surface identifier, using a stable
   // radix sort on primitive keys. The clusterization writes the measurements

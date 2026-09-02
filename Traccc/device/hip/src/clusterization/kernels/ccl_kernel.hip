@@ -42,11 +42,10 @@ __global__ void ccl_kernel(
   traccc::hip::barrier barry_r;
   const details::thread_id1 thread_id;
 
-  device::ccl_kernel(cfg, thread_id, cells_view, partition_start,
-                     partition_end, f_view, gf_view, f_backup_view,
-                     gf_backup_view, adjc_backup_view, adjv_backup_view,
-                     backup_mutex, barry_r, cluster_flags_view,
-                     next_cell_view);
+  device::ccl_kernel(cfg, thread_id, cells_view, partition_start, partition_end,
+                     f_view, gf_view, f_backup_view, gf_backup_view,
+                     adjc_backup_view, adjv_backup_view, backup_mutex, barry_r,
+                     cluster_flags_view, next_cell_view);
 }
 
 }  // namespace traccc::hip::kernels

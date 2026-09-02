@@ -148,7 +148,8 @@ TRACCC_HOST_DEVICE inline void ccl_core(
     const unsigned int partition_end, vecmem::device_vector<index_t> f,
     vecmem::device_vector<index_t> gf, index_t* adjv, unsigned char* adjc,
     const edm::silicon_cell_collection::const_device& cells_device,
-    const barrier_t& barrier, vecmem::device_vector<unsigned int>& cluster_flags,
+    const barrier_t& barrier,
+    vecmem::device_vector<unsigned int>& cluster_flags,
     vecmem::device_vector<unsigned int>& next_cell) {
   const unsigned int size = partition_end - partition_start;
 

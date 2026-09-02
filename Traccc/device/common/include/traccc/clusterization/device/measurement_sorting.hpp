@@ -45,7 +45,8 @@ class measurement_order_sorter {
     if (lhs_surface != rhs_surface) {
       return lhs_surface < rhs_surface;
     }
-    return measurements.identifier().at(lhs) < measurements.identifier().at(rhs);
+    return measurements.identifier().at(lhs) <
+           measurements.identifier().at(rhs);
   }
 
  private:

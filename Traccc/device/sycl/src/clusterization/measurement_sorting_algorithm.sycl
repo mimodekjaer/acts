@@ -69,7 +69,8 @@ measurement_sorting_algorithm::operator()(
       })
       .wait_and_throw();
   vecmem::vector<unsigned int> unsorted_flag_host(
-      1u, (m_mr.host != nullptr) ? m_mr.host : std::pmr::get_default_resource());
+      1u,
+      (m_mr.host != nullptr) ? m_mr.host : std::pmr::get_default_resource());
   m_copy.get()(unsorted_flag, unsorted_flag_host)->wait();
   const bool already_sorted = (unsorted_flag_host.at(0) == 0u);
 

@@ -64,9 +64,9 @@ void silicon_pixel_spacepoint_formation_algorithm::form_spacepoints_kernel(
       (payload.n_measurements + n_threads - 1) / n_threads;
 
   // Flag the measurements that produce spacepoints.
-  kernels::flag_spacepoint_measurements<<<n_blocks, n_threads, 0,
-                                          cuda_stream>>>(payload.measurements,
-                                                         payload.offsets);
+  kernels::
+      flag_spacepoint_measurements<<<n_blocks, n_threads, 0, cuda_stream>>>(
+          payload.measurements, payload.offsets);
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
 
   // Turn the flags into inclusive prefix sums, in place.
@@ -79,12 +79,13 @@ void silicon_pixel_spacepoint_formation_algorithm::form_spacepoints_kernel(
 
   // The last prefix sum is the number of spacepoints. Copy it into the size
   // of the output buffer (device-to-device, in stream order).
-  copy()(vecmem::data::vector_view<const char>{
-             static_cast<vecmem::data::vector_view<const char>::size_type>(
-                 sizeof(unsigned int)),
-             reinterpret_cast<const char*>(payload.offsets.ptr() +
-                                           payload.n_measurements - 1u)},
-         payload.spacepoints.size())
+  copy()(
+      vecmem::data::vector_view<const char>{
+          static_cast<vecmem::data::vector_view<const char>::size_type>(
+              sizeof(unsigned int)),
+          reinterpret_cast<const char*>(payload.offsets.ptr() +
+                                        payload.n_measurements - 1u)},
+      payload.spacepoints.size())
       ->ignore();
 
   // Form the spacepoints.
@@ -92,9 +93,9 @@ void silicon_pixel_spacepoint_formation_algorithm::form_spacepoints_kernel(
       payload.detector, [&]<typename detector_traits_t>(
                             const typename detector_traits_t::view& det) {
         kernels::form_spacepoints<detector_traits_t>
-            <<<n_blocks, n_threads, 0, cuda_stream>>>(
-                det, payload.measurements, payload.offsets,
-                payload.spacepoints);
+            <<<n_blocks, n_threads, 0, cuda_stream>>>(det, payload.measurements,
+                                                      payload.offsets,
+                                                      payload.spacepoints);
       });
   TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
 }
