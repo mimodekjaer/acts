@@ -39,6 +39,7 @@
 #include <vecmem/memory/binary_page_memory_resource.hpp>
 
 // System include(s).
+#include <cstddef>
 #include <functional>
 #include <memory>
 
@@ -118,9 +119,38 @@ class full_chain_algorithm
   bound_track_parameters_collection_types::host seeding(
       const edm::silicon_cell_collection::host& cells) const;
 
+  /// Device-side inputs of the seeding, kept alive between events so that
+  /// the seeding can be timed on its own (see @c seeding_only)
+  struct seeding_input {
+    /// Sorted measurements of the event
+    measurement_sorting_algorithm::output_type measurements;
+    /// Spacepoints of the event
+    spacepoint_formation_algorithm::output_type spacepoints;
+  };
+
+  /// Run clusterization, measurement sorting and spacepoint formation and
+  /// keep the results on the device. Synchronises the queue before
+  /// returning, so that the preparation does not leak into the timed loop.
+  ///
+  /// @param cells The cells for every detector module in the event
+  /// @return The device-side seeding inputs of the event
+  ///
+  seeding_input prepare_seeding_input(
+      const edm::silicon_cell_collection::host& cells) const;
+
+  /// Run only the seeding on pre-made spacepoints
+  ///
+  /// @param input The output of @c prepare_seeding_input for the event
+  /// @return The number of seeds reconstructed
+  ///
+  std::size_t seeding_only(const seeding_input& input) const;
+
  private:
   /// Alpaka Queue
-  traccc::alpaka::queue m_queue;
+  ///
+  /// Mutable, as synchronising the queue from the const algorithm functions
+  /// does not change the logical state of the algorithm.
+  mutable traccc::alpaka::queue m_queue;
   /// Alpaka Vecmem objects, to get the memory resources
   traccc::alpaka::vecmem_objects m_vecmem_objects;
 

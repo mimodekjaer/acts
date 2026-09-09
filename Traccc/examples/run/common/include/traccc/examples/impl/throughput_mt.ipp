@@ -56,7 +56,6 @@
 
 // System include(s).
 #include <atomic>
-#include <concepts>
 #include <cstdlib>
 #include <ctime>
 #include <fstream>
@@ -66,32 +65,6 @@
 #include <vector>
 
 namespace traccc {
-
-namespace details {
-
-/// Whether a full-chain algorithm supports the "seeding-only" stage
-template <typename FULL_CHAIN_ALG>
-concept has_seeding_only =
-    requires(const FULL_CHAIN_ALG& alg,
-             const edm::silicon_cell_collection::host& cells) {
-      {
-        alg.seeding_only(alg.prepare_seeding_input(cells))
-      } -> std::same_as<std::size_t>;
-    };
-
-/// Type of the cached seeding inputs (a dummy for unsupported algorithms)
-template <typename FULL_CHAIN_ALG>
-struct seeding_input_type {
-  using type = char;
-};
-template <has_seeding_only FULL_CHAIN_ALG>
-struct seeding_input_type<FULL_CHAIN_ALG> {
-  using type = typename FULL_CHAIN_ALG::seeding_input;
-};
-template <typename FULL_CHAIN_ALG>
-using seeding_input_t = typename seeding_input_type<FULL_CHAIN_ALG>::type;
-
-}  // namespace details
 
 template <typename FULL_CHAIN_ALG>
 int throughput_mt(std::string_view description, int argc, char* argv[],
@@ -207,10 +180,12 @@ int throughput_mt(std::string_view description, int argc, char* argv[],
                     seeding_gbts_opts.useGBTS});
   }
 
-  // Device-side seeding inputs of every input event, only used by the
-  // "seeding-only" stage. Declared after the algorithms so that they are
-  // destroyed before the memory resources that own them.
-  std::vector<details::seeding_input_t<FULL_CHAIN_ALG>> seeding_inputs;
+  // Pre-made seeding inputs of every input event, for every algorithm
+  // instance. Only used by the "seeding-only" stage. Declared after the
+  // algorithms so that they are destroyed before the memory resources that
+  // own them.
+  std::vector<std::vector<typename FULL_CHAIN_ALG::seeding_input>>
+      seeding_inputs;
 
   // Set up a lambda that calls the correct function on the algorithms.
   std::function<std::size_t(int, std::size_t)> process_event;
@@ -222,23 +197,23 @@ int throughput_mt(std::string_view description, int argc, char* argv[],
     };
   } else if (throughput_opts.reco_stage ==
              opts::throughput::stage::seeding_only) {
-    if constexpr (details::has_seeding_only<FULL_CHAIN_ALG>) {
-      // Clusterization and spacepoint formation are run once per input
-      // event, outside of the timed loops.
-      performance::timer t{"Seeding input preparation", times};
-      seeding_inputs.reserve(input.size());
+    // Clusterization, measurement sorting and spacepoint formation are run
+    // outside of the timed loops. Just like every other intermediate result,
+    // the seeding inputs belong to a single algorithm instance, so they are
+    // made once per input event *and* algorithm instance.
+    performance::timer t{"Seeding input preparation", times};
+    seeding_inputs.resize(algs.size());
+    for (std::size_t i = 0; i < algs.size(); ++i) {
+      seeding_inputs[i].reserve(input.size());
       for (const edm::silicon_cell_collection::host& cells : input) {
-        seeding_inputs.push_back(algs.front().prepare_seeding_input(cells));
+        seeding_inputs[i].push_back(algs[i].prepare_seeding_input(cells));
       }
-      process_event = [&](int thread, std::size_t event) -> std::size_t {
-        return algs.at(static_cast<std::size_t>(thread))
-            .seeding_only(seeding_inputs[event]);
-      };
-    } else {
-      throw std::invalid_argument(
-          "The \"seeding-only\" stage is not supported by this full-chain "
-          "algorithm");
     }
+    process_event = [&](int thread, std::size_t event) -> std::size_t {
+      const std::size_t alg_index = static_cast<std::size_t>(thread);
+      return algs.at(alg_index).seeding_only(
+          seeding_inputs.at(alg_index)[event]);
+    };
   } else if (throughput_opts.reco_stage == opts::throughput::stage::full) {
     process_event = [&](int thread, std::size_t event) -> std::size_t {
       return algs.at(static_cast<std::size_t>(thread))(input[event]).size();

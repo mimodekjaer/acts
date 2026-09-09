@@ -11,6 +11,9 @@
 // Project include(s).
 #include "traccc/sycl/utils/make_magnetic_field.hpp"
 
+// System include(s).
+#include <stdexcept>
+
 namespace traccc::sycl {
 namespace details {
 
@@ -286,6 +289,42 @@ full_chain_algorithm::output_type full_chain_algorithm::operator()(
     // Return an empty object.
     return output_type{m_host_mr.get()};
   }
+}
+
+full_chain_algorithm::seeding_input full_chain_algorithm::prepare_seeding_input(
+    const edm::silicon_cell_collection::host& cells) const {
+  if (m_detector == nullptr) {
+    throw std::runtime_error(
+        "Seeding-only measurements need a Detray detector");
+  }
+  // Create device copy of input collections
+  edm::silicon_cell_collection::buffer cells_buffer{
+      static_cast<unsigned int>(cells.size()), m_cached_device_mr};
+  m_copy(vecmem::get_data(cells), cells_buffer)->ignore();
+
+  // Run the clusterization and the spacepoint formation (asynchronously).
+  const auto unsorted_measurements =
+      m_clusterization(cells_buffer, m_device_det_descr, m_device_det_cond);
+  seeding_input result;
+  result.measurements = m_measurement_sorting(unsorted_measurements);
+  result.spacepoints =
+      m_spacepoint_formation(m_device_detector, result.measurements);
+  // Wait for the buffers to be filled.
+  m_data->m_queue.synchronize();
+  return result;
+}
+
+std::size_t full_chain_algorithm::seeding_only(
+    const seeding_input& input) const {
+  // Run the seed-finding (asynchronously).
+  triplet_seeding_algorithm::output_type seeds;
+  if (usingGBTS) {
+    seeds = m_gbts_seeding(input.spacepoints, input.measurements);
+  } else {
+    seeds = m_seeding(input.spacepoints);
+  }
+  // Reading the seed count back is the one synchronisation of the stage.
+  return m_copy.get_size(seeds);
 }
 
 bound_track_parameters_collection_types::host full_chain_algorithm::seeding(

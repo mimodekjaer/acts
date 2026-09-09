@@ -28,9 +28,9 @@ throughput::throughput() : interface("Throughput Measurement Options") {
                        po::value<stage_type>()->default_value("full"),
                        "Reconstruction stage to run (\"seeding\", "
                        "\"seeding-only\" or \"full\"). \"seeding-only\" "
-                       "runs clusterization and spacepoint formation once "
-                       "per input event outside of the timed loop and "
-                       "times only the seeding itself");
+                       "makes the spacepoints of every input event outside "
+                       "of the timed loop, and times only the seeding "
+                       "itself");
   m_desc.add_options()(
       "processed-events",
       po::value(&processed_events)->default_value(processed_events),

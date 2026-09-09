@@ -39,6 +39,7 @@
 #include <vecmem/utils/cuda/stream_wrapper.hpp>
 
 // System include(s).
+#include <cstddef>
 #include <memory>
 
 namespace traccc::cuda {

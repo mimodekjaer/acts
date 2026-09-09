@@ -52,6 +52,7 @@
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <vector>
 
 namespace traccc {
 
@@ -154,6 +155,11 @@ int throughput_st(std::string_view description, int argc, char* argv[],
       det_cond, field, &detector, logger().clone("FullChainAlg"),
       seeding_gbts_opts.useGBTS);
 
+  // Pre-made seeding inputs of every input event. Only used by the
+  // "seeding-only" stage. Declared after the algorithm so that they are
+  // destroyed before the memory resources that own them.
+  std::vector<typename FULL_CHAIN_ALG::seeding_input> seeding_inputs;
+
   // Seed the random number generator.
   if (throughput_opts.random_seed == 0) {
     std::srand(static_cast<unsigned int>(std::time(nullptr)));
@@ -162,23 +168,27 @@ int throughput_st(std::string_view description, int argc, char* argv[],
   }
 
   // Set up a lambda that calls the correct function on the algorithm.
-  std::function<std::size_t(const edm::silicon_cell_collection::host&)>
-      process_event;
+  std::function<std::size_t(std::size_t)> process_event;
   if (throughput_opts.reco_stage == opts::throughput::stage::seeding) {
-    process_event =
-        [&](const edm::silicon_cell_collection::host& cells) -> std::size_t {
-      return alg->seeding(cells).size();
-    };
-  } else if (throughput_opts.reco_stage == opts::throughput::stage::full) {
-    process_event =
-        [&](const edm::silicon_cell_collection::host& cells) -> std::size_t {
-      return (*alg)(cells).size();
+    process_event = [&](std::size_t event) -> std::size_t {
+      return alg->seeding(input[event]).size();
     };
   } else if (throughput_opts.reco_stage ==
              opts::throughput::stage::seeding_only) {
-    throw std::invalid_argument(
-        "The \"seeding-only\" stage is only available in the multi-threaded "
-        "throughput example");
+    // Clusterization, measurement sorting and spacepoint formation are run
+    // once per input event, outside of the timed loops.
+    performance::timer t{"Seeding input preparation", times};
+    seeding_inputs.reserve(input.size());
+    for (const edm::silicon_cell_collection::host& cells : input) {
+      seeding_inputs.push_back(alg->prepare_seeding_input(cells));
+    }
+    process_event = [&](std::size_t event) -> std::size_t {
+      return alg->seeding_only(seeding_inputs[event]);
+    };
+  } else if (throughput_opts.reco_stage == opts::throughput::stage::full) {
+    process_event = [&](std::size_t event) -> std::size_t {
+      return (*alg)(input[event]).size();
+    };
   } else {
     throw std::invalid_argument("Unknown reconstruction stage");
   }
@@ -210,7 +220,7 @@ int throughput_st(std::string_view description, int argc, char* argv[],
                                 input_opts.events;
 
       // Process one event.
-      rec_track_params += process_event(input[event]);
+      rec_track_params += process_event(event);
       progress_bar.tick();
     }
   }
@@ -239,12 +249,13 @@ int throughput_st(std::string_view description, int argc, char* argv[],
                                 input_opts.events;
 
       // Process one event.
-      rec_track_params += process_event(input[event]);
+      rec_track_params += process_event(event);
       progress_bar.tick();
     }
   }
 
   // Explicitly delete the objects in the correct order.
+  seeding_inputs.clear();
   alg.reset();
 
   // Print some results.

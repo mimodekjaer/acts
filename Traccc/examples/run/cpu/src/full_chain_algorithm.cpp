@@ -8,6 +8,10 @@
 // Local include(s).
 #include "traccc/examples/cpu/full_chain_algorithm.hpp"
 
+// System include(s).
+#include <stdexcept>
+#include <utility>
+
 namespace traccc {
 
 full_chain_algorithm::full_chain_algorithm(
@@ -100,6 +104,37 @@ full_chain_algorithm::output_type full_chain_algorithm::operator()(
     // Return an empty object.
     return output_type{m_mr.get()};
   }
+}
+
+full_chain_algorithm::seeding_input full_chain_algorithm::prepare_seeding_input(
+    const edm::silicon_cell_collection::host& cells) const {
+  if (m_detector == nullptr) {
+    throw std::runtime_error(
+        "Seeding-only measurements need a Detray detector");
+  }
+  // Create a data object for the detector description.
+  const detector_design_description::const_data det_descr_data =
+      vecmem::get_data(m_det_descr.get());
+  const detector_conditions_description::const_data det_cond_data =
+      vecmem::get_data(m_det_cond.get());
+
+  // Run the clusterization and the spacepoint formation.
+  auto cells_data = vecmem::get_data(cells);
+  clustering_algorithm::output_type measurements =
+      m_clusterization(cells_data, det_descr_data, det_cond_data);
+  const edm::measurement_collection::const_data measurements_view =
+      vecmem::get_data(std::as_const(measurements));
+  spacepoint_formation_algorithm::output_type spacepoints =
+      m_spacepoint_formation(*m_detector, measurements_view);
+  return {std::move(measurements), std::move(spacepoints)};
+}
+
+std::size_t full_chain_algorithm::seeding_only(
+    const seeding_input& input) const {
+  // Run the seed-finding.
+  const edm::spacepoint_collection::const_data spacepoints_data =
+      vecmem::get_data(input.spacepoints);
+  return m_seeding(spacepoints_data).size();
 }
 
 bound_track_parameters_collection_types::host full_chain_algorithm::seeding(

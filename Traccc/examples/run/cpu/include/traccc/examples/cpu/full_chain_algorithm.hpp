@@ -33,6 +33,7 @@
 #include <vecmem/utils/copy.hpp>
 
 // System include(s).
+#include <cstddef>
 #include <functional>
 #include <memory>
 
@@ -99,6 +100,30 @@ class full_chain_algorithm
   ///
   bound_track_parameters_collection_types::host seeding(
       const edm::silicon_cell_collection::host& cells) const;
+
+  /// Inputs of the seeding, kept alive between events so that the seeding
+  /// can be timed on its own (see @c seeding_only)
+  struct seeding_input {
+    /// Measurements of the event
+    clustering_algorithm::output_type measurements;
+    /// Spacepoints of the event
+    spacepoint_formation_algorithm::output_type spacepoints;
+  };
+
+  /// Run clusterization and spacepoint formation, and keep the results
+  ///
+  /// @param cells The cells for every detector module in the event
+  /// @return The seeding inputs of the event
+  ///
+  seeding_input prepare_seeding_input(
+      const edm::silicon_cell_collection::host& cells) const;
+
+  /// Run only the seeding on pre-made spacepoints
+  ///
+  /// @param input The output of @c prepare_seeding_input for the event
+  /// @return The number of seeds reconstructed
+  ///
+  std::size_t seeding_only(const seeding_input& input) const;
 
  private:
   /// Memory resource
