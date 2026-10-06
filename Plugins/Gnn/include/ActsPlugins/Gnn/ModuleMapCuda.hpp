@@ -42,6 +42,8 @@ class ModuleMapCuda : public GraphConstructionBase {
 
     /// Small numerical constant for stability
     float epsilon = 1e-8f;
+
+    bool debugSynchronize = false;
   };
 
   /// Constructor
