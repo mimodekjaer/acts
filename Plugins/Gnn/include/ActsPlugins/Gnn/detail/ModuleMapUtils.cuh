@@ -9,27 +9,15 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <iostream>
-#include <numbers>
 #include <vector>
 
-#include <MMG/CUDA_graph_creator>
 #include <cuda_runtime_api.h>
 
 namespace ActsPlugins::detail {
 
-constexpr float g_pi = std::numbers::pi_v<float>;
-
-template <class T>
-__global__ void rescaleFeature(std::size_t nbHits, T *data, T scale) {
-  std::size_t i = blockIdx.x * blockDim.x + threadIdx.x;
-
-  if (i >= nbHits) {
-    return;
-  }
-
-  data[i] *= scale;
-}
+constexpr float g_pi = 3.14159265358979323846f;
 
 template <typename T>
 __device__ T resetAngle(T angle) {
@@ -85,20 +73,35 @@ __global__ void makeEdgeFeatures(std::size_t nEdges, const int *srcEdges,
   efPtr[5] = rphislope;
 }
 
-template <class T>
-__global__ void computeXandY(std::size_t nbHits, T *cuda_x, T *cuda_y,
-                             const T *cuda_R, const T *cuda_phi) {
+template <typename T>
+__global__ void preprocessHitFeatures(std::size_t nbHits,
+                                      std::size_t nNodeFeatures,
+                                      const T *nodeFeatures, T *cuda_R,
+                                      T *cuda_phi, T *cuda_z, T *cuda_eta,
+                                      T *cuda_x, T *cuda_y, T rScale,
+                                      T phiScale, T zScale) {
   std::size_t i = blockIdx.x * blockDim.x + threadIdx.x;
 
   if (i >= nbHits) {
     return;
   }
 
-  double r = cuda_R[i];
-  double phi = cuda_phi[i];
+  enum NodeFeatures { r = 0, phi, z, eta };
+  const T *hitFeatures = nodeFeatures + i * nNodeFeatures;
 
-  cuda_x[i] = r * std::cos(phi);
-  cuda_y[i] = r * std::sin(phi);
+  const T scaledR = hitFeatures[r] * rScale;
+  const T scaledPhi = hitFeatures[phi] * phiScale;
+  const T scaledZ = hitFeatures[z] * zScale;
+
+  cuda_R[i] = scaledR;
+  cuda_phi[i] = scaledPhi;
+  cuda_z[i] = scaledZ;
+  cuda_eta[i] = hitFeatures[eta];
+
+  const double rd = scaledR;
+  const double phid = scaledPhi;
+  cuda_x[i] = static_cast<T>(rd * std::cos(phid));
+  cuda_y[i] = static_cast<T>(rd * std::sin(phid));
 }
 
 inline void __global__ mapModuleIdsToNbHits(int *nbHitsOnModule,
@@ -115,7 +118,6 @@ inline void __global__ mapModuleIdsToNbHits(int *nbHitsOnModule,
 
   auto mId = moduleIds[i];
 
-  // bisect moduleMapKey to find mId
   int left = 0;
   int right = moduleMapSize - 1;
   while (left <= right) {
