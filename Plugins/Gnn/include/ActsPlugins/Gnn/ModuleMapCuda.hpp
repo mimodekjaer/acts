@@ -44,6 +44,11 @@ class ModuleMapCuda : public GraphConstructionBase {
     float epsilon = 1e-8f;
 
     bool debugSynchronize = false;
+
+    /// Keep freed memory in the device's default CUDA memory pool instead of
+    /// releasing it to the system at every synchronization. This affects all
+    /// users of the default pool on `gpuDevice`.
+    bool retainMemPool = true;
   };
 
   /// Constructor

@@ -107,31 +107,24 @@ __global__ void compact_active_doublets(int *active_doublets,
   active_doublets[active_offsets[i]] = i;
 }
 
-__global__ void build_src_work_to_doublet(
-    int *src_work_to_doublet, const int *__restrict__ doublet_offsets,
-    int nb_doublets) {
-  const int doublet_idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (doublet_idx >= nb_doublets) {
+// Fill work_to_item[offsets[i]..offsets[i+1]) with i. A group of
+// kThreadsPerItem threads cooperates on each item, so the writes are coalesced
+// and long ranges do not serialize on a single thread.
+template <int kThreadsPerItem>
+__global__ void build_work_to_item(int *work_to_item,
+                                   const int *__restrict__ offsets,
+                                   int nb_items) {
+  const std::size_t tid =
+      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::size_t item = tid / kThreadsPerItem;
+  const int lane = tid % kThreadsPerItem;
+  if (item >= static_cast<std::size_t>(nb_items)) {
     return;
   }
-  const int src_begin = doublet_offsets[doublet_idx];
-  const int src_end = doublet_offsets[doublet_idx + 1];
-  for (int i = src_begin; i < src_end; ++i) {
-    src_work_to_doublet[i] = doublet_idx;
-  }
-}
-
-__global__ void build_work_to_triplet(
-    int *work_to_triplet, const int *__restrict__ triplet_offsets,
-    int nb_triplets) {
-  const int t = blockIdx.x * blockDim.x + threadIdx.x;
-  if (t >= nb_triplets) {
-    return;
-  }
-  const int begin = triplet_offsets[t];
-  const int end = triplet_offsets[t + 1];
-  for (int i = begin; i < end; ++i) {
-    work_to_triplet[i] = t;
+  const int begin = offsets[item];
+  const int end = offsets[item + 1];
+  for (int i = begin + lane; i < end; i += kThreadsPerItem) {
+    work_to_item[i] = static_cast<int>(item);
   }
 }
 
@@ -329,18 +322,23 @@ __global__ void count_triplet_hits(int *src_hits_per_triplet,
 
 template <typename T>
 __global__ void triplet_pair_cuts_fused_m23(
-    bool *edge_tag, int nb_work_items, int nb_triplets,
-    const int *triplet_offsets, const int *__restrict__ work_to_triplet,
-    const int *modules12_map, const int *modules23_map,
-    const float4 *__restrict__ geo, const double2 *__restrict__ edge_slope,
-    T *MD12_z0_min, T *MD12_phi_slope_min, T *MD12_deta_min,
-    T *MD12_dphi_min, T *MD12_z0_max, T *MD12_phi_slope_max,
-    T *MD12_deta_max, T *MD12_dphi_max, T *MD23_z0_min,
-    T *MD23_phi_slope_min, T *MD23_deta_min, T *MD23_dphi_min,
-    T *MD23_z0_max, T *MD23_phi_slope_max, T *MD23_deta_max,
-    T *MD23_dphi_max, T *diff_dydx_min, T *diff_dydx_max,
-    T *diff_dzdr_min, T *diff_dzdr_max, int *M1_SP, int *M2_SP,
-    int *edge_indices, const int *__restrict__ doublet_src_offsets,
+    bool *edge_tag, int nb_work_items, const int *__restrict__ triplet_offsets,
+    const int *__restrict__ work_to_triplet,
+    const int *__restrict__ modules12_map,
+    const int *__restrict__ modules23_map, const float4 *__restrict__ geo,
+    const double2 *__restrict__ edge_slope,
+    const T *__restrict__ MD12_z0_min, const T *__restrict__ MD12_phi_slope_min,
+    const T *__restrict__ MD12_deta_min, const T *__restrict__ MD12_dphi_min,
+    const T *__restrict__ MD12_z0_max, const T *__restrict__ MD12_phi_slope_max,
+    const T *__restrict__ MD12_deta_max, const T *__restrict__ MD12_dphi_max,
+    const T *__restrict__ MD23_z0_min, const T *__restrict__ MD23_phi_slope_min,
+    const T *__restrict__ MD23_deta_min, const T *__restrict__ MD23_dphi_min,
+    const T *__restrict__ MD23_z0_max, const T *__restrict__ MD23_phi_slope_max,
+    const T *__restrict__ MD23_deta_max, const T *__restrict__ MD23_dphi_max,
+    const T *__restrict__ diff_dydx_min, const T *__restrict__ diff_dydx_max,
+    const T *__restrict__ diff_dzdr_min, const T *__restrict__ diff_dzdr_max,
+    const int *__restrict__ M2_SP, const int *__restrict__ edge_indices,
+    const int *__restrict__ doublet_src_offsets,
     const int *__restrict__ doublet_module1, const int *__restrict__ hit_indices,
     const int *__restrict__ edge_sum_per_src_hit) {
   int work_i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -348,18 +346,13 @@ __global__ void triplet_pair_cuts_fused_m23(
     return;
   }
 
-  int triplet_index = work_to_triplet[work_i];
-
-  int module12 = modules12_map[triplet_index];
-  int module23 = modules23_map[triplet_index];
-  int nb_hits_M12 = edge_indices[module12 + 1] - edge_indices[module12];
-  int nb_hits_M23 = edge_indices[module23 + 1] - edge_indices[module23];
-  if (nb_hits_M12 == 0 || nb_hits_M23 == 0) {
-    return;
-  }
-
-  int shift12 = edge_indices[module12];
-  int k = shift12 + (work_i - triplet_offsets[triplet_index]);
+  // Work items only exist for triplets where both doublets have edges (see
+  // count_triplet_hits), so no emptiness check is needed here
+  const int triplet_index = work_to_triplet[work_i];
+  const int module12 = modules12_map[triplet_index];
+  const int module23 = modules23_map[triplet_index];
+  const int k =
+      edge_indices[module12] + (work_i - triplet_offsets[triplet_index]);
 
   const float4 gk = geo[k];
   if (!apply_geometric_cuts(
@@ -369,13 +362,32 @@ __global__ void triplet_pair_cuts_fused_m23(
     return;
   }
 
-  int SP2 = M2_SP[k];
+  const int SP2 = M2_SP[k];
   const int m23_src_module = doublet_module1[module23];
   const int src_work_i =
       doublet_src_offsets[module23] + (SP2 - hit_indices[m23_src_module]);
   const int begin = edge_sum_per_src_hit[src_work_i];
   const int end = edge_sum_per_src_hit[src_work_i + 1];
+  if (begin == end) {
+    return;
+  }
+
+  // Load the per-triplet cuts once instead of on every loop iteration
+  const T z0_min = MD23_z0_min[triplet_index];
+  const T z0_max = MD23_z0_max[triplet_index];
+  const T ps_min = MD23_phi_slope_min[triplet_index];
+  const T ps_max = MD23_phi_slope_max[triplet_index];
+  const T deta_min = MD23_deta_min[triplet_index];
+  const T deta_max = MD23_deta_max[triplet_index];
+  const T dphi_min = MD23_dphi_min[triplet_index];
+  const T dphi_max = MD23_dphi_max[triplet_index];
+  const T dydx_min = diff_dydx_min[triplet_index];
+  const T dydx_max = diff_dydx_max[triplet_index];
+  const T dzdr_min = diff_dzdr_min[triplet_index];
+  const T dzdr_max = diff_dzdr_max[triplet_index];
+
   const double2 sk = edge_slope[k];
+  bool any_accepted = false;
 
   for (int l = begin; l < end; ++l) {
     const float4 gl = geo[l];
@@ -383,32 +395,30 @@ __global__ void triplet_pair_cuts_fused_m23(
     const T psl = gl.y;
     const T del = gl.z;
     const T dpl = gl.w;
-    bool accept = (MD23_z0_min[triplet_index] <= z0l) *
-                  (z0l <= MD23_z0_max[triplet_index]) *
-                  (MD23_phi_slope_min[triplet_index] <= psl) *
-                  (psl <= MD23_phi_slope_max[triplet_index]) *
-                  (MD23_deta_min[triplet_index] <= del) *
-                  (del <= MD23_deta_max[triplet_index]) *
-                  (MD23_dphi_min[triplet_index] <= dpl) *
-                  (dpl <= MD23_dphi_max[triplet_index]);
+    const bool accept = (z0_min <= z0l) * (z0l <= z0_max) * (ps_min <= psl) *
+                        (psl <= ps_max) * (deta_min <= del) *
+                        (del <= deta_max) * (dphi_min <= dpl) *
+                        (dpl <= dphi_max);
     if (!accept) {
       continue;
     }
 
     const double2 sl = edge_slope[l];
-    T diff_dydx = static_cast<T>(sk.x - sl.x);
-    if (!((diff_dydx >= diff_dydx_min[triplet_index]) *
-          (diff_dydx <= diff_dydx_max[triplet_index]))) {
+    const T diff_dydx = static_cast<T>(sk.x - sl.x);
+    if (!((diff_dydx >= dydx_min) * (diff_dydx <= dydx_max))) {
       continue;
     }
 
-    T diff_dzdr = static_cast<T>(sk.y - sl.y);
-    if (!((diff_dzdr >= diff_dzdr_min[triplet_index]) *
-          (diff_dzdr <= diff_dzdr_max[triplet_index]))) {
+    const T diff_dzdr = static_cast<T>(sk.y - sl.y);
+    if (!((diff_dzdr >= dzdr_min) * (diff_dzdr <= dzdr_max))) {
       continue;
     }
 
     edge_tag[l] = true;
+    any_accepted = true;
+  }
+
+  if (any_accepted) {
     edge_tag[k] = true;
   }
 }
