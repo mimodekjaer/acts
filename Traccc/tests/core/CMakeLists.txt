@@ -13,6 +13,7 @@ traccc_add_test(core
    "test_copy.cpp"
    "test_grid2.cpp"
    "test_kalman_filter_toy_detector.cpp"
+   "test_long_seed_collection.cpp"
    "test_populator.cpp"
    "test_pvalue.cpp"
    "test_ranges.cpp"
