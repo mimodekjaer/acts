@@ -9,10 +9,10 @@
 #pragma once
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
-#include <iostream>
-#include <vector>
 
 #include <cuda_runtime_api.h>
 
@@ -35,8 +35,7 @@ __device__ T resetAngle(T angle) {
 constexpr int g_nEdgeFeatures = 6;
 
 template <typename T>
-__device__ void computeEdgeFeatures(int src, int tgt,
-                                    std::size_t nNodeFeatures,
+__device__ void computeEdgeFeatures(int src, int tgt, std::size_t nNodeFeatures,
                                     const T *nodeFeatures, T *efPtr) {
   enum NodeFeatures { r = 0, phi, z, eta };
 
@@ -63,20 +62,6 @@ __device__ void computeEdgeFeatures(int src, int tgt,
   efPtr[3] = deta;
   efPtr[4] = phislope;
   efPtr[5] = rphislope;
-}
-
-template <typename T>
-__global__ void makeEdgeFeatures(std::size_t nEdges, const int *srcEdges,
-                                 const int *tgtEdges, std::size_t nNodeFeatures,
-                                 const T *nodeFeatures, T *edgeFeatures) {
-  std::size_t i = blockIdx.x * blockDim.x + threadIdx.x;
-
-  if (i >= nEdges) {
-    return;
-  }
-
-  computeEdgeFeatures(srcEdges[i], tgtEdges[i], nNodeFeatures, nodeFeatures,
-                      edgeFeatures + i * g_nEdgeFeatures);
 }
 
 /// Compact the candidate edges selected by @p mask into the final
@@ -136,7 +121,7 @@ __global__ void preprocessHitFeatures(std::size_t nbHits,
   cuda_y[i] = static_cast<T>(rd * std::sin(phid));
 }
 
-inline void __global__ mapModuleIdsToNbHits(int *nbHitsOnModule,
+static __global__ void mapModuleIdsToNbHits(int *nbHitsOnModule,
                                             std::size_t nHits,
                                             const std::uint64_t *moduleIds,
                                             std::size_t moduleMapSize,

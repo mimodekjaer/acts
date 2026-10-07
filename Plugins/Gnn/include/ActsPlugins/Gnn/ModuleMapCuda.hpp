@@ -37,12 +37,15 @@ class ModuleMapCuda : public GraphConstructionBase {
 
     /// CUDA device ID
     int gpuDevice = 0;
-    /// Number of GPU blocks
+    /// Number of threads per block for the graph construction kernels (at most
+    /// 512, the launch bound of the kernels)
     int gpuBlocks = 512;
 
     /// Small numerical constant for stability
     float epsilon = 1e-8f;
 
+    /// Synchronize the CUDA stream between the graph construction steps, so
+    /// that the per-step timings in the debug output are meaningful
     bool debugSynchronize = false;
 
     /// Keep freed memory in the device's default CUDA memory pool instead of
