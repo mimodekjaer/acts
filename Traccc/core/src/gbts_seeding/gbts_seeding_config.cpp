@@ -104,15 +104,14 @@ bool gbts_seedfinder_config::setLinkingScheme(
   for (std::pair<std::int16_t, unsigned int> vLpair :
        volumeToLayerMap_unordered)
     volumeToLayerMap[vLpair.second] = vLpair.first;
-  // scale cuts
+  // scale the cuts that depend on the track curvature, as the CPU GBTS does:
+  // the slopes of the phi windows, not their offsets, and the edge curvature
+  // cuts. The curvature cut of the fit stays as it is.
   float ptScale = 900.0f / minPt;
-  gbts_dphi_window_params.min_delta_phi *= ptScale;
   gbts_dphi_window_params.dphi_coeff *= ptScale;
-  gbts_dphi_window_params.min_delta_phi_low_dr *= ptScale;
   gbts_dphi_window_params.dphi_coeff_low_dr *= ptScale;
   gbts_make_graph_edges_params.max_Kappa_low_tau *= ptScale;
   gbts_make_graph_edges_params.max_Kappa_high_tau *= ptScale;
-  gbts_fit_segments_params.inv_max_curvature /= ptScale;
 
   // containers sizes
   nLayers = static_cast<unsigned int>(layerInfo.type.size());
