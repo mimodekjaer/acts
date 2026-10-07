@@ -187,20 +187,15 @@ struct gbts_fit_segments_params {
   float add_hit = 14.0f;
 
   // seed quality is an int scaled up from a float
-  // Exact int-scaling so the longest seed maps to ~1% of INT_MAX:
-  float qual_scale =
-      0.01f * static_cast<float>(INT_MAX) /
-      (add_hit * static_cast<float>(
-                     traccc::device::gbts_consts::max_seed_candidate_length));
+  // Exact int-scaling so the best score per spacepoint maps to ~1% of
+  // INT_MAX:
+  float qual_scale = 0.01f * static_cast<float>(INT_MAX) / add_hit;
 
   // Minimum-pT gate in the fit: reject if |X2| * inv_max_curvature > 1
   // inv_max_curvature = 1/curv_max = ~pT[MeV].
   float inv_max_curvature = 900.0f;
   // factor to tighen inv_max_curvature when cutting after the fit is complete
   float final_curv_cut_tighten = 1.5f;
-  // detector r and z bounds, used in seed quality calculation
-  float rmax = 350.0f;
-  float zmax = 3000.0f;
 
   // max_z0 is used from the graph_making to insure concistency
 };
