@@ -94,7 +94,7 @@ GraphBasedSeedingAlgorithm::GraphBasedSeedingAlgorithm(
   // set to entire detector
   // for pixel seeding, roi z bounds are used
 
-  m_internalRoi.emplace(-4.5, 4.5, -150., 150.);
+  m_internalRoi.emplace(-4.5, 4.5, -160., 160.);
   m_cfg.seedFinderConfig.maxZ0 = m_internalRoi->zMax();
   m_cfg.seedFinderConfig.minZ0 = m_internalRoi->zMin();
 
