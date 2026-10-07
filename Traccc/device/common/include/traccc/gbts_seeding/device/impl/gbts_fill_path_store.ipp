@@ -117,27 +117,42 @@ TRACCC_HOST_DEVICE inline void gbts_fill_path_store(
     }
     unsigned char length = 1;
     bool toggle = false;
+    bool failed = false;
     details::edgeState state1;
     details::edgeState state2;
     const uint2 leaf_nodes = d_output_edge_nodes[chain[depth - 1u]];
     const traccc::float4 node1 = d_sp_reduced[leaf_nodes.x];
     traccc::float4 node2 = d_sp_reduced[leaf_nodes.y];
     state1.initialize(node2, node1);
+    // Update with the inner node of the outermost edge too, as the CPU GBTS
+    // does; the outer node is the previous one of this update.
+    state1.m_head_node_type = (node1.w < 0);
+    if (!details::gbts_kalman_update(&state2, &state1, node2, fit_params,
+                                     payload.max_z0)) {
+      continue;
+    }
+    state1 = state2;
     for (unsigned int i = depth - 1u; i > 0u; --i) {
       const unsigned int nodeidx = d_output_edge_nodes[chain[i - 1u]].y;
       node2 = d_sp_reduced[nodeidx];
       if (toggle) {
         if (!details::gbts_kalman_update(&state1, &state2, node2, fit_params,
                                          payload.max_z0)) {
-          state1 = state2;
+          failed = true;
           break;
         }
       } else if (!details::gbts_kalman_update(&state2, &state1, node2,
                                               fit_params, payload.max_z0)) {
+        failed = true;
         break;
       }
       toggle = !toggle;
       length++;
+    }
+    // A path whose fit fails on the way is not a seed, as in the CPU GBTS.
+    // It used to be kept with the spacepoints the fit did not reach.
+    if (failed) {
+      continue;
     }
     if (length < payload.minLevel) {
       continue;
@@ -153,15 +168,9 @@ TRACCC_HOST_DEVICE inline void gbts_fill_path_store(
         1.0f) {
       continue;
     }
-    // prefer seeds that reach to the outer edge of the detector for better
-    // resolution at high pT
-    if (math::fabs(state1.m_Y[1]) > fit_params.zmax / fit_params.rmax) {
-      state1.m_J += fit_params.add_hit * math::fabs(node1.z) / fit_params.zmax;
-    } else {
-      const float r2_max = (node1.x) * (node1.x) + (node1.y) * (node1.y);
-      state1.m_J += fit_params.add_hit * math::sqrt(r2_max) / fit_params.rmax;
-    }
-    const int qual = static_cast<int>(fit_params.qual_scale * state1.m_J);
+    // The quality is the score per spacepoint, as in the CPU GBTS.
+    const int qual = static_cast<int>(fit_params.qual_scale * state1.m_J /
+                                      static_cast<float>(length + 1u));
     d_seed_proposals[path_idx] = int2{qual, static_cast<int>(path_idx)};
 
     // Bid for the path's last edge. The loser is marked ambiguous.

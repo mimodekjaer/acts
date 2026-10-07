@@ -108,7 +108,7 @@ struct gbts_make_graph_edges_params {
   float max_z0 = 160.0f;
   // Outer radius (mm) to which the edge is extrapolated for the ROI z cut.
   // Geometry input (~ outer pixel radius).
-  float maxOuterRadius = 350.0f;
+  float maxOuterRadius = 550.0f;
   // ROI band for zouter = z0 + maxOuterRadius*tau, required in [cut_zMinU,
   // cut_zMaxU]:  cut_zMin/MaxU = -/+ (|z0|_max + maxOuterRadius * tau_roi).
   float tau_roi = 45.0f;
@@ -119,7 +119,7 @@ struct gbts_make_graph_edges_params {
   //   = 0.299792458*2/(2*0.9) m^-1 = 0.333 m^-1 = 3.33e-4 mm^-1 (2 T, 0.9
   //   GeV).
   float max_Kappa_low_tau = 3.75e-4f;
-  float max_Kappa_high_tau = 4.35e-4f;
+  float max_Kappa_high_tau = 4.75e-4f;
   float max_Kappa_change_tau = 4.0f;
   // conditions to inflate edge-matching cuts
   float long_edge_dr = 50.0f;
@@ -187,20 +187,15 @@ struct gbts_fit_segments_params {
   float add_hit = 14.0f;
 
   // seed quality is an int scaled up from a float
-  // Exact int-scaling so the longest seed maps to ~1% of INT_MAX:
-  float qual_scale =
-      0.01f * static_cast<float>(INT_MAX) /
-      (add_hit * static_cast<float>(
-                     traccc::device::gbts_consts::max_seed_candidate_length));
+  // Exact int-scaling so the best score per spacepoint maps to ~1% of
+  // INT_MAX:
+  float qual_scale = 0.01f * static_cast<float>(INT_MAX) / add_hit;
 
   // Minimum-pT gate in the fit: reject if |X2| * inv_max_curvature > 1
   // inv_max_curvature = 1/curv_max = ~pT[MeV].
-  float inv_max_curvature = 900.0f;
+  float inv_max_curvature = 1000.0f;
   // factor to tighen inv_max_curvature when cutting after the fit is complete
-  float final_curv_cut_tighten = 1.5f;
-  // detector r and z bounds, used in seed quality calculation
-  float rmax = 350.0f;
-  float zmax = 3000.0f;
+  float final_curv_cut_tighten = 1.0f;
 
   // max_z0 is used from the graph_making to insure concistency
 };
@@ -222,7 +217,7 @@ struct gbts_convert_seeds_params {
 // SP counting cuts for device::gbts_count_spacepoints_by_layer
 struct gbts_count_spacepoints_by_layer_params {
   // Maximum cluster width allowed on "type 1" layers.
-  float type1_max_width = 0.2f;
+  float type1_max_width = 0.35f;
   // If true, apply the cluster-width / tau cut at SP-counting time.
   bool doTauCut = true;
 };
