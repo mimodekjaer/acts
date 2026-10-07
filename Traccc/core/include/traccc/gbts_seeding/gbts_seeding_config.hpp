@@ -207,17 +207,10 @@ struct gbts_fit_segments_params {
 
 // Seed ambiguity / dropout parameters for device::gbts_convert_seeds
 struct gbts_convert_seeds_params {
-  // apply the "tight" bidding to short seeds in the tight-bid region.
-  bool use_dropout = true;
   // dcurv = dkappa between two triplets, outlier if > dropout_dcurv_m
   float dropout_dcurv_m = 0.007f;
   // Fraction of shared hits above which a seed loses a bid (~1/2). Tuning.
   float best_hit_frac = 0.49f;
-  // Region switch for "tight" bidding:
-  // cot(theta) = sinh(eta) = tight_bid_cot_threshold
-  //   -> sinh(0.88) ~ 1.0, so tracks with |eta| < 0.88 get tighter
-  //   hit-sharing cuts.
-  float tight_bid_cot_threshold = 1.0f;
 };
 
 // SP counting cuts for device::gbts_count_spacepoints_by_layer

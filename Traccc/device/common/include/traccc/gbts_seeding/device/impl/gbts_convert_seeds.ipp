@@ -32,41 +32,6 @@ struct Tracklet {
   int size;
 };
 
-TRACCC_HOST_DEVICE inline traccc::float2 gbts_estimate_seed_params(
-    const std::array<traccc::float4, 3>& sps) {
-  float u[2], v[2];
-
-  const float x0 = sps[1].x;
-  const float y0 = sps[1].y;
-  const float r0 = math::sqrt(x0 * x0 + y0 * y0);
-  const float cosA = x0 / r0;
-  const float sinA = y0 / r0;
-
-  for (unsigned int k = 0; k < 2; k++) {
-    const unsigned int sp_idx = (k == 1) ? 2u : k;
-    const float dx = sps[sp_idx].x - x0;
-    const float dy = sps[sp_idx].y - y0;
-    const float r2_inv = 1.0f / (dx * dx + dy * dy);
-    const float xn = dx * cosA + dy * sinA;
-    const float yn = -dx * sinA + dy * cosA;
-    u[k] = xn * r2_inv;
-    v[k] = yn * r2_inv;
-  }
-
-  const float du = u[0] - u[1];
-  if (du == 0.0f) {
-    return float2{0.0f, 0.0f};
-  }
-  const float A = (v[0] - v[1]) / du;
-  const float B = v[1] - A * u[1];
-  const float curv =
-      1000.0f * B / math::sqrt(1 + A * A);  // Curvature from mm^-1 to m^-1
-  const float cot_t =
-      (sps[2].z - sps[1].z) /
-      (math::sqrt(sps[2].x * sps[2].x + sps[2].y * sps[2].y) - r0);
-  return float2{curv, cot_t};
-}
-
 }  // namespace detail
 
 template <concepts::thread_id1 thread_id_t>
@@ -80,13 +45,9 @@ TRACCC_HOST_DEVICE inline void gbts_convert_seeds(
   const vecmem::device_vector<const int2> d_path_store(payload.path_store);
   const vecmem::device_vector<const uint2> d_output_edge_nodes(
       payload.output_edge_nodes);
-  const vecmem::device_vector<const float4> d_sp_params(payload.reducedSP);
   vecmem::device_vector<unsigned long long int> d_hit_bids(payload.hit_bids);
 
   const float best_hit_frac = payload.gbts_convert_seeds_params.best_hit_frac;
-  const float tight_bid_cot_threshold =
-      payload.gbts_convert_seeds_params.tight_bid_cot_threshold;
-  const bool use_dropout = payload.gbts_convert_seeds_params.use_dropout;
 
   const unsigned int globalIdx = thread_id.getGlobalThreadIdX();
   const unsigned int blockDimX = thread_id.getBlockDimX();
@@ -121,28 +82,11 @@ TRACCC_HOST_DEVICE inline void gbts_convert_seeds(
     best_for_hit +=
         (prop_idx == (d_hit_bids[seed.nodes[seed.size - 1]] & 0xFFFFFFFFLL));
 
-    if (best_for_hit < best_hit_frac * static_cast<float>(seed.size)) {
+    // Reject the seed if more than best_hit_frac of its hits went to better
+    // seeds, as the CPU GBTS does.
+    if (static_cast<float>(seed.size - best_for_hit) >
+        best_hit_frac * static_cast<float>(seed.size)) {
       continue;
-    }
-    if (use_dropout) {
-      std::array<traccc::float4, 3> sps = {
-          d_sp_params[seed.nodes[seed.size - 1]],
-          d_sp_params[seed.nodes[(seed.size - 1) / 2 + 1]],
-          d_sp_params[seed.nodes[0]]};
-      const traccc::float2 curv_cot_1 = detail::gbts_estimate_seed_params(sps);
-      sps[1] = d_sp_params[seed.nodes[(seed.size - 1) / 2]];
-      const traccc::float2 curv_cot_2 = detail::gbts_estimate_seed_params(sps);
-      sps[0] = d_sp_params[seed.nodes[seed.size - 2]];
-      const traccc::float2 curv_cot_3 = detail::gbts_estimate_seed_params(sps);
-      if ((best_for_hit < seed.size - 1) &
-          (fabsf(curv_cot_1.y + curv_cot_2.y +
-                 curv_cot_3.y) <  // Checking against the average
-                                  // cot(theta) of the three tracklets
-           3.0f * tight_bid_cot_threshold) &
-          (seed.size < 5)) {  // Don't apply dropout to seeds of length 5
-                              // or more. To avoid dropping good seeds.
-        continue;
-      }
     }
     // Output the whole path as one seed, innermost spacepoint first.
     std::array<unsigned int, edm::seed_max_spacepoints> sp_indices{};
