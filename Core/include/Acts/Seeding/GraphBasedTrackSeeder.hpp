@@ -53,7 +53,7 @@ class GraphBasedTrackSeeder {
     bool validateTriplets = true;
     /// widens allowed variation in tau ratio
     /// if layer is missed in edge connecting
-    bool useAdaptiveCuts = true;
+    bool useAdaptiveCuts = false;
     /// optionally add 3 sp seeds within a certain eta range
     ///
     /// @note Worth little until `maxAbsEtaAddTriplets` is opened past
@@ -66,6 +66,13 @@ class GraphBasedTrackSeeder {
     /// correction applied to tau acceptance
     /// if a layer is missed during edge connecting
     float tauRatioCorr = 0.006;
+    /// Correction applied to the tau acceptance if either edge is long, i.e.
+    /// may have crossed a layer without a hit, as the traccc GPU GBTS does.
+    float tauRatioCorrLongEdge = 0.003f;
+    /// Radial separation above which an edge is long.
+    float longEdgeDeltaRadius = 50.f * UnitConstants::mm;
+    /// Longitudinal separation above which an edge is long.
+    float longEdgeDeltaZ = 200.f * UnitConstants::mm;
     /// The same for a triplet any of whose three nodes a strip module made,
     /// whose two doublets resolved the shared node's along-strip coordinate
     /// separately. Reaches nothing without a strip in the triplet.
