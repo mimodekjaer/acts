@@ -117,6 +117,7 @@ TRACCC_HOST_DEVICE inline void gbts_fill_path_store(
     }
     unsigned char length = 1;
     bool toggle = false;
+    bool failed = false;
     details::edgeState state1;
     details::edgeState state2;
     const uint2 leaf_nodes = d_output_edge_nodes[chain[depth - 1u]];
@@ -137,15 +138,21 @@ TRACCC_HOST_DEVICE inline void gbts_fill_path_store(
       if (toggle) {
         if (!details::gbts_kalman_update(&state1, &state2, node2, fit_params,
                                          payload.max_z0)) {
-          state1 = state2;
+          failed = true;
           break;
         }
       } else if (!details::gbts_kalman_update(&state2, &state1, node2,
                                               fit_params, payload.max_z0)) {
+        failed = true;
         break;
       }
       toggle = !toggle;
       length++;
+    }
+    // A path whose fit fails on the way is not a seed, as in the CPU GBTS.
+    // It used to be kept with the spacepoints the fit did not reach.
+    if (failed) {
+      continue;
     }
     if (length < payload.minLevel) {
       continue;
