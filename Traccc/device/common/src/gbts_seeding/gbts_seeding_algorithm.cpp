@@ -170,8 +170,18 @@ auto gbts_seeding_algorithm::create_edges(
       .num_outgoing_edges = num_outgoing_edges_buf,
   });
 
-  // 3. Write the edges into their slots.
-  const unsigned int nEdgesMax = cfg.max_edges_per_spacepoint * nSp;
+  // 3. Write the edges into their slots. The buffers are sized by the edge
+  //    count, up to max_edges_per_spacepoint per spacepoint.
+  copy()(
+      vecmem::data::vector_view<unsigned int>{
+          1u, num_outgoing_edges_buf.ptr() + nSp},
+      vecmem::data::vector_view<unsigned int>{
+          1u, counters_buf.ptr() + gbts_counter::nEdgesTotal})
+      ->ignore();
+  copy()(counters_buf, h_counters)->wait();
+  const unsigned int nEdgesMax =
+      std::max(1u, std::min(h_counters[gbts_counter::nEdgesTotal],
+                            cfg.max_edges_per_spacepoint * nSp));
   vecmem::data::vector_buffer<uint2> edge_nodes_buf(nEdgesMax, mr().main);
   copy().setup(edge_nodes_buf)->ignore();
   vecmem::data::vector_buffer<short4> edge_params_buf(nEdgesMax, mr().main);
