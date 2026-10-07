@@ -50,7 +50,7 @@ class GraphBasedTrackSeeder {
     /// Match seeds before creating them.
     bool matchBeforeCreate = false;
     /// optional validation for barrel triplets
-    bool validateTriplets = true;
+    bool validateTriplets = false;
     /// widens allowed variation in tau ratio
     /// if layer is missed in edge connecting
     bool useAdaptiveCuts = false;
@@ -73,6 +73,14 @@ class GraphBasedTrackSeeder {
     float longEdgeDeltaRadius = 50.f * UnitConstants::mm;
     /// Longitudinal separation above which an edge is long.
     float longEdgeDeltaZ = 200.f * UnitConstants::mm;
+    /// Fraction by which the tau ratio cut is tightened for each of the two
+    /// curvature thresholds below that the mean curvature of the two edges is
+    /// under, as the traccc GPU GBTS does: high pT tracks scatter less.
+    float highPtTauRatioTightening = 0.2f;
+    /// First curvature threshold of the tightening.
+    float highPtCurvature = 1e-4f / UnitConstants::mm;
+    /// Second curvature threshold of the tightening.
+    float veryHighPtCurvature = 3e-5f / UnitConstants::mm;
     /// The same for a triplet any of whose three nodes a strip module made,
     /// whose two doublets resolved the shared node's along-strip coordinate
     /// separately. Reaches nothing without a strip in the triplet.

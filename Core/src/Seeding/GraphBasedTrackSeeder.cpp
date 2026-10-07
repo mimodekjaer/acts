@@ -525,8 +525,18 @@ std::pair<std::uint32_t, std::uint32_t> GraphBasedTrackSeeder::buildTheGraph(
                 addTauRatioCorr += m_cfg.tauRatioCorrStrip;
               }
 
+              // tighter for high pT
+              const float meanCurv = 0.5f * std::abs(curv2 + pS->p[1]);
+              const float tauRatioCut =
+                  (m_cfg.tauRatioCut + addTauRatioCorr) *
+                  (1.f -
+                   m_cfg.highPtTauRatioTightening *
+                       (static_cast<float>(meanCurv < m_cfg.highPtCurvature) +
+                        static_cast<float>(meanCurv <
+                                           m_cfg.veryHighPtCurvature)));
+
               // bad match
-              if (absTauRatio > m_cfg.tauRatioCut + addTauRatioCorr) {
+              if (absTauRatio > tauRatioCut) {
                 continue;
               }
 
