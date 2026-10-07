@@ -16,9 +16,13 @@
 #include <vecmem/edm/container.hpp>
 
 // System include(s)
+#include <array>
 #include <ostream>
 
 namespace traccc::edm {
+
+/// The largest number of spacepoints a seed can hold
+inline constexpr unsigned int seed_max_spacepoints = 16u;
 
 /// Interface for the @c traccc::edm::seed_collection class.
 ///
@@ -42,56 +46,78 @@ class seed : public BASE {
   /// @name Seed Information
   /// @{
 
-  /// Index of the bottom spacepoint (non-const)
+  /// Indices of the spacepoints, innermost first (non-const)
   ///
-  /// @return A (non-const) vector of <tt>unsigned int</tt> values
+  /// Only the first @c n_spacepoints() entries of a seed are used.
   ///
-  TRACCC_HOST_DEVICE
-  auto& bottom_index() { return BASE::template get<0>(); }
-  /// Index of the bottom spacepoint (const)
-  ///
-  /// @return A (const) vector of <tt>unsigned int</tt> values
+  /// @return A (non-const) vector of
+  ///         <tt>std::array<unsigned int, seed_max_spacepoints></tt> values
   ///
   TRACCC_HOST_DEVICE
-  const auto& bottom_index() const { return BASE::template get<0>(); }
+  auto& spacepoint_indices() { return BASE::template get<0>(); }
+  /// Indices of the spacepoints, innermost first (const)
+  ///
+  /// Only the first @c n_spacepoints() entries of a seed are used.
+  ///
+  /// @return A (const) vector of
+  ///         <tt>std::array<unsigned int, seed_max_spacepoints></tt> values
+  ///
+  TRACCC_HOST_DEVICE
+  const auto& spacepoint_indices() const { return BASE::template get<0>(); }
 
-  /// Index of the middle spacepoint (non-const)
+  /// Number of spacepoints of the seed (non-const)
   ///
   /// @return A (non-const) vector of <tt>unsigned int</tt> values
   ///
   TRACCC_HOST_DEVICE
-  auto& middle_index() { return BASE::template get<1>(); }
-  /// Index of the middle spacepoint (const)
+  auto& n_spacepoints() { return BASE::template get<1>(); }
+  /// Number of spacepoints of the seed (const)
   ///
   /// @return A (const) vector of <tt>unsigned int</tt> values
   ///
   TRACCC_HOST_DEVICE
-  const auto& middle_index() const { return BASE::template get<1>(); }
+  const auto& n_spacepoints() const { return BASE::template get<1>(); }
 
-  /// Index of the top spacepoint (non-const)
-  ///
-  /// @return A (non-const) vector of <tt>unsigned int</tt> values
-  ///
-  TRACCC_HOST_DEVICE
-  auto& top_index() { return BASE::template get<2>(); }
-  /// Index of the top spacepoint (const)
-  ///
-  /// @return A (const) vector of <tt>unsigned int</tt> values
-  ///
-  TRACCC_HOST_DEVICE
-  const auto& top_index() const { return BASE::template get<2>(); }
   /// Quality of the seed (const)
   ///
   /// @return A (const) vector of <tt>float</tt> values
   ///
   TRACCC_HOST_DEVICE
-  const auto& quality() const { return BASE::template get<3>(); }
+  const auto& quality() const { return BASE::template get<2>(); }
   /// Quality of the seed (non-const)
   ///
   /// @return A (non-const) vector of <tt>float</tt> values
   ///
   TRACCC_HOST_DEVICE
-  auto& quality() { return BASE::template get<3>(); }
+  auto& quality() { return BASE::template get<2>(); }
+
+  /// Index of the bottom (innermost) spacepoint
+  ///
+  /// @note This function must only be used on proxy objects, not on
+  ///       containers!
+  ///
+  TRACCC_HOST_DEVICE
+  unsigned int bottom_index() const { return spacepoint_indices()[0]; }
+
+  /// Index of the middle spacepoint, the one at @c n_spacepoints()/2
+  ///
+  /// @note This function must only be used on proxy objects, not on
+  ///       containers!
+  ///
+  TRACCC_HOST_DEVICE
+  unsigned int middle_index() const {
+    return spacepoint_indices()[n_spacepoints() / 2u];
+  }
+
+  /// Index of the top (outermost) spacepoint
+  ///
+  /// @note This function must only be used on proxy objects, not on
+  ///       containers!
+  ///
+  TRACCC_HOST_DEVICE
+  unsigned int top_index() const {
+    return spacepoint_indices()[n_spacepoints() - 1u];
+  }
 
   /// @}
 
@@ -139,11 +165,10 @@ class seed : public BASE {
 };  // class seed
 
 /// SoA container describing reconstructed track seeds
-using seed_collection =
-    vecmem::edm::container<seed, vecmem::edm::type::vector<unsigned int>,
-                           vecmem::edm::type::vector<unsigned int>,
-                           vecmem::edm::type::vector<unsigned int>,
-                           vecmem::edm::type::vector<float> >;
+using seed_collection = vecmem::edm::container<
+    seed,
+    vecmem::edm::type::vector<std::array<unsigned int, seed_max_spacepoints> >,
+    vecmem::edm::type::vector<unsigned int>, vecmem::edm::type::vector<float> >;
 
 }  // namespace traccc::edm
 

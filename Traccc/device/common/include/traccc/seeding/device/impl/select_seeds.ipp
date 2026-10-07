@@ -182,7 +182,8 @@ inline void select_seeds(
         n_seeds_per_spM == 0) {
       n_seeds_per_spM++;
 
-      seeds_device.push_back({aTriplet.spB, aTriplet.spM, aTriplet.spT,
+      seeds_device.push_back({{aTriplet.spB, aTriplet.spM, aTriplet.spT},
+                              3u,
                               static_cast<float>(aTriplet.weight)});
     }
   }

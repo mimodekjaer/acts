@@ -16,6 +16,7 @@ traccc_add_test(core
    "test_populator.cpp"
    "test_pvalue.cpp"
    "test_ranges.cpp"
+   "test_seed_collection.cpp"
    "test_serializer.cpp"
    "test_simulation.cpp"
    "test_subspace.cpp"

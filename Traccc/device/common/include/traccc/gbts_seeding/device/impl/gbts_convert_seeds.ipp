@@ -32,39 +32,33 @@ struct Tracklet {
   int size;
 };
 
-TRACCC_HOST_DEVICE inline traccc::float2 gbts_estimate_seed_params(
-    const std::array<traccc::float4, 3>& sps) {
-  float u[2], v[2];
-
-  const float x0 = sps[1].x;
-  const float y0 = sps[1].y;
-  const float r0 = math::sqrt(x0 * x0 + y0 * y0);
-  const float cosA = x0 / r0;
-  const float sinA = y0 / r0;
-
+/// Curvature (1/m) of a triplet, innermost first, from the conformal map
+/// centred on its last spacepoint, as the CPU GBTS estimates it.
+TRACCC_HOST_DEVICE inline float gbts_estimate_curvature(
+    const traccc::float4& sp0, const traccc::float4& sp1,
+    const traccc::float4& sp2) {
+  const float r0 = math::sqrt(sp2.x * sp2.x + sp2.y * sp2.y);
+  const float cosA = sp2.x / r0;
+  const float sinA = sp2.y / r0;
+  float u[2];
+  float v[2];
+  const traccc::float4* sps[2] = {&sp0, &sp1};
   for (unsigned int k = 0; k < 2; k++) {
-    const unsigned int sp_idx = (k == 1) ? 2u : k;
-    const float dx = sps[sp_idx].x - x0;
-    const float dy = sps[sp_idx].y - y0;
+    const float dx = sps[k]->x - sp2.x;
+    const float dy = sps[k]->y - sp2.y;
     const float r2_inv = 1.0f / (dx * dx + dy * dy);
     const float xn = dx * cosA + dy * sinA;
     const float yn = -dx * sinA + dy * cosA;
     u[k] = xn * r2_inv;
     v[k] = yn * r2_inv;
   }
-
   const float du = u[0] - u[1];
   if (du == 0.0f) {
-    return float2{0.0f, 0.0f};
+    return 0.0f;
   }
   const float A = (v[0] - v[1]) / du;
   const float B = v[1] - A * u[1];
-  const float curv =
-      1000.0f * B / math::sqrt(1 + A * A);  // Curvature from mm^-1 to m^-1
-  const float cot_t =
-      (sps[2].z - sps[1].z) /
-      (math::sqrt(sps[2].x * sps[2].x + sps[2].y * sps[2].y) - r0);
-  return float2{curv, cot_t};
+  return 1000.0f * B / math::sqrt(1 + A * A);  // from mm^-1 to m^-1
 }
 
 }  // namespace detail
@@ -83,13 +77,13 @@ TRACCC_HOST_DEVICE inline void gbts_convert_seeds(
   const vecmem::device_vector<const float4> d_sp_params(payload.reducedSP);
   vecmem::device_vector<unsigned long long int> d_hit_bids(payload.hit_bids);
 
-  const float dcurv_cut_m = payload.gbts_convert_seeds_params.dropout_dcurv_m;
-  const float force_dropout_max_curv_m =
-      payload.gbts_convert_seeds_params.force_dropout_max_curv_m;
   const float best_hit_frac = payload.gbts_convert_seeds_params.best_hit_frac;
-  const float tight_bid_cot_threshold =
-      payload.gbts_convert_seeds_params.tight_bid_cot_threshold;
-  const bool use_dropout = payload.gbts_convert_seeds_params.use_dropout;
+  const float dcurv_cut_m = payload.gbts_convert_seeds_params.dropout_dcurv_m;
+  const unsigned int split_min_size =
+      payload.gbts_convert_seeds_params.split_min_size;
+  const unsigned int split_max_size =
+      payload.gbts_convert_seeds_params.split_max_size;
+  const float split_max_eta = payload.gbts_convert_seeds_params.split_max_eta;
 
   const unsigned int globalIdx = thread_id.getGlobalThreadIdX();
   const unsigned int blockDimX = thread_id.getBlockDimX();
@@ -124,66 +118,76 @@ TRACCC_HOST_DEVICE inline void gbts_convert_seeds(
     best_for_hit +=
         (prop_idx == (d_hit_bids[seed.nodes[seed.size - 1]] & 0xFFFFFFFFLL));
 
-    if (best_for_hit < best_hit_frac * static_cast<float>(seed.size)) {
+    // Reject the seed if more than best_hit_frac of its hits went to better
+    // seeds, as the CPU GBTS does.
+    if (static_cast<float>(seed.size - best_for_hit) >
+        best_hit_frac * static_cast<float>(seed.size)) {
       continue;
     }
-    char diff_code = 0;
-    bool force_dropout = false;
-    if (use_dropout) {
-      std::array<traccc::float4, 3> sps = {
-          d_sp_params[seed.nodes[seed.size - 1]],
-          d_sp_params[seed.nodes[(seed.size - 1) / 2 + 1]],
-          d_sp_params[seed.nodes[0]]};
-      const traccc::float2 curv_cot_1 = detail::gbts_estimate_seed_params(sps);
-      sps[1] = d_sp_params[seed.nodes[(seed.size - 1) / 2]];
-      const traccc::float2 curv_cot_2 = detail::gbts_estimate_seed_params(sps);
-      sps[0] = d_sp_params[seed.nodes[seed.size - 2]];
-      const traccc::float2 curv_cot_3 = detail::gbts_estimate_seed_params(sps);
-      if ((best_for_hit < seed.size - 1) &
-          (fabsf(curv_cot_1.y + curv_cot_2.y +
-                 curv_cot_3.y) <  // Checking against the average
-                                  // cot(theta) of the three tracklets
-           3.0f * tight_bid_cot_threshold) &
-          (seed.size < 5)) {  // Don't apply dropout to seeds of length 5
-                              // or more. To avoid dropping good seeds.
-        continue;
+    // The spacepoints of the seed, innermost first.
+    std::array<unsigned int, edm::seed_max_spacepoints> sp_indices{};
+    // A local copy: the namespace-scope constant cannot be referenced from
+    // device code.
+    constexpr unsigned int max_sp = edm::seed_max_spacepoints;
+    const unsigned int n_sp = (static_cast<unsigned int>(seed.size) < max_sp)
+                                  ? static_cast<unsigned int>(seed.size)
+                                  : max_sp;
+    for (unsigned int i = 0; i < n_sp; ++i) {
+      sp_indices[i] = seed.nodes[static_cast<unsigned int>(seed.size) - 1u - i];
+    }
+    const float quality = static_cast<float>(prop.x);
+
+    // Split a short central seed into two seeds dropping one spacepoint
+    // each, unless its triplets agree on the curvature, as the CPU GBTS
+    // does. The pseudorapidity is the one of the outermost edge.
+    bool split = false;
+    if ((n_sp >= split_min_size) && (n_sp <= split_max_size)) {
+      const traccc::float4 sp_out = d_sp_params[sp_indices[n_sp - 1u]];
+      const traccc::float4 sp_in = d_sp_params[sp_indices[n_sp - 2u]];
+      const float tau = (sp_out.z - sp_in.z) /
+                        (math::sqrt(sp_out.x * sp_out.x + sp_out.y * sp_out.y) -
+                         math::sqrt(sp_in.x * sp_in.x + sp_in.y * sp_in.y));
+      const float abs_eta =
+          math::fabs(math::log(math::sqrt(1.0f + tau * tau) - tau));
+      if (abs_eta < split_max_eta) {
+        const unsigned int mid = n_sp / 2u;
+        // the seed, the seed without its first and without its middle
+        // spacepoint, each as (first, middle, last)
+        const unsigned int t[3][3] = {
+            {0u, mid, n_sp - 1u},
+            {1u, 1u + (n_sp - 1u) / 2u, n_sp - 1u},
+            {0u,
+             ((n_sp - 1u) / 2u < mid) ? (n_sp - 1u) / 2u
+                                      : (n_sp - 1u) / 2u + 1u,
+             n_sp - 1u}};
+        float curv[3];
+        for (unsigned int k = 0; k < 3; ++k) {
+          curv[k] =
+              detail::gbts_estimate_curvature(d_sp_params[sp_indices[t[k][0]]],
+                                              d_sp_params[sp_indices[t[k][1]]],
+                                              d_sp_params[sp_indices[t[k][2]]]);
+        }
+        split = (math::fabs(curv[1] - curv[0]) >= dcurv_cut_m) ||
+                (math::fabs(curv[2] - curv[0]) >= dcurv_cut_m) ||
+                (math::fabs(curv[2] - curv[1]) >= dcurv_cut_m);
       }
-      std::array<float, 3> diff = {fabsf(curv_cot_1.x - curv_cot_2.x),
-                                   fabsf(curv_cot_2.x - curv_cot_3.x),
-                                   fabsf(curv_cot_1.x - curv_cot_3.x)};
-      diff_code = static_cast<char>(4 * (diff[0] < dcurv_cut_m) +
-                                    2 * (diff[1] < dcurv_cut_m) +
-                                    (diff[2] < dcurv_cut_m));
-      force_dropout = fabsf(curv_cot_1.x + curv_cot_2.x + curv_cot_3.x) <
-                      3.0f * force_dropout_max_curv_m;
-      force_dropout |= (fabsf(curv_cot_1.y + curv_cot_2.y + curv_cot_3.y) <
-                        3.0f * tight_bid_cot_threshold) &
-                       (diff_code == 0);
     }
-    float quality = static_cast<float>(prop.x);
-    // use one seed from a consistent pair/set + the inconsistent one
-    // sample spacepoints from tracklet to create seeds
-    // include 1st order unless either 2 or 3 are consistent with the other
-    // and 1
-    if (((diff_code != 3) & (diff_code != 6)) | force_dropout) {
-      seeds_device.push_back({seed.nodes[seed.size - 1],
-                              seed.nodes[(seed.size - 1) / 2 + 1],
-                              seed.nodes[0], quality});
+
+    if (!split) {
+      seeds_device.push_back({sp_indices, n_sp, quality});
+      continue;
     }
-    // include 2nd order if it consistent with 1 and 3 or only 1 and 3 are
-    // consistent
-    if ((diff_code == 1) | (diff_code == 6)) {
-      seeds_device.push_back({seed.nodes[seed.size - 1],
-                              seed.nodes[(seed.size - 1) / 2], seed.nodes[0],
-                              quality});
-    }
-    // include 3rd order if it is consistent with 1 and 2 or only 1 and 2
-    // are consistent or if only 2 and 3 are consistent
-    if ((diff_code == 2) | (diff_code == 3) | (diff_code == 4) |
-        force_dropout) {
-      seeds_device.push_back({seed.nodes[seed.size - 2],
-                              seed.nodes[(seed.size - 1) / 2], seed.nodes[0],
-                              quality});
+    // the drop-out seeds: without the first and without the middle
+    // spacepoint
+    for (const unsigned int skip : {0u, n_sp / 2u}) {
+      std::array<unsigned int, edm::seed_max_spacepoints> drop_out{};
+      unsigned int n = 0;
+      for (unsigned int i = 0; i < n_sp; ++i) {
+        if (i != skip) {
+          drop_out[n++] = sp_indices[i];
+        }
+      }
+      seeds_device.push_back({drop_out, n, quality});
     }
   }
 }

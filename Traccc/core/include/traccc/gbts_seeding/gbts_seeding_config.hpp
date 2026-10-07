@@ -207,20 +207,16 @@ struct gbts_fit_segments_params {
 
 // Seed ambiguity / dropout parameters for device::gbts_convert_seeds
 struct gbts_convert_seeds_params {
-  // sample multiple triplets when forming seeds to hedge against outliers.
-  bool use_dropout = true;
-  // Curvature thresholds (1/m) for the dropout logic.
-  // curv of 0.03 = pT of ~10 GeV in a 2T field, curv = c*q*B/(2*pT)
-  float force_dropout_max_curv_m = 0.03f;
   // dcurv = dkappa between two triplets, outlier if > dropout_dcurv_m
   float dropout_dcurv_m = 0.007f;
   // Fraction of shared hits above which a seed loses a bid (~1/2). Tuning.
   float best_hit_frac = 0.49f;
-  // Region switch for "tight" bidding:
-  // cot(theta) = sinh(eta) = tight_bid_cot_threshold
-  //   -> sinh(0.88) ~ 1.0, so tracks with |eta| < 0.88 get tighter
-  //   hit-sharing cuts.
-  float tight_bid_cot_threshold = 1.0f;
+  // Seeds of split_min_size to split_max_size spacepoints with |eta| <
+  // split_max_eta are split in two seeds dropping one spacepoint each,
+  // unless their triplets agree on the curvature within dropout_dcurv_m.
+  unsigned int split_min_size = 4;
+  unsigned int split_max_size = 5;
+  float split_max_eta = 0.6f;
 };
 
 // SP counting cuts for device::gbts_count_spacepoints_by_layer
