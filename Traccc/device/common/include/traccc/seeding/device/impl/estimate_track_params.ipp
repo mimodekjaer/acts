@@ -41,7 +41,7 @@ TRACCC_HOST_DEVICE inline void estimate_track_params(
 
   // Figure out the magnetic field at the bottom spacepoint's position.
   const edm::spacepoint bottom_sp =
-      spacepoints.at(seeds.bottom_index().at(globalIndex));
+      spacepoints.at(seeds.at(globalIndex).bottom_index());
   const auto covfie_field_at_sp =
       bfield.at(bottom_sp.x(), bottom_sp.y(), bottom_sp.z());
   const vector3 vector_field_at_sp{covfie_field_at_sp[0], covfie_field_at_sp[1],
