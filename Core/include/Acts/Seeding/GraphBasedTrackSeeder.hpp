@@ -50,10 +50,10 @@ class GraphBasedTrackSeeder {
     /// Match seeds before creating them.
     bool matchBeforeCreate = false;
     /// optional validation for barrel triplets
-    bool validateTriplets = true;
+    bool validateTriplets = false;
     /// widens allowed variation in tau ratio
     /// if layer is missed in edge connecting
-    bool useAdaptiveCuts = true;
+    bool useAdaptiveCuts = false;
     /// optionally add 3 sp seeds within a certain eta range
     ///
     /// @note Worth little until `maxAbsEtaAddTriplets` is opened past
@@ -66,6 +66,25 @@ class GraphBasedTrackSeeder {
     /// correction applied to tau acceptance
     /// if a layer is missed during edge connecting
     float tauRatioCorr = 0.006;
+    /// Correction applied to the tau acceptance if either edge is long, i.e.
+    /// may have crossed a layer without a hit, as the traccc GPU GBTS does.
+    float tauRatioCorrLongEdge = 0.003f;
+    /// Radial separation above which an edge is long.
+    float longEdgeDeltaRadius = 50.f * UnitConstants::mm;
+    /// Longitudinal separation above which an edge is long.
+    float longEdgeDeltaZ = 200.f * UnitConstants::mm;
+    /// Fraction by which the tau ratio cut is tightened for each of the two
+    /// curvature thresholds below that the mean curvature of the two edges is
+    /// under, as the traccc GPU GBTS does: high pT tracks scatter less.
+    float highPtTauRatioTightening = 0.2f;
+    /// First curvature threshold of the tightening.
+    float highPtCurvature = 1e-4f / UnitConstants::mm;
+    /// Second curvature threshold of the tightening.
+    float veryHighPtCurvature = 3e-5f / UnitConstants::mm;
+    /// Cut on the sum of the tau ratio, phi and curvature differences of two
+    /// edges, each relative to its own cut, as the traccc GPU GBTS does. Zero
+    /// disables it.
+    float maxCutRatioSum = 1.3f;
     /// The same for a triplet any of whose three nodes a strip module made,
     /// whose two doublets resolved the shared node's along-strip coordinate
     /// separately. Reaches nothing without a strip in the triplet.
