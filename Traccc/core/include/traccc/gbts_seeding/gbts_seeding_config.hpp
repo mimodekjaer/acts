@@ -211,6 +211,12 @@ struct gbts_convert_seeds_params {
   float dropout_dcurv_m = 0.007f;
   // Fraction of shared hits above which a seed loses a bid (~1/2). Tuning.
   float best_hit_frac = 0.49f;
+  // Seeds of split_min_size to split_max_size spacepoints with |eta| <
+  // split_max_eta are split in two seeds dropping one spacepoint each,
+  // unless their triplets agree on the curvature within dropout_dcurv_m.
+  unsigned int split_min_size = 4;
+  unsigned int split_max_size = 5;
+  float split_max_eta = 0.6f;
 };
 
 // SP counting cuts for device::gbts_count_spacepoints_by_layer

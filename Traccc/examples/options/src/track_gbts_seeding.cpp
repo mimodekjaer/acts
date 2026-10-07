@@ -161,6 +161,16 @@ track_gbts_seeding::track_gbts_seeding() : interface("GBTS Options") {
           ->default_value(
               gbts_config.gbts_fit_segments_params.inv_max_curvature),
       "inv_max_curvature to stop following a seed [1/mm]");
+  m_desc.add_options()(
+      "split_max_size",
+      po::value(&gbts_config.gbts_convert_seeds_params.split_max_size)
+          ->default_value(gbts_config.gbts_convert_seeds_params.split_max_size),
+      "largest seed split into two drop-out seeds");
+  m_desc.add_options()(
+      "split_max_eta",
+      po::value(&gbts_config.gbts_convert_seeds_params.split_max_eta)
+          ->default_value(gbts_config.gbts_convert_seeds_params.split_max_eta),
+      "largest |eta| of a seed split into two drop-out seeds");
 }
 
 track_gbts_seeding::operator gbts_seedfinder_config() const {
