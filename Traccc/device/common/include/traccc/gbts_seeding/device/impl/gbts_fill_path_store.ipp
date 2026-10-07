@@ -123,6 +123,14 @@ TRACCC_HOST_DEVICE inline void gbts_fill_path_store(
     const traccc::float4 node1 = d_sp_reduced[leaf_nodes.x];
     traccc::float4 node2 = d_sp_reduced[leaf_nodes.y];
     state1.initialize(node2, node1);
+    // Update with the inner node of the outermost edge too, as the CPU GBTS
+    // does; the outer node is the previous one of this update.
+    state1.m_head_node_type = (node1.w < 0);
+    if (!details::gbts_kalman_update(&state2, &state1, node2, fit_params,
+                                     payload.max_z0)) {
+      continue;
+    }
+    state1 = state2;
     for (unsigned int i = depth - 1u; i > 0u; --i) {
       const unsigned int nodeidx = d_output_edge_nodes[chain[i - 1u]].y;
       node2 = d_sp_reduced[nodeidx];
