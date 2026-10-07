@@ -207,11 +207,8 @@ struct gbts_fit_segments_params {
 
 // Seed ambiguity / dropout parameters for device::gbts_convert_seeds
 struct gbts_convert_seeds_params {
-  // sample multiple triplets when forming seeds to hedge against outliers.
+  // apply the "tight" bidding to short seeds in the tight-bid region.
   bool use_dropout = true;
-  // Curvature thresholds (1/m) for the dropout logic.
-  // curv of 0.03 = pT of ~10 GeV in a 2T field, curv = c*q*B/(2*pT)
-  float force_dropout_max_curv_m = 0.03f;
   // dcurv = dkappa between two triplets, outlier if > dropout_dcurv_m
   float dropout_dcurv_m = 0.007f;
   // Fraction of shared hits above which a seed loses a bid (~1/2). Tuning.

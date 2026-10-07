@@ -83,9 +83,6 @@ TRACCC_HOST_DEVICE inline void gbts_convert_seeds(
   const vecmem::device_vector<const float4> d_sp_params(payload.reducedSP);
   vecmem::device_vector<unsigned long long int> d_hit_bids(payload.hit_bids);
 
-  const float dcurv_cut_m = payload.gbts_convert_seeds_params.dropout_dcurv_m;
-  const float force_dropout_max_curv_m =
-      payload.gbts_convert_seeds_params.force_dropout_max_curv_m;
   const float best_hit_frac = payload.gbts_convert_seeds_params.best_hit_frac;
   const float tight_bid_cot_threshold =
       payload.gbts_convert_seeds_params.tight_bid_cot_threshold;
@@ -127,8 +124,6 @@ TRACCC_HOST_DEVICE inline void gbts_convert_seeds(
     if (best_for_hit < best_hit_frac * static_cast<float>(seed.size)) {
       continue;
     }
-    char diff_code = 0;
-    bool force_dropout = false;
     if (use_dropout) {
       std::array<traccc::float4, 3> sps = {
           d_sp_params[seed.nodes[seed.size - 1]],
@@ -148,47 +143,19 @@ TRACCC_HOST_DEVICE inline void gbts_convert_seeds(
                               // or more. To avoid dropping good seeds.
         continue;
       }
-      std::array<float, 3> diff = {fabsf(curv_cot_1.x - curv_cot_2.x),
-                                   fabsf(curv_cot_2.x - curv_cot_3.x),
-                                   fabsf(curv_cot_1.x - curv_cot_3.x)};
-      diff_code = static_cast<char>(4 * (diff[0] < dcurv_cut_m) +
-                                    2 * (diff[1] < dcurv_cut_m) +
-                                    (diff[2] < dcurv_cut_m));
-      force_dropout = fabsf(curv_cot_1.x + curv_cot_2.x + curv_cot_3.x) <
-                      3.0f * force_dropout_max_curv_m;
-      force_dropout |= (fabsf(curv_cot_1.y + curv_cot_2.y + curv_cot_3.y) <
-                        3.0f * tight_bid_cot_threshold) &
-                       (diff_code == 0);
     }
-    float quality = static_cast<float>(prop.x);
-    // use one seed from a consistent pair/set + the inconsistent one
-    // sample spacepoints from tracklet to create seeds
-    // include 1st order unless either 2 or 3 are consistent with the other
-    // and 1
-    if (((diff_code != 3) & (diff_code != 6)) | force_dropout) {
-      seeds_device.push_back(
-          {{seed.nodes[seed.size - 1], seed.nodes[(seed.size - 1) / 2 + 1],
-            seed.nodes[0]},
-           3u,
-           quality});
+    // Output the whole path as one seed, innermost spacepoint first.
+    std::array<unsigned int, edm::seed_max_spacepoints> sp_indices{};
+    // A local copy: the namespace-scope constant cannot be referenced from
+    // device code.
+    constexpr unsigned int max_sp = edm::seed_max_spacepoints;
+    const unsigned int n_sp = (static_cast<unsigned int>(seed.size) < max_sp)
+                                  ? static_cast<unsigned int>(seed.size)
+                                  : max_sp;
+    for (unsigned int i = 0; i < n_sp; ++i) {
+      sp_indices[i] = seed.nodes[static_cast<unsigned int>(seed.size) - 1u - i];
     }
-    // include 2nd order if it consistent with 1 and 3 or only 1 and 3 are
-    // consistent
-    if ((diff_code == 1) | (diff_code == 6)) {
-      seeds_device.push_back({{seed.nodes[seed.size - 1],
-                               seed.nodes[(seed.size - 1) / 2], seed.nodes[0]},
-                              3u,
-                              quality});
-    }
-    // include 3rd order if it is consistent with 1 and 2 or only 1 and 2
-    // are consistent or if only 2 and 3 are consistent
-    if ((diff_code == 2) | (diff_code == 3) | (diff_code == 4) |
-        force_dropout) {
-      seeds_device.push_back({{seed.nodes[seed.size - 2],
-                               seed.nodes[(seed.size - 1) / 2], seed.nodes[0]},
-                              3u,
-                              quality});
-    }
+    seeds_device.push_back({sp_indices, n_sp, static_cast<float>(prop.x)});
   }
 }
 
