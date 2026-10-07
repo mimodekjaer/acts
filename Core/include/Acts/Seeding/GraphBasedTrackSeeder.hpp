@@ -81,6 +81,10 @@ class GraphBasedTrackSeeder {
     float highPtCurvature = 1e-4f / UnitConstants::mm;
     /// Second curvature threshold of the tightening.
     float veryHighPtCurvature = 3e-5f / UnitConstants::mm;
+    /// Cut on the sum of the tau ratio, phi and curvature differences of two
+    /// edges, each relative to its own cut, as the traccc GPU GBTS does. Zero
+    /// disables it.
+    float maxCutRatioSum = 1.3f;
     /// The same for a triplet any of whose three nodes a strip module made,
     /// whose two doublets resolved the shared node's along-strip coordinate
     /// separately. Reaches nothing without a strip in the triplet.
