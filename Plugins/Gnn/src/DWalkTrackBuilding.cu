@@ -9,6 +9,7 @@
 #include "ActsPlugins/Gnn/DWalkTrackBuilding.hpp"
 #include "ActsPlugins/Gnn/detail/ConnectedComponents.cuh"
 #include "ActsPlugins/Gnn/detail/CudaUtils.hpp"
+#include "ActsPlugins/Gnn/detail/DeviceMemory.cuh"
 
 #include <algorithm>
 #include <cassert>
@@ -46,208 +47,52 @@ struct Edge {
   int dst = 0;
 };
 
+using ActsPlugins::detail::DeviceMemory;
+
 template <typename T>
-void cudaFreeAsyncNoThrow(T *ptr, cudaStream_t stream) noexcept {
-  if (ptr != nullptr) {
-    static_cast<void>(cudaFreeAsync(ptr, stream));
-  }
-}
+using DeviceArray = vecmem::unique_alloc_ptr<T[]>;
 
 struct DeviceOrientedEdges {
-  int *src = nullptr;
-  int *dst = nullptr;
-  float *score = nullptr;
-  unsigned char *valid = nullptr;
-  unsigned char *activeNodes = nullptr;
+  DeviceArray<int> src;
+  DeviceArray<int> dst;
+  DeviceArray<float> score;
+  DeviceArray<unsigned char> valid;
+  DeviceArray<unsigned char> activeNodes;
   std::size_t numEdges = 0;
   std::size_t numNodes = 0;
 
-  DeviceOrientedEdges() = default;
-  ~DeviceOrientedEdges() { reset(); }
-
-  DeviceOrientedEdges(const DeviceOrientedEdges &) = delete;
-  DeviceOrientedEdges &operator=(const DeviceOrientedEdges &) = delete;
-
-  DeviceOrientedEdges(DeviceOrientedEdges &&other) noexcept {
-    *this = std::move(other);
-  }
-
-  DeviceOrientedEdges &operator=(DeviceOrientedEdges &&other) noexcept {
-    if (this != &other) {
-      reset();
-      src = std::exchange(other.src, nullptr);
-      dst = std::exchange(other.dst, nullptr);
-      score = std::exchange(other.score, nullptr);
-      valid = std::exchange(other.valid, nullptr);
-      activeNodes = std::exchange(other.activeNodes, nullptr);
-      numEdges = std::exchange(other.numEdges, 0);
-      numNodes = std::exchange(other.numNodes, 0);
-      stream = std::exchange(other.stream, nullptr);
-    }
-    return *this;
-  }
-
-  void setStream(cudaStream_t owningStream) { stream = owningStream; }
-
-  void reset() noexcept {
-    cudaFreeAsyncNoThrow(src, stream);
-    cudaFreeAsyncNoThrow(dst, stream);
-    cudaFreeAsyncNoThrow(score, stream);
-    cudaFreeAsyncNoThrow(valid, stream);
-    cudaFreeAsyncNoThrow(activeNodes, stream);
-    src = nullptr;
-    dst = nullptr;
-    score = nullptr;
-    valid = nullptr;
-    activeNodes = nullptr;
-    numEdges = 0;
-    numNodes = 0;
-  }
-
- private:
-  cudaStream_t stream = nullptr;
+  void reset() noexcept { *this = {}; }
 };
 
 struct DeviceCompactEdges {
-  int *src = nullptr;
-  int *dst = nullptr;
-  float *score = nullptr;
+  DeviceArray<int> src;
+  DeviceArray<int> dst;
+  DeviceArray<float> score;
   std::size_t numEdges = 0;
   std::size_t numNodes = 0;
 
-  DeviceCompactEdges() = default;
-  ~DeviceCompactEdges() { reset(); }
-
-  DeviceCompactEdges(const DeviceCompactEdges &) = delete;
-  DeviceCompactEdges &operator=(const DeviceCompactEdges &) = delete;
-
-  DeviceCompactEdges(DeviceCompactEdges &&other) noexcept {
-    *this = std::move(other);
-  }
-
-  DeviceCompactEdges &operator=(DeviceCompactEdges &&other) noexcept {
-    if (this != &other) {
-      reset();
-      src = std::exchange(other.src, nullptr);
-      dst = std::exchange(other.dst, nullptr);
-      score = std::exchange(other.score, nullptr);
-      numEdges = std::exchange(other.numEdges, 0);
-      numNodes = std::exchange(other.numNodes, 0);
-      stream = std::exchange(other.stream, nullptr);
-    }
-    return *this;
-  }
-
-  void setStream(cudaStream_t owningStream) { stream = owningStream; }
-
-  void reset() noexcept {
-    cudaFreeAsyncNoThrow(src, stream);
-    cudaFreeAsyncNoThrow(dst, stream);
-    cudaFreeAsyncNoThrow(score, stream);
-    src = nullptr;
-    dst = nullptr;
-    score = nullptr;
-    numEdges = 0;
-    numNodes = 0;
-  }
-
- private:
-  cudaStream_t stream = nullptr;
+  void reset() noexcept { *this = {}; }
 };
 
 struct DeviceCsrGraph {
-  int *rowPtr = nullptr;
-  int *colIdx = nullptr;
-  float *edgeWeight = nullptr;
-  int *incomingRowPtr = nullptr;
-  int *incomingColIdx = nullptr;
+  DeviceArray<int> rowPtr;
+  DeviceArray<int> colIdx;
+  DeviceArray<float> edgeWeight;
+  DeviceArray<int> incomingRowPtr;
+  DeviceArray<int> incomingColIdx;
   std::size_t numNodes = 0;
   std::size_t numEdges = 0;
 
-  DeviceCsrGraph() = default;
-  ~DeviceCsrGraph() { reset(); }
-
-  DeviceCsrGraph(const DeviceCsrGraph &) = delete;
-  DeviceCsrGraph &operator=(const DeviceCsrGraph &) = delete;
-
-  DeviceCsrGraph(DeviceCsrGraph &&other) noexcept { *this = std::move(other); }
-
-  DeviceCsrGraph &operator=(DeviceCsrGraph &&other) noexcept {
-    if (this != &other) {
-      reset();
-      rowPtr = std::exchange(other.rowPtr, nullptr);
-      colIdx = std::exchange(other.colIdx, nullptr);
-      edgeWeight = std::exchange(other.edgeWeight, nullptr);
-      incomingRowPtr = std::exchange(other.incomingRowPtr, nullptr);
-      incomingColIdx = std::exchange(other.incomingColIdx, nullptr);
-      numNodes = std::exchange(other.numNodes, 0);
-      numEdges = std::exchange(other.numEdges, 0);
-      stream = std::exchange(other.stream, nullptr);
-    }
-    return *this;
-  }
-
-  void setStream(cudaStream_t owningStream) { stream = owningStream; }
-
-  void reset() noexcept {
-    cudaFreeAsyncNoThrow(rowPtr, stream);
-    cudaFreeAsyncNoThrow(colIdx, stream);
-    cudaFreeAsyncNoThrow(edgeWeight, stream);
-    cudaFreeAsyncNoThrow(incomingRowPtr, stream);
-    cudaFreeAsyncNoThrow(incomingColIdx, stream);
-    rowPtr = nullptr;
-    colIdx = nullptr;
-    edgeWeight = nullptr;
-    incomingRowPtr = nullptr;
-    incomingColIdx = nullptr;
-    numNodes = 0;
-    numEdges = 0;
-  }
-
- private:
-  cudaStream_t stream = nullptr;
+  void reset() noexcept { *this = {}; }
 };
 
 struct DpCudaState {
-  float *bestScore = nullptr;
-  int *bestChild = nullptr;
-  unsigned char *sourceMask = nullptr;
+  DeviceArray<float> bestScore;
+  DeviceArray<int> bestChild;
+  DeviceArray<unsigned char> sourceMask;
   std::size_t numNodes = 0;
 
-  DpCudaState() = default;
-  ~DpCudaState() { reset(); }
-
-  DpCudaState(const DpCudaState &) = delete;
-  DpCudaState &operator=(const DpCudaState &) = delete;
-
-  DpCudaState(DpCudaState &&other) noexcept { *this = std::move(other); }
-
-  DpCudaState &operator=(DpCudaState &&other) noexcept {
-    if (this != &other) {
-      reset();
-      bestScore = std::exchange(other.bestScore, nullptr);
-      bestChild = std::exchange(other.bestChild, nullptr);
-      sourceMask = std::exchange(other.sourceMask, nullptr);
-      numNodes = std::exchange(other.numNodes, 0);
-      stream = std::exchange(other.stream, nullptr);
-    }
-    return *this;
-  }
-
-  void setStream(cudaStream_t owningStream) { stream = owningStream; }
-
-  void reset() noexcept {
-    cudaFreeAsyncNoThrow(bestScore, stream);
-    cudaFreeAsyncNoThrow(bestChild, stream);
-    cudaFreeAsyncNoThrow(sourceMask, stream);
-    bestScore = nullptr;
-    bestChild = nullptr;
-    sourceMask = nullptr;
-    numNodes = 0;
-  }
-
- private:
-  cudaStream_t stream = nullptr;
+  void reset() noexcept { *this = {}; }
 };
 
 std::vector<int> orderedSimpleComponentNodes(const std::vector<int> &nodes,
@@ -775,49 +620,44 @@ std::vector<Edge> createOrientedEdgesCuda(
     const ActsPlugins::Tensor<std::int64_t> &edgeTensor,
     const ActsPlugins::Tensor<float> &scoreTensor,
     const ActsPlugins::Tensor<float> &featureTensor,
-    std::size_t radialFeatureIndex, cudaStream_t stream,
-    DeviceOrientedEdges &deviceGraph, int **cudaInitialLabels = nullptr,
+    std::size_t radialFeatureIndex, DeviceMemory &mem,
+    DeviceOrientedEdges &deviceGraph,
+    DeviceArray<int> *cudaInitialLabels = nullptr,
     int *initialNumComponents = nullptr,
     std::vector<int> *initialLabels = nullptr) {
+  const cudaStream_t stream = mem.stream();
   const auto numNodes = featureTensor.shape().at(0);
   const auto numFeatures = featureTensor.shape().at(1);
   const auto numEdges = edgeTensor.shape().at(1);
 
-  deviceGraph.setStream(stream);
   deviceGraph.numEdges = numEdges;
   deviceGraph.numNodes = numNodes;
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&deviceGraph.src, numEdges * sizeof(int), stream));
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&deviceGraph.dst, numEdges * sizeof(int), stream));
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&deviceGraph.score, numEdges * sizeof(float), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&deviceGraph.valid,
-                                  numEdges * sizeof(unsigned char), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&deviceGraph.activeNodes,
-                                  numNodes * sizeof(unsigned char), stream));
-  ACTS_CUDA_CHECK(cudaMemsetAsync(deviceGraph.activeNodes, 0,
+  deviceGraph.src = mem.make<int>(numEdges);
+  deviceGraph.dst = mem.make<int>(numEdges);
+  deviceGraph.score = mem.make<float>(numEdges);
+  deviceGraph.valid = mem.make<unsigned char>(numEdges);
+  deviceGraph.activeNodes = mem.make<unsigned char>(numNodes);
+  ACTS_CUDA_CHECK(cudaMemsetAsync(deviceGraph.activeNodes.get(), 0,
                                   numNodes * sizeof(unsigned char), stream));
 
   const dim3 edgeGrid((numEdges + kBlockSize - 1) / kBlockSize);
   orientEdgesKernel<<<edgeGrid, kBlockSize, 0, stream>>>(
       numEdges, numNodes, numFeatures, radialFeatureIndex, edgeTensor.data(),
-      scoreTensor.data(), featureTensor.data(), deviceGraph.src,
-      deviceGraph.dst, deviceGraph.score, deviceGraph.valid);
+      scoreTensor.data(), featureTensor.data(), deviceGraph.src.get(),
+      deviceGraph.dst.get(), deviceGraph.score.get(), deviceGraph.valid.get());
   ACTS_CUDA_CHECK(cudaGetLastError());
   markActiveNodesKernel<<<edgeGrid, kBlockSize, 0, stream>>>(
-      numEdges, deviceGraph.src, deviceGraph.dst, deviceGraph.valid,
-      deviceGraph.activeNodes);
+      numEdges, deviceGraph.src.get(), deviceGraph.dst.get(),
+      deviceGraph.valid.get(), deviceGraph.activeNodes.get());
   ACTS_CUDA_CHECK(cudaGetLastError());
 
   if (cudaInitialLabels != nullptr || initialLabels != nullptr ||
       initialNumComponents != nullptr) {
-    int *cudaLabels{};
-    ACTS_CUDA_CHECK(
-        cudaMallocAsync(&cudaLabels, numNodes * sizeof(int), stream));
+    auto cudaLabelsBuffer = mem.make<int>(numNodes);
+    int *cudaLabels = cudaLabelsBuffer.get();
     int numComponents = ActsPlugins::detail::connectedComponentsCuda(
-        numEdges, deviceGraph.src, deviceGraph.dst, numNodes, cudaLabels,
-        stream, false);
+        numEdges, deviceGraph.src.get(), deviceGraph.dst.get(), numNodes,
+        cudaLabels, mem);
     if (initialNumComponents != nullptr) {
       *initialNumComponents = numComponents;
     }
@@ -828,9 +668,7 @@ std::vector<Edge> createOrientedEdgesCuda(
                                       cudaMemcpyDeviceToHost, stream));
     }
     if (cudaInitialLabels != nullptr) {
-      *cudaInitialLabels = cudaLabels;
-    } else {
-      ACTS_CUDA_CHECK(cudaFreeAsync(cudaLabels, stream));
+      *cudaInitialLabels = std::move(cudaLabelsBuffer);
     }
   }
 
@@ -838,13 +676,13 @@ std::vector<Edge> createOrientedEdgesCuda(
   std::vector<int> dst(numEdges);
   std::vector<unsigned char> valid(numEdges);
 
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(src.data(), deviceGraph.src,
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(src.data(), deviceGraph.src.get(),
                                   numEdges * sizeof(int),
                                   cudaMemcpyDeviceToHost, stream));
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(dst.data(), deviceGraph.dst,
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(dst.data(), deviceGraph.dst.get(),
                                   numEdges * sizeof(int),
                                   cudaMemcpyDeviceToHost, stream));
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(valid.data(), deviceGraph.valid,
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(valid.data(), deviceGraph.valid.get(),
                                   numEdges * sizeof(unsigned char),
                                   cudaMemcpyDeviceToHost, stream));
 
@@ -864,49 +702,43 @@ DeviceCompactEdges compactDeviceEdges(const int *src, const int *dst,
                                       const float *score,
                                       const unsigned char *keepMask,
                                       std::size_t numEdges,
-                                      std::size_t numNodes,
-                                      cudaStream_t stream) {
+                                      std::size_t numNodes, DeviceMemory &mem) {
+  const cudaStream_t stream = mem.stream();
   DeviceCompactEdges compact;
-  compact.setStream(stream);
   compact.numNodes = numNodes;
-  compact.numEdges = thrust::count(thrust::device.on(stream), keepMask,
-                                   keepMask + numEdges, 1);
+  compact.numEdges =
+      thrust::count(mem.policy(), keepMask, keepMask + numEdges, 1);
   if (compact.numEdges == 0) {
     return compact;
   }
 
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&compact.src, compact.numEdges * sizeof(int), stream));
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&compact.dst, compact.numEdges * sizeof(int), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&compact.score,
-                                  compact.numEdges * sizeof(float), stream));
+  compact.src = mem.make<int>(compact.numEdges);
+  compact.dst = mem.make<int>(compact.numEdges);
+  compact.score = mem.make<float>(compact.numEdges);
 
-  thrust::copy_if(thrust::device.on(stream), src, src + numEdges, keepMask,
-                  compact.src, IsNonZero{});
-  thrust::copy_if(thrust::device.on(stream), dst, dst + numEdges, keepMask,
-                  compact.dst, IsNonZero{});
-  thrust::copy_if(thrust::device.on(stream), score, score + numEdges, keepMask,
-                  compact.score, IsNonZero{});
+  thrust::copy_if(mem.policy(), src, src + numEdges, keepMask,
+                  compact.src.get(), IsNonZero{});
+  thrust::copy_if(mem.policy(), dst, dst + numEdges, keepMask,
+                  compact.dst.get(), IsNonZero{});
+  thrust::copy_if(mem.policy(), score, score + numEdges, keepMask,
+                  compact.score.get(), IsNonZero{});
   return compact;
 }
 
 DeviceCompactEdges maxAddCompactDeviceEdgesCuda(
     const DeviceOrientedEdges &deviceGraph, const unsigned char *activeNodes,
-    float thMin, float thAdd, cudaStream_t stream) {
+    float thMin, float thAdd, DeviceMemory &mem) {
+  const cudaStream_t stream = mem.stream();
   if (deviceGraph.numEdges == 0) {
     return {};
   }
 
-  float *cudaBestOut{};
-  float *cudaBestIn{};
-  unsigned char *cudaKeep{};
-  ACTS_CUDA_CHECK(cudaMallocAsync(
-      &cudaBestOut, deviceGraph.numNodes * sizeof(float), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(
-      &cudaBestIn, deviceGraph.numNodes * sizeof(float), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(
-      &cudaKeep, deviceGraph.numEdges * sizeof(unsigned char), stream));
+  auto cudaBestOutBuffer = mem.make<float>(deviceGraph.numNodes);
+  float *cudaBestOut = cudaBestOutBuffer.get();
+  auto cudaBestInBuffer = mem.make<float>(deviceGraph.numNodes);
+  float *cudaBestIn = cudaBestInBuffer.get();
+  auto cudaKeepBuffer = mem.make<unsigned char>(deviceGraph.numEdges);
+  unsigned char *cudaKeep = cudaKeepBuffer.get();
 
   const dim3 nodeGrid((deviceGraph.numNodes + kBlockSize - 1) / kBlockSize);
   const dim3 edgeGrid((deviceGraph.numEdges + kBlockSize - 1) / kBlockSize);
@@ -918,69 +750,59 @@ DeviceCompactEdges maxAddCompactDeviceEdgesCuda(
       cudaBestIn);
   ACTS_CUDA_CHECK(cudaGetLastError());
   maxAddBestScoresKernel<<<edgeGrid, kBlockSize, 0, stream>>>(
-      deviceGraph.numEdges, deviceGraph.src, deviceGraph.dst, deviceGraph.score,
-      deviceGraph.valid, activeNodes, cudaBestOut, cudaBestIn);
+      deviceGraph.numEdges, deviceGraph.src.get(), deviceGraph.dst.get(),
+      deviceGraph.score.get(), deviceGraph.valid.get(), activeNodes,
+      cudaBestOut, cudaBestIn);
   ACTS_CUDA_CHECK(cudaGetLastError());
   maxAddMaskKernel<<<edgeGrid, kBlockSize, 0, stream>>>(
-      deviceGraph.numEdges, deviceGraph.src, deviceGraph.dst, deviceGraph.score,
-      deviceGraph.valid, activeNodes, cudaBestOut, cudaBestIn, thMin, thAdd,
-      cudaKeep);
+      deviceGraph.numEdges, deviceGraph.src.get(), deviceGraph.dst.get(),
+      deviceGraph.score.get(), deviceGraph.valid.get(), activeNodes,
+      cudaBestOut, cudaBestIn, thMin, thAdd, cudaKeep);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
   auto compact = compactDeviceEdges(
-      deviceGraph.src, deviceGraph.dst, deviceGraph.score, cudaKeep,
-      deviceGraph.numEdges, deviceGraph.numNodes, stream);
+      deviceGraph.src.get(), deviceGraph.dst.get(), deviceGraph.score.get(),
+      cudaKeep, deviceGraph.numEdges, deviceGraph.numNodes, mem);
 
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaBestOut, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaBestIn, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaKeep, stream));
   return compact;
 }
 
 DeviceCompactEdges compactActiveEdgesCuda(const DeviceCompactEdges &edges,
                                           const unsigned char *activeNodes,
-                                          cudaStream_t stream) {
+                                          DeviceMemory &mem) {
+  const cudaStream_t stream = mem.stream();
   if (edges.numEdges == 0) {
     return {};
   }
 
-  unsigned char *cudaKeep{};
-  ACTS_CUDA_CHECK(cudaMallocAsync(
-      &cudaKeep, edges.numEdges * sizeof(unsigned char), stream));
+  auto cudaKeepBuffer = mem.make<unsigned char>(edges.numEdges);
+  unsigned char *cudaKeep = cudaKeepBuffer.get();
   const dim3 edgeGrid((edges.numEdges + kBlockSize - 1) / kBlockSize);
   maskEdgesByActiveNodesKernel<<<edgeGrid, kBlockSize, 0, stream>>>(
-      edges.numEdges, edges.src, edges.dst, activeNodes, cudaKeep);
+      edges.numEdges, edges.src.get(), edges.dst.get(), activeNodes, cudaKeep);
   ACTS_CUDA_CHECK(cudaGetLastError());
-  auto compact = compactDeviceEdges(edges.src, edges.dst, edges.score, cudaKeep,
-                                    edges.numEdges, edges.numNodes, stream);
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaKeep, stream));
+  auto compact =
+      compactDeviceEdges(edges.src.get(), edges.dst.get(), edges.score.get(),
+                         cudaKeep, edges.numEdges, edges.numNodes, mem);
   return compact;
 }
 
-void classifyInitialComponentsCuda(const DeviceOrientedEdges &deviceGraph,
-                                   const int *cudaLabels, int numComponents,
-                                   int minCandidateSize,
-                                   unsigned char **cudaSimpleNodeMask,
-                                   unsigned char **cudaComplexNodeMask,
-                                   cudaStream_t stream) {
-  int *cudaInDegree{};
-  int *cudaOutDegree{};
-  int *cudaComponentSizes{};
-  int *cudaBadComponents{};
-  ACTS_CUDA_CHECK(cudaMallocAsync(&cudaInDegree,
-                                  deviceGraph.numNodes * sizeof(int), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&cudaOutDegree,
-                                  deviceGraph.numNodes * sizeof(int), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&cudaComponentSizes,
-                                  numComponents * sizeof(int), stream));
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&cudaBadComponents, numComponents * sizeof(int), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(cudaSimpleNodeMask,
-                                  deviceGraph.numNodes * sizeof(unsigned char),
-                                  stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(cudaComplexNodeMask,
-                                  deviceGraph.numNodes * sizeof(unsigned char),
-                                  stream));
+void classifyInitialComponentsCuda(
+    const DeviceOrientedEdges &deviceGraph, const int *cudaLabels,
+    int numComponents, int minCandidateSize,
+    DeviceArray<unsigned char> &cudaSimpleNodeMask,
+    DeviceArray<unsigned char> &cudaComplexNodeMask, DeviceMemory &mem) {
+  const cudaStream_t stream = mem.stream();
+  auto cudaInDegreeBuffer = mem.make<int>(deviceGraph.numNodes);
+  int *cudaInDegree = cudaInDegreeBuffer.get();
+  auto cudaOutDegreeBuffer = mem.make<int>(deviceGraph.numNodes);
+  int *cudaOutDegree = cudaOutDegreeBuffer.get();
+  auto cudaComponentSizesBuffer = mem.make<int>(numComponents);
+  int *cudaComponentSizes = cudaComponentSizesBuffer.get();
+  auto cudaBadComponentsBuffer = mem.make<int>(numComponents);
+  int *cudaBadComponents = cudaBadComponentsBuffer.get();
+  cudaSimpleNodeMask = mem.make<unsigned char>(deviceGraph.numNodes);
+  cudaComplexNodeMask = mem.make<unsigned char>(deviceGraph.numNodes);
 
   ACTS_CUDA_CHECK(cudaMemsetAsync(cudaInDegree, 0,
                                   deviceGraph.numNodes * sizeof(int), stream));
@@ -994,119 +816,99 @@ void classifyInitialComponentsCuda(const DeviceOrientedEdges &deviceGraph,
   const dim3 edgeGrid((deviceGraph.numEdges + kBlockSize - 1) / kBlockSize);
   const dim3 nodeGrid((deviceGraph.numNodes + kBlockSize - 1) / kBlockSize);
   computeComponentDegreeKernel<<<edgeGrid, kBlockSize, 0, stream>>>(
-      deviceGraph.numEdges, deviceGraph.src, deviceGraph.dst, deviceGraph.valid,
-      cudaInDegree, cudaOutDegree);
+      deviceGraph.numEdges, deviceGraph.src.get(), deviceGraph.dst.get(),
+      deviceGraph.valid.get(), cudaInDegree, cudaOutDegree);
   ACTS_CUDA_CHECK(cudaGetLastError());
   countActiveComponentNodesKernel<<<nodeGrid, kBlockSize, 0, stream>>>(
-      deviceGraph.numNodes, deviceGraph.activeNodes, cudaLabels,
+      deviceGraph.numNodes, deviceGraph.activeNodes.get(), cudaLabels,
       cudaComponentSizes);
   ACTS_CUDA_CHECK(cudaGetLastError());
   markBadComponentsKernel<<<nodeGrid, kBlockSize, 0, stream>>>(
-      deviceGraph.numNodes, deviceGraph.activeNodes, cudaLabels, cudaInDegree,
-      cudaOutDegree, cudaBadComponents);
+      deviceGraph.numNodes, deviceGraph.activeNodes.get(), cudaLabels,
+      cudaInDegree, cudaOutDegree, cudaBadComponents);
   ACTS_CUDA_CHECK(cudaGetLastError());
   buildInitialComponentMasksKernel<<<nodeGrid, kBlockSize, 0, stream>>>(
-      deviceGraph.numNodes, deviceGraph.activeNodes, cudaLabels,
+      deviceGraph.numNodes, deviceGraph.activeNodes.get(), cudaLabels,
       cudaComponentSizes, cudaBadComponents, minCandidateSize,
-      *cudaSimpleNodeMask, *cudaComplexNodeMask);
+      cudaSimpleNodeMask.get(), cudaComplexNodeMask.get());
   ACTS_CUDA_CHECK(cudaGetLastError());
-
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaInDegree, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaOutDegree, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaComponentSizes, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaBadComponents, stream));
 }
 
 DeviceCsrGraph buildCsrGraphCuda(const DeviceCompactEdges &edges,
                                  const std::string &pathMetric,
-                                 cudaStream_t stream) {
+                                 DeviceMemory &mem) {
+  const cudaStream_t stream = mem.stream();
   DeviceCsrGraph graph;
-  graph.setStream(stream);
   graph.numNodes = edges.numNodes;
   graph.numEdges = edges.numEdges;
   if (edges.numEdges == 0) {
     return graph;
   }
 
-  int *sortedSrc{};
-  int *sortedDst{};
-  float *sortedScore{};
-  int *sortedIncomingDst{};
-  int *sortedIncomingSrc{};
-  int *rowCounts{};
-  int *incomingCounts{};
-  int *cursor{};
-  int *incomingCursor{};
-
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&sortedSrc, edges.numEdges * sizeof(int), stream));
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&sortedDst, edges.numEdges * sizeof(int), stream));
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&sortedScore, edges.numEdges * sizeof(float), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&sortedIncomingDst,
-                                  edges.numEdges * sizeof(int), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&sortedIncomingSrc,
-                                  edges.numEdges * sizeof(int), stream));
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&rowCounts, edges.numNodes * sizeof(int), stream));
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&incomingCounts, edges.numNodes * sizeof(int), stream));
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&cursor, edges.numNodes * sizeof(int), stream));
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&incomingCursor, edges.numNodes * sizeof(int), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&graph.rowPtr,
-                                  (edges.numNodes + 1) * sizeof(int), stream));
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&graph.colIdx, edges.numEdges * sizeof(int), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&graph.edgeWeight,
-                                  edges.numEdges * sizeof(float), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&graph.incomingRowPtr,
-                                  (edges.numNodes + 1) * sizeof(int), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&graph.incomingColIdx,
-                                  edges.numEdges * sizeof(int), stream));
+  auto sortedSrcBuffer = mem.make<int>(edges.numEdges);
+  int *sortedSrc = sortedSrcBuffer.get();
+  auto sortedDstBuffer = mem.make<int>(edges.numEdges);
+  int *sortedDst = sortedDstBuffer.get();
+  auto sortedScoreBuffer = mem.make<float>(edges.numEdges);
+  float *sortedScore = sortedScoreBuffer.get();
+  auto sortedIncomingDstBuffer = mem.make<int>(edges.numEdges);
+  int *sortedIncomingDst = sortedIncomingDstBuffer.get();
+  auto sortedIncomingSrcBuffer = mem.make<int>(edges.numEdges);
+  int *sortedIncomingSrc = sortedIncomingSrcBuffer.get();
+  auto rowCountsBuffer = mem.make<int>(edges.numNodes);
+  int *rowCounts = rowCountsBuffer.get();
+  auto incomingCountsBuffer = mem.make<int>(edges.numNodes);
+  int *incomingCounts = incomingCountsBuffer.get();
+  auto cursorBuffer = mem.make<int>(edges.numNodes);
+  int *cursor = cursorBuffer.get();
+  auto incomingCursorBuffer = mem.make<int>(edges.numNodes);
+  int *incomingCursor = incomingCursorBuffer.get();
+  graph.rowPtr = mem.make<int>((edges.numNodes + 1));
+  graph.colIdx = mem.make<int>(edges.numEdges);
+  graph.edgeWeight = mem.make<float>(edges.numEdges);
+  graph.incomingRowPtr = mem.make<int>((edges.numNodes + 1));
+  graph.incomingColIdx = mem.make<int>(edges.numEdges);
 
   ACTS_CUDA_CHECK(
       cudaMemsetAsync(rowCounts, 0, edges.numNodes * sizeof(int), stream));
   ACTS_CUDA_CHECK(
       cudaMemsetAsync(incomingCounts, 0, edges.numNodes * sizeof(int), stream));
   const dim3 edgeGrid((edges.numEdges + kBlockSize - 1) / kBlockSize);
-  fillCountsKernel<<<edgeGrid, kBlockSize, 0, stream>>>(edges.numEdges,
-                                                        edges.src, rowCounts);
   fillCountsKernel<<<edgeGrid, kBlockSize, 0, stream>>>(
-      edges.numEdges, edges.dst, incomingCounts);
+      edges.numEdges, edges.src.get(), rowCounts);
+  fillCountsKernel<<<edgeGrid, kBlockSize, 0, stream>>>(
+      edges.numEdges, edges.dst.get(), incomingCounts);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
-  ACTS_CUDA_CHECK(cudaMemsetAsync(graph.rowPtr, 0, sizeof(int), stream));
+  ACTS_CUDA_CHECK(cudaMemsetAsync(graph.rowPtr.get(), 0, sizeof(int), stream));
   ACTS_CUDA_CHECK(
-      cudaMemsetAsync(graph.incomingRowPtr, 0, sizeof(int), stream));
-  thrust::inclusive_scan(thrust::device.on(stream), rowCounts,
-                         rowCounts + edges.numNodes, graph.rowPtr + 1);
-  thrust::inclusive_scan(thrust::device.on(stream), incomingCounts,
+      cudaMemsetAsync(graph.incomingRowPtr.get(), 0, sizeof(int), stream));
+  thrust::inclusive_scan(mem.policy(), rowCounts, rowCounts + edges.numNodes,
+                         graph.rowPtr.get() + 1);
+  thrust::inclusive_scan(mem.policy(), incomingCounts,
                          incomingCounts + edges.numNodes,
-                         graph.incomingRowPtr + 1);
+                         graph.incomingRowPtr.get() + 1);
 
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(sortedSrc, edges.src,
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(sortedSrc, edges.src.get(),
                                   edges.numEdges * sizeof(int),
                                   cudaMemcpyDeviceToDevice, stream));
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(sortedDst, edges.dst,
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(sortedDst, edges.dst.get(),
                                   edges.numEdges * sizeof(int),
                                   cudaMemcpyDeviceToDevice, stream));
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(sortedScore, edges.score,
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(sortedScore, edges.score.get(),
                                   edges.numEdges * sizeof(float),
                                   cudaMemcpyDeviceToDevice, stream));
   thrust::sort_by_key(
-      thrust::device.on(stream), sortedSrc, sortedSrc + edges.numEdges,
+      mem.policy(), sortedSrc, sortedSrc + edges.numEdges,
       thrust::make_zip_iterator(thrust::make_tuple(sortedDst, sortedScore)));
 
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(sortedIncomingDst, edges.dst,
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(sortedIncomingDst, edges.dst.get(),
                                   edges.numEdges * sizeof(int),
                                   cudaMemcpyDeviceToDevice, stream));
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(sortedIncomingSrc, edges.src,
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(sortedIncomingSrc, edges.src.get(),
                                   edges.numEdges * sizeof(int),
                                   cudaMemcpyDeviceToDevice, stream));
-  thrust::sort_by_key(thrust::device.on(stream), sortedIncomingDst,
+  thrust::sort_by_key(mem.policy(), sortedIncomingDst,
                       sortedIncomingDst + edges.numEdges, sortedIncomingSrc);
 
   ACTS_CUDA_CHECK(
@@ -1114,72 +916,54 @@ DeviceCsrGraph buildCsrGraphCuda(const DeviceCompactEdges &edges,
   ACTS_CUDA_CHECK(
       cudaMemsetAsync(incomingCursor, 0, edges.numNodes * sizeof(int), stream));
   scatterSortedOutgoingKernel<<<edgeGrid, kBlockSize, 0, stream>>>(
-      edges.numEdges, sortedSrc, sortedDst, sortedScore, graph.rowPtr, cursor,
-      graph.colIdx, graph.edgeWeight, pathMetric == "length");
+      edges.numEdges, sortedSrc, sortedDst, sortedScore, graph.rowPtr.get(),
+      cursor, graph.colIdx.get(), graph.edgeWeight.get(),
+      pathMetric == "length");
   scatterSortedIncomingKernel<<<edgeGrid, kBlockSize, 0, stream>>>(
       edges.numEdges, sortedIncomingDst, sortedIncomingSrc,
-      graph.incomingRowPtr, incomingCursor, graph.incomingColIdx);
+      graph.incomingRowPtr.get(), incomingCursor, graph.incomingColIdx.get());
   ACTS_CUDA_CHECK(cudaGetLastError());
 
-  ACTS_CUDA_CHECK(cudaFreeAsync(sortedSrc, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(sortedDst, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(sortedScore, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(sortedIncomingDst, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(sortedIncomingSrc, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(rowCounts, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(incomingCounts, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cursor, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(incomingCursor, stream));
   return graph;
 }
 
 DpCudaState runDpOnCsrCuda(const DeviceCsrGraph &graph,
                            const unsigned char *cudaActiveNodes,
-                           cudaStream_t stream) {
+                           DeviceMemory &mem) {
+  const cudaStream_t stream = mem.stream();
   DpCudaState state;
-  state.setStream(stream);
   state.numNodes = graph.numNodes;
-  ACTS_CUDA_CHECK(cudaMallocAsync(&state.bestScore,
-                                  graph.numNodes * sizeof(float), stream));
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&state.bestChild, graph.numNodes * sizeof(int), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(
-      &state.sourceMask, graph.numNodes * sizeof(unsigned char), stream));
+  state.bestScore = mem.make<float>(graph.numNodes);
+  state.bestChild = mem.make<int>(graph.numNodes);
+  state.sourceMask = mem.make<unsigned char>(graph.numNodes);
   if (graph.numEdges == 0) {
     return state;
   }
 
-  int *cudaInDegree{};
-  int *cudaRemainingOutDegree{};
-  int *cudaFrontier{};
-  int *cudaNextFrontier{};
-  int *cudaFrontierSize{};
-  int *cudaNextFrontierSize{};
-  float *cudaFrontierBestScore{};
-  int *cudaFrontierBestChild{};
-
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&cudaInDegree, graph.numNodes * sizeof(int), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&cudaRemainingOutDegree,
-                                  graph.numNodes * sizeof(int), stream));
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&cudaFrontier, graph.numNodes * sizeof(int), stream));
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&cudaNextFrontier, graph.numNodes * sizeof(int), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&cudaFrontierSize, sizeof(int), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&cudaNextFrontierSize, sizeof(int), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&cudaFrontierBestScore,
-                                  graph.numNodes * sizeof(float), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&cudaFrontierBestChild,
-                                  graph.numNodes * sizeof(int), stream));
+  auto cudaInDegreeBuffer = mem.make<int>(graph.numNodes);
+  int *cudaInDegree = cudaInDegreeBuffer.get();
+  auto cudaRemainingOutDegreeBuffer = mem.make<int>(graph.numNodes);
+  int *cudaRemainingOutDegree = cudaRemainingOutDegreeBuffer.get();
+  auto cudaFrontierBuffer = mem.make<int>(graph.numNodes);
+  int *cudaFrontier = cudaFrontierBuffer.get();
+  auto cudaNextFrontierBuffer = mem.make<int>(graph.numNodes);
+  int *cudaNextFrontier = cudaNextFrontierBuffer.get();
+  auto cudaFrontierSizeBuffer = mem.make<int>(1);
+  int *cudaFrontierSize = cudaFrontierSizeBuffer.get();
+  auto cudaNextFrontierSizeBuffer = mem.make<int>(1);
+  int *cudaNextFrontierSize = cudaNextFrontierSizeBuffer.get();
+  auto cudaFrontierBestScoreBuffer = mem.make<float>(graph.numNodes);
+  float *cudaFrontierBestScore = cudaFrontierBestScoreBuffer.get();
+  auto cudaFrontierBestChildBuffer = mem.make<int>(graph.numNodes);
+  int *cudaFrontierBestChild = cudaFrontierBestChildBuffer.get();
 
   const dim3 nodeGrid((graph.numNodes + kBlockSize - 1) / kBlockSize);
   initializeDpKernel<<<nodeGrid, kBlockSize, 0, stream>>>(
-      state.bestScore, state.bestChild, state.sourceMask, cudaInDegree,
-      cudaRemainingOutDegree, graph.numNodes);
+      state.bestScore.get(), state.bestChild.get(), state.sourceMask.get(),
+      cudaInDegree, cudaRemainingOutDegree, graph.numNodes);
   ACTS_CUDA_CHECK(cudaGetLastError());
   computeActiveDegreeKernel<<<nodeGrid, kBlockSize, 0, stream>>>(
-      graph.rowPtr, graph.colIdx, cudaActiveNodes, cudaInDegree,
+      graph.rowPtr.get(), graph.colIdx.get(), cudaActiveNodes, cudaInDegree,
       cudaRemainingOutDegree, graph.numNodes);
   ACTS_CUDA_CHECK(cudaGetLastError());
   ACTS_CUDA_CHECK(cudaMemsetAsync(cudaFrontierSize, 0, sizeof(int), stream));
@@ -1196,19 +980,19 @@ DpCudaState runDpOnCsrCuda(const DeviceCsrGraph &graph,
     const dim3 frontierGrid((currentFrontierSize + kBlockSize - 1) /
                             kBlockSize);
     processFrontierKernel<<<frontierGrid, kBlockSize, 0, stream>>>(
-        cudaFrontier, currentFrontierSize, graph.rowPtr, graph.colIdx,
-        graph.edgeWeight, cudaActiveNodes, state.bestScore,
-        cudaFrontierBestScore, cudaFrontierBestChild);
+        cudaFrontier, currentFrontierSize, graph.rowPtr.get(),
+        graph.colIdx.get(), graph.edgeWeight.get(), cudaActiveNodes,
+        state.bestScore.get(), cudaFrontierBestScore, cudaFrontierBestChild);
     ACTS_CUDA_CHECK(cudaGetLastError());
     finalizeFrontierKernel<<<frontierGrid, kBlockSize, 0, stream>>>(
         cudaFrontier, currentFrontierSize, cudaFrontierBestScore,
-        cudaFrontierBestChild, state.bestScore, state.bestChild);
+        cudaFrontierBestChild, state.bestScore.get(), state.bestChild.get());
     ACTS_CUDA_CHECK(cudaGetLastError());
     ACTS_CUDA_CHECK(
         cudaMemsetAsync(cudaNextFrontierSize, 0, sizeof(int), stream));
     enqueueParentFrontierKernel<<<frontierGrid, kBlockSize, 0, stream>>>(
-        cudaFrontier, currentFrontierSize, graph.incomingRowPtr,
-        graph.incomingColIdx, cudaActiveNodes, cudaRemainingOutDegree,
+        cudaFrontier, currentFrontierSize, graph.incomingRowPtr.get(),
+        graph.incomingColIdx.get(), cudaActiveNodes, cudaRemainingOutDegree,
         cudaNextFrontier, cudaNextFrontierSize);
     ACTS_CUDA_CHECK(cudaGetLastError());
     std::swap(cudaFrontier, cudaNextFrontier);
@@ -1220,44 +1004,33 @@ DpCudaState runDpOnCsrCuda(const DeviceCsrGraph &graph,
   }
 
   buildSourceMaskKernel<<<nodeGrid, kBlockSize, 0, stream>>>(
-      cudaActiveNodes, cudaInDegree, state.bestScore, state.sourceMask,
-      graph.numNodes);
+      cudaActiveNodes, cudaInDegree, state.bestScore.get(),
+      state.sourceMask.get(), graph.numNodes);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaInDegree, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaRemainingOutDegree, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaFrontier, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaNextFrontier, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaFrontierSize, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaNextFrontierSize, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaFrontierBestScore, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaFrontierBestChild, stream));
   return state;
 }
 
 std::pair<std::vector<int>, std::vector<int>> selectAndTracePathsCuda(
     const DpCudaState &dpState, const int *cudaComponentLabels,
     int numComponents, float minRootScore, unsigned char *cudaActiveNodes,
-    cudaStream_t stream) {
+    DeviceMemory &mem) {
+  const cudaStream_t stream = mem.stream();
   if (numComponents <= 0) {
     return {};
   }
 
   const std::size_t numNodes = dpState.numNodes;
-  int *cudaSelectedRoots{};
-  float *cudaComponentBestScore{};
-  int *cudaSelectedTrackLabels{};
-  int *cudaSelectedNodes{};
-  int *cudaSelectedCount{};
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&cudaSelectedRoots, numComponents * sizeof(int), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&cudaComponentBestScore,
-                                  numComponents * sizeof(float), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&cudaSelectedTrackLabels,
-                                  numNodes * sizeof(int), stream));
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&cudaSelectedNodes, numNodes * sizeof(int), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&cudaSelectedCount, sizeof(int), stream));
+  auto cudaSelectedRootsBuffer = mem.make<int>(numComponents);
+  int *cudaSelectedRoots = cudaSelectedRootsBuffer.get();
+  auto cudaComponentBestScoreBuffer = mem.make<float>(numComponents);
+  float *cudaComponentBestScore = cudaComponentBestScoreBuffer.get();
+  auto cudaSelectedTrackLabelsBuffer = mem.make<int>(numNodes);
+  int *cudaSelectedTrackLabels = cudaSelectedTrackLabelsBuffer.get();
+  auto cudaSelectedNodesBuffer = mem.make<int>(numNodes);
+  int *cudaSelectedNodes = cudaSelectedNodesBuffer.get();
+  auto cudaSelectedCountBuffer = mem.make<int>(1);
+  int *cudaSelectedCount = cudaSelectedCountBuffer.get();
 
   const dim3 componentGrid((numComponents + kBlockSize - 1) / kBlockSize);
   initFloatKernel<<<componentGrid, kBlockSize, 0, stream>>>(
@@ -1268,18 +1041,19 @@ std::pair<std::vector<int>, std::vector<int>> selectAndTracePathsCuda(
                                   numComponents * sizeof(int), stream));
   const dim3 nodeGrid((numNodes + kBlockSize - 1) / kBlockSize);
   selectComponentScoresKernel<<<nodeGrid, kBlockSize, 0, stream>>>(
-      numNodes, cudaComponentLabels, dpState.sourceMask, dpState.bestScore,
-      cudaComponentBestScore);
+      numNodes, cudaComponentLabels, dpState.sourceMask.get(),
+      dpState.bestScore.get(), cudaComponentBestScore);
   ACTS_CUDA_CHECK(cudaGetLastError());
   selectRootsKernel<<<nodeGrid, kBlockSize, 0, stream>>>(
-      numNodes, cudaComponentLabels, dpState.sourceMask, dpState.bestScore,
-      cudaComponentBestScore, minRootScore, cudaSelectedRoots);
+      numNodes, cudaComponentLabels, dpState.sourceMask.get(),
+      dpState.bestScore.get(), cudaComponentBestScore, minRootScore,
+      cudaSelectedRoots);
   ACTS_CUDA_CHECK(cudaGetLastError());
   ACTS_CUDA_CHECK(cudaMemsetAsync(cudaSelectedCount, 0, sizeof(int), stream));
 
   const dim3 pathGrid((numComponents + kBlockSize - 1) / kBlockSize);
   traceSelectedPathsKernel<<<pathGrid, kBlockSize, 0, stream>>>(
-      dpState.bestChild, cudaSelectedRoots, cudaSelectedTrackLabels,
+      dpState.bestChild.get(), cudaSelectedRoots, cudaSelectedTrackLabels,
       cudaSelectedNodes, cudaSelectedCount, numNodes, numComponents);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
@@ -1307,20 +1081,15 @@ std::pair<std::vector<int>, std::vector<int>> selectAndTracePathsCuda(
     ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
   }
 
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaSelectedRoots, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaComponentBestScore, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaSelectedTrackLabels, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaSelectedNodes, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaSelectedCount, stream));
-
   return {std::move(labels), std::move(nodes)};
 }
 
 void appendSmallResidualDWalkTracks(
     const DeviceCompactEdges &edges,
     const std::vector<int> &complexSpacePointIds, std::size_t minCandidateSize,
-    const std::string &pathMetric, cudaStream_t stream,
+    const std::string &pathMetric, DeviceMemory &mem,
     std::vector<std::vector<int>> &trackCandidates) {
+  const cudaStream_t stream = mem.stream();
   if (edges.numEdges == 0) {
     return;
   }
@@ -1328,13 +1097,13 @@ void appendSmallResidualDWalkTracks(
   std::vector<int> src(edges.numEdges);
   std::vector<int> dst(edges.numEdges);
   std::vector<float> score(edges.numEdges);
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(src.data(), edges.src,
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(src.data(), edges.src.get(),
                                   edges.numEdges * sizeof(int),
                                   cudaMemcpyDeviceToHost, stream));
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(dst.data(), edges.dst,
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(dst.data(), edges.dst.get(),
                                   edges.numEdges * sizeof(int),
                                   cudaMemcpyDeviceToHost, stream));
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(score.data(), edges.score,
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(score.data(), edges.score.get(),
                                   edges.numEdges * sizeof(float),
                                   cudaMemcpyDeviceToHost, stream));
   ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -1511,37 +1280,37 @@ std::vector<std::vector<int>> DWalkTrackBuilding::operator()(
     return {};
   }
 
-  auto stream = execContext.stream.value();
+  DeviceMemory mem(execContext);
+  const cudaStream_t stream = mem.stream();
   std::vector<int> initialLabels;
   DeviceOrientedEdges deviceGraph;
-  int *cudaInitialLabels{};
+  DeviceArray<int> cudaInitialLabels;
   int initialNumComponents = 0;
   auto edges = createOrientedEdgesCuda(
       tensors.edgeIndex, *tensors.edgeScores, tensors.nodeFeatures,
-      m_cfg.radialFeatureIndex, stream, deviceGraph, &cudaInitialLabels,
+      m_cfg.radialFeatureIndex, mem, deviceGraph, &cudaInitialLabels,
       &initialNumComponents, &initialLabels);
   if (edges.empty()) {
     deviceGraph.reset();
-    ACTS_CUDA_CHECK(cudaFreeAsync(cudaInitialLabels, stream));
     ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
     return {};
   }
 
-  unsigned char *cudaSimpleNodeMask{};
-  unsigned char *cudaComplexNodeMask{};
-  classifyInitialComponentsCuda(
-      deviceGraph, cudaInitialLabels, initialNumComponents,
-      static_cast<int>(m_cfg.minCandidateSize), &cudaSimpleNodeMask,
-      &cudaComplexNodeMask, stream);
+  DeviceArray<unsigned char> cudaSimpleNodeMask;
+  DeviceArray<unsigned char> cudaComplexNodeMask;
+  classifyInitialComponentsCuda(deviceGraph, cudaInitialLabels.get(),
+                                initialNumComponents,
+                                static_cast<int>(m_cfg.minCandidateSize),
+                                cudaSimpleNodeMask, cudaComplexNodeMask, mem);
 
   std::vector<unsigned char> simpleNodeMask(numNodes, 0);
   std::vector<unsigned char> complexNodeMask(numNodes, 0);
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(simpleNodeMask.data(), cudaSimpleNodeMask,
-                                  numNodes * sizeof(unsigned char),
-                                  cudaMemcpyDeviceToHost, stream));
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(complexNodeMask.data(), cudaComplexNodeMask,
-                                  numNodes * sizeof(unsigned char),
-                                  cudaMemcpyDeviceToHost, stream));
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(
+      simpleNodeMask.data(), cudaSimpleNodeMask.get(),
+      numNodes * sizeof(unsigned char), cudaMemcpyDeviceToHost, stream));
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(
+      complexNodeMask.data(), cudaComplexNodeMask.get(),
+      numNodes * sizeof(unsigned char), cudaMemcpyDeviceToHost, stream));
   ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
 
   std::vector<int> inDegree(numNodes, 0);
@@ -1586,43 +1355,33 @@ std::vector<std::vector<int>> DWalkTrackBuilding::operator()(
 
   if (numComplexNodes == 0) {
     deviceGraph.reset();
-    ACTS_CUDA_CHECK(cudaFreeAsync(cudaInitialLabels, stream));
-    ACTS_CUDA_CHECK(cudaFreeAsync(cudaSimpleNodeMask, stream));
-    ACTS_CUDA_CHECK(cudaFreeAsync(cudaComplexNodeMask, stream));
     ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
     ACTS_DEBUG("CUDA D-WALK found " << trackCandidates.size()
                                     << " track candidates");
     return trackCandidates;
   }
 
-  int *cudaOriginalToComplex{};
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&cudaOriginalToComplex, numNodes * sizeof(int), stream));
+  auto cudaOriginalToComplexBuffer = mem.make<int>(numNodes);
+  int *cudaOriginalToComplex = cudaOriginalToComplexBuffer.get();
   ACTS_CUDA_CHECK(
       cudaMemcpyAsync(cudaOriginalToComplex, originalToComplex.data(),
                       numNodes * sizeof(int), cudaMemcpyHostToDevice, stream));
 
   auto complexEdges = maxAddCompactDeviceEdgesCuda(
-      deviceGraph, cudaComplexNodeMask, m_cfg.thMin, m_cfg.thAdd, stream);
+      deviceGraph, cudaComplexNodeMask.get(), m_cfg.thMin, m_cfg.thAdd, mem);
   deviceGraph.reset();
   if (complexEdges.numEdges != 0) {
     const dim3 remapGrid((complexEdges.numEdges + kBlockSize - 1) / kBlockSize);
     remapEdgesKernel<<<remapGrid, kBlockSize, 0, stream>>>(
-        complexEdges.numEdges, complexEdges.src, complexEdges.dst,
+        complexEdges.numEdges, complexEdges.src.get(), complexEdges.dst.get(),
         cudaOriginalToComplex);
     ACTS_CUDA_CHECK(cudaGetLastError());
     complexEdges.numNodes = numComplexNodes;
   }
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaInitialLabels, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaSimpleNodeMask, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaComplexNodeMask, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaOriginalToComplex, stream));
   ACTS_DEBUG("CUDA D-WALK initial complex edges: " << complexEdges.numEdges);
 
-  unsigned char *cudaComplexActiveNodes{};
-  ACTS_CUDA_CHECK(cudaMallocAsync(&cudaComplexActiveNodes,
-                                  numComplexNodes * sizeof(unsigned char),
-                                  stream));
+  auto cudaComplexActiveNodesBuffer = mem.make<unsigned char>(numComplexNodes);
+  unsigned char *cudaComplexActiveNodes = cudaComplexActiveNodesBuffer.get();
   ACTS_CUDA_CHECK(cudaMemsetAsync(cudaComplexActiveNodes, 1,
                                   numComplexNodes * sizeof(unsigned char),
                                   stream));
@@ -1632,34 +1391,31 @@ std::vector<std::vector<int>> DWalkTrackBuilding::operator()(
     if (complexEdges.numEdges <= kSmallResidualEdgeThreshold) {
       appendSmallResidualDWalkTracks(complexEdges, complexSpacePointIds,
                                      m_cfg.minCandidateSize, m_cfg.pathMetric,
-                                     stream, trackCandidates);
+                                     mem, trackCandidates);
       break;
     }
 
     ++iteration;
-    int *cudaCurrentLabels{};
-    ACTS_CUDA_CHECK(cudaMallocAsync(&cudaCurrentLabels,
-                                    numComplexNodes * sizeof(int), stream));
+    auto cudaCurrentLabelsBuffer = mem.make<int>(numComplexNodes);
+    int *cudaCurrentLabels = cudaCurrentLabelsBuffer.get();
     int currentNumComponents = ActsPlugins::detail::connectedComponentsCuda(
-        complexEdges.numEdges, complexEdges.src, complexEdges.dst,
-        numComplexNodes, cudaCurrentLabels, stream, false);
+        complexEdges.numEdges, complexEdges.src.get(), complexEdges.dst.get(),
+        numComplexNodes, cudaCurrentLabels, mem);
     ACTS_DEBUG("CUDA D-WALK iteration "
                << iteration << ": components=" << currentNumComponents
                << ", edges=" << complexEdges.numEdges);
     if (currentNumComponents == 0) {
-      ACTS_CUDA_CHECK(cudaFreeAsync(cudaCurrentLabels, stream));
       break;
     }
 
-    auto csrGraph = buildCsrGraphCuda(complexEdges, m_cfg.pathMetric, stream);
-    auto dpState = runDpOnCsrCuda(csrGraph, cudaComplexActiveNodes, stream);
+    auto csrGraph = buildCsrGraphCuda(complexEdges, m_cfg.pathMetric, mem);
+    auto dpState = runDpOnCsrCuda(csrGraph, cudaComplexActiveNodes, mem);
     csrGraph.reset();
 
     auto [selectedTrackLabels, selectedNodes] = selectAndTracePathsCuda(
         dpState, cudaCurrentLabels, currentNumComponents,
-        minRootScore(m_cfg.pathMetric), cudaComplexActiveNodes, stream);
+        minRootScore(m_cfg.pathMetric), cudaComplexActiveNodes, mem);
     dpState.reset();
-    ACTS_CUDA_CHECK(cudaFreeAsync(cudaCurrentLabels, stream));
     if (selectedNodes.empty()) {
       break;
     }
@@ -1689,12 +1445,11 @@ std::vector<std::vector<int>> DWalkTrackBuilding::operator()(
     }
 
     auto updatedEdges =
-        compactActiveEdgesCuda(complexEdges, cudaComplexActiveNodes, stream);
+        compactActiveEdgesCuda(complexEdges, cudaComplexActiveNodes, mem);
     complexEdges = std::move(updatedEdges);
   }
 
   complexEdges.reset();
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaComplexActiveNodes, stream));
   ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
 
   ACTS_DEBUG("CUDA D-WALK found " << trackCandidates.size()
