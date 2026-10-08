@@ -13,6 +13,8 @@
 
 #include <cstdint>
 
+#include <cub/device/device_radix_sort.cuh>
+#include <cub/device/device_scan.cuh>
 #include <thrust/execution_policy.h>
 #include <thrust/scan.h>
 #include <thrust/sort.h>
@@ -21,8 +23,6 @@ namespace ActsPlugins::detail {
 
 /// Implementation of the FastSV algorithm as shown in
 /// https://arxiv.org/abs/1910.05971
-
-constexpr int kFastSvRoundsPerSync = 4;
 
 /// Hooking step of the FastSV algorithm
 template <typename TEdge, typename TLabel>
@@ -173,105 +173,162 @@ __global__ void mapEdgeLabels(std::size_t nLabels, T *labels,
   labels[i] = mapping[labels[i]];
 }
 
+/// Union-find connected components, following ECL-CC
+/// (https://doi.org/10.1145/3208040.3208041). A root is only ever hooked to a
+/// smaller root, so parent[v] <= v holds at all times and every component ends
+/// up labelled by its smallest node index, the labelling FastSV converges to.
+/// Unlike the single-block FastSV kernel this runs on the whole device without
+/// any host-side iteration.
+template <typename TLabel>
+__device__ TLabel findRoot(TLabel *parent, TLabel node) {
+  volatile TLabel *vparent = parent;
+  TLabel curr = vparent[node];
+  if (curr != node) {
+    // Path halving: only ever redirects to an ancestor
+    TLabel prev = node;
+    TLabel next;
+    while (curr > (next = vparent[curr])) {
+      vparent[prev] = next;
+      prev = curr;
+      curr = next;
+    }
+  }
+  return curr;
+}
+
+/// Union the endpoints of each edge. If numEdges is not null the number of
+/// edges is read from device memory, maxEdges is then an upper bound.
+template <typename TEdge, typename TLabel>
+__global__ void unionFindHook(std::size_t maxEdges, const int *numEdges,
+                              const TEdge *sourceEdges,
+                              const TEdge *targetEdges, TLabel *parent) {
+  const std::size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  const std::size_t n = numEdges != nullptr ? *numEdges : maxEdges;
+  if (i >= n) {
+    return;
+  }
+
+  TLabel u = findRoot(parent, static_cast<TLabel>(sourceEdges[i]));
+  TLabel v = findRoot(parent, static_cast<TLabel>(targetEdges[i]));
+  while (u != v) {
+    if (u < v) {
+      TLabel tmp = u;
+      u = v;
+      v = tmp;
+    }
+    // Hook the larger root u to the smaller root v, if u is still a root
+    TLabel old = atomicCAS(&parent[u], u, v);
+    if (old == u) {
+      break;
+    }
+    u = findRoot(parent, old);
+    v = findRoot(parent, v);
+  }
+}
+
+/// Point every node directly to its root. This must not use the path halving
+/// of findRoot: a halving write by another thread could overwrite an already
+/// flattened entry with a non-root ancestor. The forest is static here, so a
+/// read-only walk suffices and each thread only writes its own entry.
+template <typename TLabel>
+__global__ void unionFindFlatten(std::size_t numNodes, TLabel *parent) {
+  const std::size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= numNodes) {
+    return;
+  }
+  volatile TLabel *vparent = parent;
+  const TLabel start = vparent[i];
+  TLabel root = start;
+  TLabel next;
+  while (root > (next = vparent[root])) {
+    root = next;
+  }
+  if (root != start) {
+    vparent[i] = root;
+  }
+}
+
+/// Connected components without host synchronization. Writes labels in
+/// [0, numLabels) ordered by the smallest node index of each component, and
+/// the number of labels to numLabels (device memory). If numEdges is not null
+/// the number of edges is read from device memory and nEdges is an upper
+/// bound.
+template <typename TEdges, typename TLabel>
+void connectedComponentsCudaAsync(std::size_t nEdges, const int *numEdges,
+                                  const TEdges *sourceEdges,
+                                  const TEdges *targetEdges, std::size_t nNodes,
+                                  TLabel *labels, TLabel *numLabels,
+                                  cudaStream_t stream) {
+  const dim3 blockDim = 256;
+  const dim3 gridDimNodes = (nNodes + blockDim.x - 1) / blockDim.x;
+
+  if (nNodes == 0) {
+    ACTS_CUDA_CHECK(cudaMemsetAsync(numLabels, 0, sizeof(TLabel), stream));
+    return;
+  }
+
+  detail::iota<<<gridDimNodes, blockDim, 0, stream>>>(nNodes, labels);
+  ACTS_CUDA_CHECK(cudaGetLastError());
+  if (nEdges > 0) {
+    const dim3 gridDimEdges = (nEdges + blockDim.x - 1) / blockDim.x;
+    unionFindHook<<<gridDimEdges, blockDim, 0, stream>>>(
+        nEdges, numEdges, sourceEdges, targetEdges, labels);
+    ACTS_CUDA_CHECK(cudaGetLastError());
+  }
+  unionFindFlatten<<<gridDimNodes, blockDim, 0, stream>>>(nNodes, labels);
+  ACTS_CUDA_CHECK(cudaGetLastError());
+
+  // Relabel to consecutive labels, e.g. for components 0 3 5 3 0 0:
+  // mask 1 0 0 1 0 1 (0), exclusive sum 0 1 1 1 2 2 (3), labels 0 1 2 1 0 0.
+  // The extra last element of the sum is the number of labels.
+  TLabel *mask{}, *prefixSum{};
+  ACTS_CUDA_CHECK(
+      cudaMallocAsync(&mask, 2 * (nNodes + 1) * sizeof(TLabel), stream));
+  prefixSum = mask + nNodes + 1;
+  ACTS_CUDA_CHECK(
+      cudaMemsetAsync(mask, 0, (nNodes + 1) * sizeof(TLabel), stream));
+  makeLabelMask<<<gridDimNodes, blockDim, 0, stream>>>(nNodes, labels, mask);
+  ACTS_CUDA_CHECK(cudaGetLastError());
+
+  std::size_t tempBytes = 0;
+  ACTS_CUDA_CHECK(cub::DeviceScan::ExclusiveSum(nullptr, tempBytes, mask,
+                                                prefixSum, nNodes + 1, stream));
+  void *temp{};
+  ACTS_CUDA_CHECK(cudaMallocAsync(&temp, tempBytes, stream));
+  ACTS_CUDA_CHECK(cub::DeviceScan::ExclusiveSum(temp, tempBytes, mask,
+                                                prefixSum, nNodes + 1, stream));
+
+  mapEdgeLabels<<<gridDimNodes, blockDim, 0, stream>>>(nNodes, labels,
+                                                       prefixSum);
+  ACTS_CUDA_CHECK(cudaGetLastError());
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(numLabels, prefixSum + nNodes,
+                                  sizeof(TLabel), cudaMemcpyDeviceToDevice,
+                                  stream));
+
+  ACTS_CUDA_CHECK(cudaFreeAsync(temp, stream));
+  ACTS_CUDA_CHECK(cudaFreeAsync(mask, stream));
+}
+
+/// Connected components, returns the number of labels (synchronizes).
+/// useOneCudaBlock is kept for interface compatibility and has no effect, the
+/// union-find implementation always uses the whole device.
 template <typename TEdges, typename TLabel>
 TLabel connectedComponentsCuda(std::size_t nEdges, const TEdges *sourceEdges,
                                const TEdges *targetEdges, std::size_t nNodes,
                                TLabel *labels, cudaStream_t stream,
                                bool useOneCudaBlock = true) {
-  TLabel *tmpMemory = nullptr;
-  ACTS_CUDA_CHECK(cudaMallocAsync(&tmpMemory, nNodes * sizeof(TLabel), stream));
-
-  const dim3 blockDim = 1024;
-
-  if (useOneCudaBlock) {
-    // Make synchronization in one block, to avoid that inter-block sync is
-    // necessary
-    labelConnectedComponents<<<1, blockDim, 1, stream>>>(
-        nEdges, sourceEdges, targetEdges, nNodes, labels, tmpMemory);
-    ACTS_CUDA_CHECK(cudaGetLastError());
-  } else {
-    int changed = false;
-    int *cudaChanged = nullptr;
-    ACTS_CUDA_CHECK(cudaMallocAsync(&cudaChanged, sizeof(int), stream));
-
-    const dim3 gridDimNodes = (nNodes + blockDim.x - 1) / blockDim.x;
-    const dim3 gridDimEdges = (nEdges + blockDim.x - 1) / blockDim.x;
-
-    detail::iota<<<gridDimNodes, blockDim, 0, stream>>>(nNodes, labels);
-    ACTS_CUDA_CHECK(cudaGetLastError());
-    detail::iota<<<gridDimNodes, blockDim, 0, stream>>>(nNodes, tmpMemory);
-    ACTS_CUDA_CHECK(cudaGetLastError());
-
-    do {
-      ACTS_CUDA_CHECK(cudaMemsetAsync(cudaChanged, 0, sizeof(int), stream));
-
-      for (int round = 0; round < kFastSvRoundsPerSync; ++round) {
-        ACTS_CUDA_CHECK(cudaMemcpyAsync(tmpMemory, labels,
-                                        nNodes * sizeof(TLabel),
-                                        cudaMemcpyDeviceToDevice, stream));
-        hookEdges<<<gridDimEdges, blockDim, 0, stream>>>(
-            nEdges, sourceEdges, targetEdges, labels, tmpMemory, cudaChanged);
-        ACTS_CUDA_CHECK(cudaGetLastError());
-        ACTS_CUDA_CHECK(cudaMemcpyAsync(labels, tmpMemory,
-                                        nNodes * sizeof(TLabel),
-                                        cudaMemcpyDeviceToDevice, stream));
-
-        ACTS_CUDA_CHECK(cudaMemcpyAsync(tmpMemory, labels,
-                                        nNodes * sizeof(TLabel),
-                                        cudaMemcpyDeviceToDevice, stream));
-        shortcut<<<gridDimNodes, blockDim, 0, stream>>>(
-            nNodes, sourceEdges, targetEdges, labels, tmpMemory, cudaChanged);
-        ACTS_CUDA_CHECK(cudaGetLastError());
-        ACTS_CUDA_CHECK(cudaMemcpyAsync(labels, tmpMemory,
-                                        nNodes * sizeof(TLabel),
-                                        cudaMemcpyDeviceToDevice, stream));
-      }
-
-      ACTS_CUDA_CHECK(cudaMemcpyAsync(&changed, cudaChanged, sizeof(int),
-                                      cudaMemcpyDeviceToHost, stream));
-      ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
-    } while (changed);
-
-    ACTS_CUDA_CHECK(cudaFreeAsync(cudaChanged, stream));
-  }
-
-  // Assume we have the following components:
-  // 0 3 5 3 0 0
-
-  // Fill a mask which labels survived the connected components algorithm
-  // 0 1 2 3 4 5
-  // 1 0 0 1 0 1
-  ACTS_CUDA_CHECK(
-      cudaMemsetAsync(tmpMemory, 0, nNodes * sizeof(TLabel), stream));
-  dim3 gridDim = (nNodes + blockDim.x - 1) / blockDim.x;
-  makeLabelMask<<<gridDim, blockDim, 0, stream>>>(nNodes, labels, tmpMemory);
-  ACTS_CUDA_CHECK(cudaGetLastError());
-
-  TLabel lastLabelMask;
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(&lastLabelMask, &tmpMemory[nNodes - 1],
-                                  sizeof(TLabel), cudaMemcpyDeviceToHost,
-                                  stream));
-
-  // Exclusive prefix sum on the label mask
-  // 0 1 2 3 4 5
-  // 0 1 1 1 2 2
-  thrust::exclusive_scan(thrust::device.on(stream), tmpMemory,
-                         tmpMemory + nNodes, tmpMemory);
-
-  TLabel nLabels;
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(&nLabels, &tmpMemory[nNodes - 1],
-                                  sizeof(TLabel), cudaMemcpyDeviceToHost,
-                                  stream));
-
-  // Remap edge labels with values in prefix sum
-  // 0 -> 0, 3 -> 1, 5 -> 2
-  mapEdgeLabels<<<gridDim, blockDim, 0, stream>>>(nNodes, labels, tmpMemory);
-  ACTS_CUDA_CHECK(cudaGetLastError());
-
-  ACTS_CUDA_CHECK(cudaFreeAsync(tmpMemory, stream));
+  static_cast<void>(useOneCudaBlock);
+  TLabel *cudaNumLabels{};
+  ACTS_CUDA_CHECK(cudaMallocAsync(&cudaNumLabels, sizeof(TLabel), stream));
+  connectedComponentsCudaAsync(nEdges, static_cast<const int *>(nullptr),
+                               sourceEdges, targetEdges, nNodes, labels,
+                               cudaNumLabels, stream);
+  TLabel nLabels{};
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(&nLabels, cudaNumLabels, sizeof(TLabel),
+                                  cudaMemcpyDeviceToHost, stream));
+  ACTS_CUDA_CHECK(cudaFreeAsync(cudaNumLabels, stream));
   ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
-
-  return nLabels + lastLabelMask;
+  return nLabels;
 }
 
 /// Kernel to compute the bounds for each label in the labels array.
@@ -324,6 +381,70 @@ void findTrackCandidateBounds(TLabel *labels, TSpacePointId *spacePointIds,
   setBounds<<<gridSize, blockSize, 0, stream>>>(labels, bounds, numSpacePoints,
                                                 numLabels);
   ACTS_CUDA_CHECK(cudaGetLastError());
+}
+
+/// bounds[l] = first position of label l in the sorted labels, for
+/// l in [0, numLabels]
+template <typename TLabel>
+__global__ void labelBounds(const TLabel *sortedLabels, std::size_t size,
+                            const TLabel *numLabels, TLabel *bounds) {
+  const std::size_t l = blockIdx.x * blockDim.x + threadIdx.x;
+  if (l > static_cast<std::size_t>(*numLabels)) {
+    return;
+  }
+  std::size_t lo = 0;
+  std::size_t hi = size;
+  while (lo < hi) {
+    const std::size_t mid = (lo + hi) / 2;
+    if (static_cast<std::size_t>(sortedLabels[mid]) < l) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  bounds[l] = lo;
+}
+
+/// Asynchronous version of findTrackCandidateBounds: stable-sorts the space
+/// point IDs by label into sortedSpacePointIds and writes the bounds of each
+/// label (size numLabels + 1, at most numSpacePoints + 1). The number of
+/// labels is read from device memory.
+template <typename TLabel, typename TSpacePointId>
+void findTrackCandidateBoundsAsync(const TLabel *labels,
+                                   const TSpacePointId *spacePointIds,
+                                   TSpacePointId *sortedSpacePointIds,
+                                   TLabel *bounds, std::size_t numSpacePoints,
+                                   const TLabel *numLabels,
+                                   cudaStream_t stream) {
+  if (numSpacePoints == 0) {
+    return;
+  }
+  int endBit = 1;
+  while (endBit < 31 && (std::size_t{1} << endBit) < numSpacePoints) {
+    ++endBit;
+  }
+
+  TLabel *sortedLabels{};
+  ACTS_CUDA_CHECK(cudaMallocAsync(&sortedLabels,
+                                  numSpacePoints * sizeof(TLabel), stream));
+  std::size_t tempBytes = 0;
+  ACTS_CUDA_CHECK(cub::DeviceRadixSort::SortPairs(
+      nullptr, tempBytes, labels, sortedLabels, spacePointIds,
+      sortedSpacePointIds, numSpacePoints, 0, endBit, stream));
+  void *temp{};
+  ACTS_CUDA_CHECK(cudaMallocAsync(&temp, tempBytes, stream));
+  ACTS_CUDA_CHECK(cub::DeviceRadixSort::SortPairs(
+      temp, tempBytes, labels, sortedLabels, spacePointIds,
+      sortedSpacePointIds, numSpacePoints, 0, endBit, stream));
+
+  const dim3 blockDim = 256;
+  const dim3 gridDim = (numSpacePoints + 1 + blockDim.x - 1) / blockDim.x;
+  labelBounds<<<gridDim, blockDim, 0, stream>>>(sortedLabels, numSpacePoints,
+                                                numLabels, bounds);
+  ACTS_CUDA_CHECK(cudaGetLastError());
+
+  ACTS_CUDA_CHECK(cudaFreeAsync(temp, stream));
+  ACTS_CUDA_CHECK(cudaFreeAsync(sortedLabels, stream));
 }
 
 }  // namespace ActsPlugins::detail

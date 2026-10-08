@@ -9,6 +9,7 @@
 #include "ActsPlugins/Gnn/TensorRTEdgeClassifier.hpp"
 
 #include "ActsPlugins/Gnn/detail/CudaUtils.hpp"
+#include "ActsPlugins/Gnn/detail/TensorRTGnnPlugins.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -70,6 +71,7 @@ class TensorRTEdgeClassifier::Impl {
     if (!status) {
       throw std::runtime_error("Failed to initialize TensorRT plugins");
     }
+    detail::registerTensorRTGnnPlugins();
 
     std::size_t fsize =
         std::filesystem::file_size(std::filesystem::path(m_cfg.modelPath));
