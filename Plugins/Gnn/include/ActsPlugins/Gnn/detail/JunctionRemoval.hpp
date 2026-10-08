@@ -22,6 +22,21 @@ namespace ActsPlugins::detail {
 /// NOTE: The function returns a pointer to device memory. The caller is
 /// responsible for freeing the memory with cudaFreeAsync(ptr, stream).
 /// TODO: Use some type of RAII type in the future
+/// Remove all but the highest-scoring edge at each junction (several
+/// incoming or several outgoing edges at a node; ties go to the smallest edge
+/// index), without host synchronization. The kept edges are written in their
+/// original order to srcNodesOut / dstNodesOut (capacity nEdges each), their
+/// number to numEdgesOut (device memory).
+void junctionRemovalCudaAsync(std::size_t nEdges, std::size_t nNodes,
+                              const float *scores,
+                              const std::int64_t *srcNodes,
+                              const std::int64_t *dstNodes,
+                              std::int64_t *srcNodesOut,
+                              std::int64_t *dstNodesOut, int *numEdgesOut,
+                              cudaStream_t stream);
+
+/// Synchronous version, returns a new allocation holding
+/// [src(nEdgesOut) | dst(nEdgesOut)] and nEdgesOut.
 std::pair<std::int64_t *, std::size_t> junctionRemovalCuda(
     std::size_t nEdges, std::size_t nNodes, const float *scores,
     const std::int64_t *srcNodes, const std::int64_t *dstNodes,

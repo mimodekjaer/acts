@@ -54,8 +54,31 @@ if(ACTS_GNN_ENABLE_TENSORRT)
         ActsPluginGnn
         PRIVATE trt::nvinfer trt::nvinfer_plugin
     )
-    target_sources(ActsPluginGnn PRIVATE src/TensorRTEdgeClassifier.cpp)
+    target_sources(
+        ActsPluginGnn
+        PRIVATE src/TensorRTEdgeClassifier.cpp src/TensorRTGnnPlugins.cu
+    )
     target_compile_definitions(ActsPluginGnn PUBLIC ACTS_GNN_WITH_TENSORRT)
+
+    # Standalone copy of the custom plugins, for building engines with
+    # trtexec --dynamicPlugins=<path>/libActsPluginGnnTensorRTPlugins.so
+    add_library(ActsPluginGnnTensorRTPlugins MODULE src/TensorRTGnnPlugins.cu)
+    target_compile_definitions(
+        ActsPluginGnnTensorRTPlugins
+        PRIVATE ACTS_GNN_TRT_PLUGIN_LIBRARY CUDA_API_PER_THREAD_DEFAULT_STREAM
+    )
+    target_include_directories(
+        ActsPluginGnnTensorRTPlugins
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        ActsPluginGnnTensorRTPlugins
+        PRIVATE trt::nvinfer CUDA::cudart
+    )
+    install(
+        TARGETS ActsPluginGnnTensorRTPlugins
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    )
 endif()
 
 target_include_directories(

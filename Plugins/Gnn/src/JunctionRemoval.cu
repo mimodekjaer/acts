@@ -10,221 +10,160 @@
 #include "ActsPlugins/Gnn/detail/CudaUtils.hpp"
 #include "ActsPlugins/Gnn/detail/JunctionRemoval.hpp"
 
-#include <thrust/count.h>
-#include <thrust/execution_policy.h>
-#include <thrust/scan.h>
-#include <thrust/transform_scan.h>
+#include <algorithm>
+
+#include <cub/device/device_select.cuh>
 
 namespace ActsPlugins::detail {
 
-__global__ void findNumInOutEdge(std::size_t nEdges,
-                                 const std::int64_t *srcNodes,
-                                 const std::int64_t *dstNodes, int *numInEdges,
-                                 int *numOutEdges) {
+namespace {
+
+using Key = unsigned long long;
+
+// Ordering key of an edge at a junction: the highest score wins, ties go to
+// the smallest edge index. Scores are positive (sigmoid outputs), so their
+// bit patterns order like the values.
+__device__ Key edgeKey(const float *scores, std::size_t i) {
+  return (static_cast<Key>(__float_as_uint(scores[i])) << 32) |
+         (0xffffffffu - static_cast<unsigned>(i));
+}
+
+__global__ void countAndMaxJunctionEdges(std::size_t nEdges,
+                                         const float *scores,
+                                         const std::int64_t *srcNodes,
+                                         const std::int64_t *dstNodes,
+                                         int *numInEdges, int *numOutEdges,
+                                         Key *maxInKey, Key *maxOutKey) {
   const std::size_t i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= nEdges) {
     return;
   }
 
-  auto srcNode = srcNodes[i];
-  auto dstNode = dstNodes[i];
+  const auto srcNode = srcNodes[i];
+  const auto dstNode = dstNodes[i];
+  const Key key = edgeKey(scores, i);
 
   atomicAdd(&numInEdges[dstNode], 1);
   atomicAdd(&numOutEdges[srcNode], 1);
+  atomicMax(&maxInKey[dstNode], key);
+  atomicMax(&maxOutKey[srcNode], key);
 }
 
-__global__ void fillJunctionEdges(std::size_t nEdges,
-                                  const std::int64_t *edgeNodes,
-                                  const int *numEdgesPrefixSum,
-                                  int *junctionEdges, int *junctionEdgeOffset) {
+// An edge is removed if it is an incoming edge of a node with several incoming
+// edges, or an outgoing edge of a node with several outgoing edges, and it is
+// not the best edge there.
+__global__ void fillKeepMask(std::size_t nEdges, const float *scores,
+                             const std::int64_t *srcNodes,
+                             const std::int64_t *dstNodes,
+                             const int *numInEdges, const int *numOutEdges,
+                             const Key *maxInKey, const Key *maxOutKey,
+                             char *keep) {
   const std::size_t i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= nEdges) {
     return;
   }
 
-  int node = edgeNodes[i];
-  int base = numEdgesPrefixSum[node];
-  int numEdgesNode = numEdgesPrefixSum[node + 1] - base;
+  const auto srcNode = srcNodes[i];
+  const auto dstNode = dstNodes[i];
+  const Key key = edgeKey(scores, i);
 
-  // Zero is allowed, because we set 1 to 0 before
-  assert(numEdgesNode != 1 && "node is not a junction");
-
-  if (numEdgesNode != 0) {
-    int offset = atomicAdd(&junctionEdgeOffset[node], 1);
-    assert(offset < numEdgesNode && "inconsistent offset with number of edges");
-    junctionEdges[base + offset] = i;
-  }
+  const bool removeIn = numInEdges[dstNode] >= 2 && maxInKey[dstNode] != key;
+  const bool removeOut =
+      numOutEdges[srcNode] >= 2 && maxOutKey[srcNode] != key;
+  keep[i] = !(removeIn || removeOut);
 }
 
-__global__ void fillEdgeMask(std::size_t nNodes, const float *scores,
-                             const int *numEdgesPrefixSum,
-                             const int *junctionEdges,
-                             bool *edgesToRemoveMask) {
-  const std::size_t i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i >= nNodes) {
+}  // namespace
+
+void junctionRemovalCudaAsync(std::size_t nEdges, std::size_t nNodes,
+                              const float *scores,
+                              const std::int64_t *srcNodes,
+                              const std::int64_t *dstNodes,
+                              std::int64_t *srcNodesOut,
+                              std::int64_t *dstNodesOut, int *numEdgesOut,
+                              cudaStream_t stream) {
+  if (nEdges == 0) {
+    ACTS_CUDA_CHECK(cudaMemsetAsync(numEdgesOut, 0, sizeof(int), stream));
     return;
   }
 
-  // Get the bse and number of edges for the current node
-  int base = numEdgesPrefixSum[i];
-  int numEdgesNode = numEdgesPrefixSum[i + 1] - base;
+  // One allocation for the per node counters, keys and the edge mask
+  const std::size_t countBytes = 2 * nNodes * sizeof(int);
+  const std::size_t keyOffset = (countBytes + 255) / 256 * 256;
+  const std::size_t keyBytes = 2 * nNodes * sizeof(Key);
+  char *buffer{};
+  ACTS_CUDA_CHECK(
+      cudaMallocAsync(&buffer, keyOffset + keyBytes + nEdges, stream));
+  auto *numInEdges = reinterpret_cast<int *>(buffer);
+  auto *numOutEdges = numInEdges + nNodes;
+  auto *maxInKey = reinterpret_cast<Key *>(buffer + keyOffset);
+  auto *maxOutKey = maxInKey + nNodes;
+  char *keep = buffer + keyOffset + keyBytes;
+  ACTS_CUDA_CHECK(
+      cudaMemsetAsync(buffer, 0, keyOffset + keyBytes, stream));
 
-  // Find the edge with the maximum score
-  float maxScore = 0.0f;
-  int edgeIdMaxScore = -1;
-  for (int j = base; j < base + numEdgesNode; ++j) {
-    int edgeId = junctionEdges[j];
-    float score = scores[edgeId];
-    if (score > maxScore) {
-      maxScore = score;
-      edgeIdMaxScore = edgeId;
-    }
-  }
+  const dim3 blockSize = 256;
+  const dim3 gridSizeEdges = (nEdges + blockSize.x - 1) / blockSize.x;
+  countAndMaxJunctionEdges<<<gridSizeEdges, blockSize, 0, stream>>>(
+      nEdges, scores, srcNodes, dstNodes, numInEdges, numOutEdges, maxInKey,
+      maxOutKey);
+  ACTS_CUDA_CHECK(cudaGetLastError());
+  fillKeepMask<<<gridSizeEdges, blockSize, 0, stream>>>(
+      nEdges, scores, srcNodes, dstNodes, numInEdges, numOutEdges, maxInKey,
+      maxOutKey, keep);
+  ACTS_CUDA_CHECK(cudaGetLastError());
 
-  // Mark all edges except the one with the maximum score for removal
-  for (int j = base; j < base + numEdgesNode; ++j) {
-    int edgeId = junctionEdges[j];
-    if (edgeId != edgeIdMaxScore) {
-      edgesToRemoveMask[edgeId] = true;
-    }
-  }
+  // Stable compaction of the kept edges
+  std::size_t tempBytes = 0;
+  ACTS_CUDA_CHECK(cub::DeviceSelect::Flagged(nullptr, tempBytes, srcNodes,
+                                             keep, srcNodesOut, numEdgesOut,
+                                             nEdges, stream));
+  void *temp{};
+  ACTS_CUDA_CHECK(cudaMallocAsync(&temp, tempBytes, stream));
+  ACTS_CUDA_CHECK(cub::DeviceSelect::Flagged(temp, tempBytes, srcNodes, keep,
+                                             srcNodesOut, numEdgesOut, nEdges,
+                                             stream));
+  ACTS_CUDA_CHECK(cub::DeviceSelect::Flagged(temp, tempBytes, dstNodes, keep,
+                                             dstNodesOut, numEdgesOut, nEdges,
+                                             stream));
+
+  ACTS_CUDA_CHECK(cudaFreeAsync(temp, stream));
+  ACTS_CUDA_CHECK(cudaFreeAsync(buffer, stream));
 }
-
-struct LogicalNotPredicate {
-  bool __device__ operator()(bool b) { return !b; }
-};
-
-// When we perform the prefix sum over the number of outgoing/incoming edges,
-// we only want to count edges that are part of a junction. The requirement for
-// this is that there are >= 2 outgoing/incoming edges.
-// Therefore, we design the accumulation operator in a way, that it returns zero
-// for non-junction cases
-// This allows to skip a preprocessing step to set the edge count for
-// non-junction nodes explicitly to zero Also, it should work for the prefix sum
-// values, since those will only ever be 0 or >= 2 due to the above requirements
-// A informal proof of associativity is given in
-// https://github.com/acts-project/acts/pull/4223
-struct AccumulateJunctionEdges {
-  int __device__ operator()(int a, int b) const {
-    a = a < 2 ? 0 : a;
-    b = b < 2 ? 0 : b;
-    return a + b;
-  }
-};
 
 std::pair<std::int64_t *, std::size_t> junctionRemovalCuda(
     std::size_t nEdges, std::size_t nNodes, const float *scores,
     const std::int64_t *srcNodes, const std::int64_t *dstNodes,
     cudaStream_t stream) {
-  // Allocate device memory for the number of in and out edges
-  int *numInEdges{}, *numOutEdges{};
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&numInEdges, (nNodes + 1) * sizeof(int), stream));
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&numOutEdges, (nNodes + 1) * sizeof(int), stream));
+  std::int64_t *buffer{};
+  int *cudaNumEdgesOut{};
+  ACTS_CUDA_CHECK(cudaMallocAsync(
+      &buffer, std::max<std::size_t>(2 * nEdges, 1) * sizeof(std::int64_t),
+      stream));
+  ACTS_CUDA_CHECK(cudaMallocAsync(&cudaNumEdgesOut, sizeof(int), stream));
 
-  // Initialize the number of in and out edges to 0
-  ACTS_CUDA_CHECK(
-      cudaMemsetAsync(numInEdges, 0, (nNodes + 1) * sizeof(int), stream));
-  ACTS_CUDA_CHECK(
-      cudaMemsetAsync(numOutEdges, 0, (nNodes + 1) * sizeof(int), stream));
+  junctionRemovalCudaAsync(nEdges, nNodes, scores, srcNodes, dstNodes, buffer,
+                           buffer + nEdges, cudaNumEdgesOut, stream);
 
-  // Launch the kernel to find the number of in and out edges
-  const dim3 blockSize = 512;
-  const dim3 gridSizeEdges = (nEdges + blockSize.x - 1) / blockSize.x;
-  findNumInOutEdge<<<gridSizeEdges, blockSize, 0, stream>>>(
-      nEdges, srcNodes, dstNodes, numInEdges, numOutEdges);
-  ACTS_CUDA_CHECK(cudaGetLastError());
-
-  // Perform prefix sum on the number of in and out edges with a special
-  // reduction that does not include edges from non-junction nodes
-  thrust::exclusive_scan(thrust::device.on(stream), numInEdges,
-                         numInEdges + nNodes + 1, numInEdges, 0,
-                         AccumulateJunctionEdges{});
-  thrust::exclusive_scan(thrust::device.on(stream), numOutEdges,
-                         numOutEdges + nNodes + 1, numOutEdges, 0,
-                         AccumulateJunctionEdges{});
-
-  // Find the total number of in and out edges involved in junctions
-  int numJunctionInEdges{}, numJunctionOutEdges{};
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(&numJunctionInEdges, &numInEdges[nNodes],
-                                  sizeof(int), cudaMemcpyDeviceToHost, stream));
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(&numJunctionOutEdges, &numOutEdges[nNodes],
-                                  sizeof(int), cudaMemcpyDeviceToHost, stream));
+  int nEdgesAfter{};
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(&nEdgesAfter, cudaNumEdgesOut, sizeof(int),
+                                  cudaMemcpyDeviceToHost, stream));
+  ACTS_CUDA_CHECK(cudaFreeAsync(cudaNumEdgesOut, stream));
   ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
 
-  // Allocate device memory to store the edge indices for in and out edges
-  int *junctionInEdges{}, *junctionOutEdges{};
-  ACTS_CUDA_CHECK(cudaMallocAsync(&junctionInEdges,
-                                  numJunctionInEdges * sizeof(int), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&junctionOutEdges,
-                                  numJunctionOutEdges * sizeof(int), stream));
-
-  // Allocate device memory for the running index of the in and out edges per
-  // node
-  int *junctionInEdgeOffset{}, *junctionOutEdgeOffset{};
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&junctionInEdgeOffset, nNodes * sizeof(int), stream));
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&junctionOutEdgeOffset, nNodes * sizeof(int), stream));
-  ACTS_CUDA_CHECK(
-      cudaMemsetAsync(junctionInEdgeOffset, 0, nNodes * sizeof(int), stream));
-  ACTS_CUDA_CHECK(
-      cudaMemsetAsync(junctionOutEdgeOffset, 0, nNodes * sizeof(int), stream));
-
-  // Fill the junction edges for in and out edges
-  fillJunctionEdges<<<gridSizeEdges, blockSize, 0, stream>>>(
-      nEdges, srcNodes, numOutEdges, junctionOutEdges, junctionOutEdgeOffset);
-  ACTS_CUDA_CHECK(cudaGetLastError());
-  fillJunctionEdges<<<gridSizeEdges, blockSize, 0, stream>>>(
-      nEdges, dstNodes, numInEdges, junctionInEdges, junctionInEdgeOffset);
-  ACTS_CUDA_CHECK(cudaGetLastError());
-
-  // Allocate device memory for the edge mask
-  bool *edgesToRemoveMask{};
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&edgesToRemoveMask, nEdges * sizeof(bool), stream));
-  ACTS_CUDA_CHECK(
-      cudaMemsetAsync(edgesToRemoveMask, 0, nEdges * sizeof(bool), stream));
-
-  // Fill the edge mask with the edges to be removed
-  const dim3 gridSizeNodes = (nNodes + blockSize.x - 1) / blockSize.x;
-  fillEdgeMask<<<gridSizeNodes, blockSize, 0, stream>>>(
-      nNodes, scores, numInEdges, junctionInEdges, edgesToRemoveMask);
-  ACTS_CUDA_CHECK(cudaGetLastError());
-  fillEdgeMask<<<gridSizeNodes, blockSize, 0, stream>>>(
-      nNodes, scores, numOutEdges, junctionOutEdges, edgesToRemoveMask);
-  ACTS_CUDA_CHECK(cudaGetLastError());
-
-  // Free the device memory
-  ACTS_CUDA_CHECK(cudaFreeAsync(numInEdges, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(numOutEdges, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(junctionInEdges, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(junctionOutEdges, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(junctionInEdgeOffset, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(junctionOutEdgeOffset, stream));
-
-  // Compactify the edges based on the edge mask
-  int nEdgesToRemove =
-      thrust::count(thrust::device.on(stream), edgesToRemoveMask,
-                    edgesToRemoveMask + nEdges, true);
-  int nEdgesAfter = nEdges - nEdgesToRemove;
-  // Allocate memory for the new srcNodes and dstNodes arrays
+  // Return src and dst contiguously as [src(nEdgesAfter) | dst(nEdgesAfter)]
   std::int64_t *newSrcNodes{};
   ACTS_CUDA_CHECK(cudaMallocAsync(
-      &newSrcNodes, 2 * nEdgesAfter * sizeof(std::int64_t), stream));
-  std::int64_t *newDstNodes = newSrcNodes + nEdgesAfter;
-
-  // Compactify the srcNodes and dstNodes arrays based on the edge mask
-  thrust::copy_if(thrust::device.on(stream), srcNodes, srcNodes + nEdges,
-                  edgesToRemoveMask, newSrcNodes, LogicalNotPredicate{});
-  thrust::copy_if(thrust::device.on(stream), dstNodes, dstNodes + nEdges,
-                  edgesToRemoveMask, newDstNodes, LogicalNotPredicate{});
-
-  // Free the device memory for the edge mask
-  ACTS_CUDA_CHECK(cudaFreeAsync(edgesToRemoveMask, stream));
-
-  // Synchronize the stream
+      &newSrcNodes,
+      std::max<std::size_t>(2 * nEdgesAfter, 1) * sizeof(std::int64_t),
+      stream));
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(newSrcNodes, buffer,
+                                  nEdgesAfter * sizeof(std::int64_t),
+                                  cudaMemcpyDeviceToDevice, stream));
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(newSrcNodes + nEdgesAfter, buffer + nEdges,
+                                  nEdgesAfter * sizeof(std::int64_t),
+                                  cudaMemcpyDeviceToDevice, stream));
+  ACTS_CUDA_CHECK(cudaFreeAsync(buffer, stream));
   ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
 
   return std::make_pair(newSrcNodes, static_cast<std::size_t>(nEdgesAfter));
