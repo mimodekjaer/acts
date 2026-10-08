@@ -244,6 +244,8 @@ set_option_if(
     AND
     ACTS_BUILD_PLUGIN_GNN
 )
+# The CUDA code of the GNN plugin manages device memory with vecmem
+set_option_if(ACTS_SETUP_VECMEM ACTS_BUILD_PLUGIN_GNN AND ACTS_ENABLE_CUDA)
 
 set_option_if(ACTS_BUILD_PYTHON_BINDINGS ACTS_BUILD_PYTHON_WHEEL)
 set_option_if(ACTS_BUILD_ALIGNMENT ACTS_BUILD_PLUGIN_MILLE)

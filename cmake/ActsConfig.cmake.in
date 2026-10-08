@@ -116,6 +116,13 @@ if(PluginCovfie IN_LIST Acts_COMPONENTS)
     find_dependency(covfie @covfie_VERSION@ CONFIG EXACT)
 endif()
 
+if(PluginGnn IN_LIST Acts_COMPONENTS)
+    # The CUDA stages manage device memory with vecmem
+    if(@ACTS_ENABLE_CUDA@)
+        find_dependency(vecmem @vecmem_VERSION@ CONFIG EXACT)
+    endif()
+endif()
+
 # load **all** available components. we can not just include the requested
 # components since there can be interdependencies between them.
 if(NOT Acts_FIND_QUIETLY)

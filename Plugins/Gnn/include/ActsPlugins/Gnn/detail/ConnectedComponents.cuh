@@ -10,12 +10,11 @@
 
 #include "ActsPlugins/Gnn/detail/CudaUtils.cuh"
 #include "ActsPlugins/Gnn/detail/CudaUtils.hpp"
+#include "ActsPlugins/Gnn/detail/DeviceMemory.cuh"
 
 #include <cstdint>
 
 #include <cub/device/device_radix_sort.cuh>
-#include <cub/device/device_scan.cuh>
-#include <thrust/execution_policy.h>
 #include <thrust/scan.h>
 #include <thrust/sort.h>
 
@@ -258,7 +257,8 @@ void connectedComponentsCudaAsync(std::size_t nEdges, const int *numEdges,
                                   const TEdges *sourceEdges,
                                   const TEdges *targetEdges, std::size_t nNodes,
                                   TLabel *labels, TLabel *numLabels,
-                                  cudaStream_t stream) {
+                                  DeviceMemory &mem) {
+  const cudaStream_t stream = mem.stream();
   const dim3 blockDim = 256;
   const dim3 gridDimNodes = (nNodes + blockDim.x - 1) / blockDim.x;
 
@@ -281,31 +281,49 @@ void connectedComponentsCudaAsync(std::size_t nEdges, const int *numEdges,
   // Relabel to consecutive labels, e.g. for components 0 3 5 3 0 0:
   // mask 1 0 0 1 0 1 (0), exclusive sum 0 1 1 1 2 2 (3), labels 0 1 2 1 0 0.
   // The extra last element of the sum is the number of labels.
-  TLabel *mask{}, *prefixSum{};
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&mask, 2 * (nNodes + 1) * sizeof(TLabel), stream));
-  prefixSum = mask + nNodes + 1;
+  auto maskBuffer = mem.make<TLabel>(2 * (nNodes + 1));
+  TLabel *mask = maskBuffer.get();
+  TLabel *prefixSum = mask + nNodes + 1;
   ACTS_CUDA_CHECK(
       cudaMemsetAsync(mask, 0, (nNodes + 1) * sizeof(TLabel), stream));
   makeLabelMask<<<gridDimNodes, blockDim, 0, stream>>>(nNodes, labels, mask);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
-  std::size_t tempBytes = 0;
-  ACTS_CUDA_CHECK(cub::DeviceScan::ExclusiveSum(nullptr, tempBytes, mask,
-                                                prefixSum, nNodes + 1, stream));
-  void *temp{};
-  ACTS_CUDA_CHECK(cudaMallocAsync(&temp, tempBytes, stream));
-  ACTS_CUDA_CHECK(cub::DeviceScan::ExclusiveSum(temp, tempBytes, mask,
-                                                prefixSum, nNodes + 1, stream));
+  thrust::exclusive_scan(mem.policy(), mask, mask + nNodes + 1, prefixSum);
 
   mapEdgeLabels<<<gridDimNodes, blockDim, 0, stream>>>(nNodes, labels,
                                                        prefixSum);
   ACTS_CUDA_CHECK(cudaGetLastError());
   ACTS_CUDA_CHECK(cudaMemcpyAsync(numLabels, prefixSum + nNodes, sizeof(TLabel),
                                   cudaMemcpyDeviceToDevice, stream));
+}
 
-  ACTS_CUDA_CHECK(cudaFreeAsync(temp, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(mask, stream));
+/// @copydoc connectedComponentsCudaAsync, with stream-ordered device memory
+template <typename TEdges, typename TLabel>
+void connectedComponentsCudaAsync(std::size_t nEdges, const int *numEdges,
+                                  const TEdges *sourceEdges,
+                                  const TEdges *targetEdges, std::size_t nNodes,
+                                  TLabel *labels, TLabel *numLabels,
+                                  cudaStream_t stream) {
+  DeviceMemory mem(stream, nullptr);
+  connectedComponentsCudaAsync(nEdges, numEdges, sourceEdges, targetEdges,
+                               nNodes, labels, numLabels, mem);
+}
+
+/// Connected components, returns the number of labels (synchronizes).
+template <typename TEdges, typename TLabel>
+TLabel connectedComponentsCuda(std::size_t nEdges, const TEdges *sourceEdges,
+                               const TEdges *targetEdges, std::size_t nNodes,
+                               TLabel *labels, DeviceMemory &mem) {
+  auto cudaNumLabels = mem.make<TLabel>(1);
+  connectedComponentsCudaAsync(nEdges, static_cast<const int *>(nullptr),
+                               sourceEdges, targetEdges, nNodes, labels,
+                               cudaNumLabels.get(), mem);
+  TLabel nLabels{};
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(&nLabels, cudaNumLabels.get(), sizeof(TLabel),
+                                  cudaMemcpyDeviceToHost, mem.stream()));
+  ACTS_CUDA_CHECK(cudaStreamSynchronize(mem.stream()));
+  return nLabels;
 }
 
 /// Connected components, returns the number of labels (synchronizes).
@@ -317,17 +335,9 @@ TLabel connectedComponentsCuda(std::size_t nEdges, const TEdges *sourceEdges,
                                TLabel *labels, cudaStream_t stream,
                                bool useOneCudaBlock = true) {
   static_cast<void>(useOneCudaBlock);
-  TLabel *cudaNumLabels{};
-  ACTS_CUDA_CHECK(cudaMallocAsync(&cudaNumLabels, sizeof(TLabel), stream));
-  connectedComponentsCudaAsync(nEdges, static_cast<const int *>(nullptr),
-                               sourceEdges, targetEdges, nNodes, labels,
-                               cudaNumLabels, stream);
-  TLabel nLabels{};
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(&nLabels, cudaNumLabels, sizeof(TLabel),
-                                  cudaMemcpyDeviceToHost, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaNumLabels, stream));
-  ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
-  return nLabels;
+  DeviceMemory mem(stream, nullptr);
+  return connectedComponentsCuda(nEdges, sourceEdges, targetEdges, nNodes,
+                                 labels, mem);
 }
 
 /// Kernel to compute the bounds for each label in the labels array.
@@ -371,8 +381,9 @@ void findTrackCandidateBounds(TLabel *labels, TSpacePointId *spacePointIds,
                               TLabel *bounds, std::size_t numSpacePoints,
                               std::size_t numLabels, cudaStream_t stream) {
   // Sort the labels and space point IDs by labels
-  thrust::sort_by_key(thrust::device.on(stream), labels,
-                      labels + numSpacePoints, spacePointIds);
+  DeviceMemory mem(stream, nullptr);
+  thrust::sort_by_key(mem.policy(), labels, labels + numSpacePoints,
+                      spacePointIds);
 
   // Set the bounds for each label
   dim3 blockSize = 1024;
@@ -413,37 +424,46 @@ void findTrackCandidateBoundsAsync(const TLabel *labels,
                                    const TSpacePointId *spacePointIds,
                                    TSpacePointId *sortedSpacePointIds,
                                    TLabel *bounds, std::size_t numSpacePoints,
-                                   const TLabel *numLabels,
-                                   cudaStream_t stream) {
+                                   const TLabel *numLabels, DeviceMemory &mem) {
   if (numSpacePoints == 0) {
     return;
   }
+  const cudaStream_t stream = mem.stream();
+  // There are at most numSpacePoints labels, so only the lower bits need to
+  // be sorted. thrust always sorts all bits, so CUB is used directly here.
   int endBit = 1;
   while (endBit < 31 && (std::size_t{1} << endBit) < numSpacePoints) {
     ++endBit;
   }
 
-  TLabel *sortedLabels{};
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&sortedLabels, numSpacePoints * sizeof(TLabel), stream));
+  auto sortedLabels = mem.make<TLabel>(numSpacePoints);
   std::size_t tempBytes = 0;
   ACTS_CUDA_CHECK(cub::DeviceRadixSort::SortPairs(
-      nullptr, tempBytes, labels, sortedLabels, spacePointIds,
+      nullptr, tempBytes, labels, sortedLabels.get(), spacePointIds,
       sortedSpacePointIds, numSpacePoints, 0, endBit, stream));
-  void *temp{};
-  ACTS_CUDA_CHECK(cudaMallocAsync(&temp, tempBytes, stream));
+  auto temp = mem.make<std::byte>(tempBytes);
   ACTS_CUDA_CHECK(cub::DeviceRadixSort::SortPairs(
-      temp, tempBytes, labels, sortedLabels, spacePointIds, sortedSpacePointIds,
-      numSpacePoints, 0, endBit, stream));
+      temp.get(), tempBytes, labels, sortedLabels.get(), spacePointIds,
+      sortedSpacePointIds, numSpacePoints, 0, endBit, stream));
 
   const dim3 blockDim = 256;
   const dim3 gridDim = (numSpacePoints + 1 + blockDim.x - 1) / blockDim.x;
-  labelBounds<<<gridDim, blockDim, 0, stream>>>(sortedLabels, numSpacePoints,
-                                                numLabels, bounds);
+  labelBounds<<<gridDim, blockDim, 0, stream>>>(
+      sortedLabels.get(), numSpacePoints, numLabels, bounds);
   ACTS_CUDA_CHECK(cudaGetLastError());
+}
 
-  ACTS_CUDA_CHECK(cudaFreeAsync(temp, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(sortedLabels, stream));
+/// @copydoc findTrackCandidateBoundsAsync, with stream-ordered device memory
+template <typename TLabel, typename TSpacePointId>
+void findTrackCandidateBoundsAsync(const TLabel *labels,
+                                   const TSpacePointId *spacePointIds,
+                                   TSpacePointId *sortedSpacePointIds,
+                                   TLabel *bounds, std::size_t numSpacePoints,
+                                   const TLabel *numLabels,
+                                   cudaStream_t stream) {
+  DeviceMemory mem(stream, nullptr);
+  findTrackCandidateBoundsAsync(labels, spacePointIds, sortedSpacePointIds,
+                                bounds, numSpacePoints, numLabels, mem);
 }
 
 }  // namespace ActsPlugins::detail

@@ -9,6 +9,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory_resource>
 #include <utility>
 
 #include <cuda_runtime_api.h>
@@ -26,13 +27,15 @@ namespace ActsPlugins::detail {
 /// incoming or several outgoing edges at a node; ties go to the smallest edge
 /// index), without host synchronization. The kept edges are written in their
 /// original order to srcNodesOut / dstNodesOut (capacity nEdges each), their
-/// number to numEdgesOut (device memory).
+/// number to numEdgesOut (device memory). Temporary device memory is taken
+/// from @p mr, or is stream-ordered if it is null.
 void junctionRemovalCudaAsync(std::size_t nEdges, std::size_t nNodes,
                               const float *scores, const std::int64_t *srcNodes,
                               const std::int64_t *dstNodes,
                               std::int64_t *srcNodesOut,
                               std::int64_t *dstNodesOut, int *numEdgesOut,
-                              cudaStream_t stream);
+                              cudaStream_t stream,
+                              std::pmr::memory_resource *mr = nullptr);
 
 /// Synchronous version, returns a new allocation holding
 /// [src(nEdgesOut) | dst(nEdgesOut)] and nEdgesOut.

@@ -8,6 +8,7 @@
 
 #include "ActsPlugins/Gnn/Stages.hpp"
 #include "ActsPlugins/Gnn/detail/CudaUtils.hpp"
+#include "ActsPlugins/Gnn/detail/DeviceMemory.cuh"
 
 #include <thrust/copy.h>
 #include <thrust/execution_policy.h>
@@ -52,7 +53,8 @@ namespace ActsPlugins::detail {
 PipelineTensors cudaRemoveUnusedNodes(PipelineTensors &&tensors,
                                       std::vector<int> &spacePointIds,
                                       const ExecutionContext &execCtx) {
-  const auto stream = execCtx.stream.value();
+  DeviceMemory mem(execCtx);
+  const auto stream = mem.stream();
   const auto nNodes = tensors.nodeFeatures.shape()[0];
   const auto nEdges = tensors.edgeIndex.shape()[1];
 
@@ -64,9 +66,9 @@ PipelineTensors cudaRemoveUnusedNodes(PipelineTensors &&tensors,
                                   stream));
 
   // Sort + unique → sorted unique used-node indices in tmp[0..nUsed)
-  thrust::sort(thrust::device.on(stream), tmp.data(), tmp.data() + 2 * nEdges);
-  auto *uniqEnd = thrust::unique(thrust::device.on(stream), tmp.data(),
-                                 tmp.data() + 2 * nEdges);
+  thrust::sort(mem.policy(), tmp.data(), tmp.data() + 2 * nEdges);
+  auto *uniqEnd =
+      thrust::unique(mem.policy(), tmp.data(), tmp.data() + 2 * nEdges);
   // nUsed must be read on host — sync the stream just for this scalar
   ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
   const std::size_t nUsed = static_cast<std::size_t>(uniqEnd - tmp.data());
