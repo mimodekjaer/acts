@@ -8,6 +8,7 @@
 
 #include "ActsPlugins/Gnn/detail/CudaUtils.cuh"
 #include "ActsPlugins/Gnn/detail/CudaUtils.hpp"
+#include "ActsPlugins/Gnn/detail/DeviceMemory.cuh"
 #include "ActsPlugins/Gnn/detail/JunctionRemoval.hpp"
 
 #include <algorithm>
@@ -79,7 +80,8 @@ void junctionRemovalCudaAsync(std::size_t nEdges, std::size_t nNodes,
                               const std::int64_t *dstNodes,
                               std::int64_t *srcNodesOut,
                               std::int64_t *dstNodesOut, int *numEdgesOut,
-                              cudaStream_t stream) {
+                              cudaStream_t stream,
+                              std::pmr::memory_resource *mr) {
   if (nEdges == 0) {
     ACTS_CUDA_CHECK(cudaMemsetAsync(numEdgesOut, 0, sizeof(int), stream));
     return;
@@ -89,9 +91,9 @@ void junctionRemovalCudaAsync(std::size_t nEdges, std::size_t nNodes,
   const std::size_t countBytes = 2 * nNodes * sizeof(int);
   const std::size_t keyOffset = (countBytes + 255) / 256 * 256;
   const std::size_t keyBytes = 2 * nNodes * sizeof(Key);
-  char *buffer{};
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&buffer, keyOffset + keyBytes + nEdges, stream));
+  DeviceMemory mem(stream, mr);
+  auto bufferAlloc = mem.make<char>(keyOffset + keyBytes + nEdges);
+  char *buffer = bufferAlloc.get();
   auto *numInEdges = reinterpret_cast<int *>(buffer);
   auto *numOutEdges = numInEdges + nNodes;
   auto *maxInKey = reinterpret_cast<Key *>(buffer + keyOffset);
@@ -110,42 +112,38 @@ void junctionRemovalCudaAsync(std::size_t nEdges, std::size_t nNodes,
       maxOutKey, keep);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
-  // Stable compaction of the kept edges
+  // Stable compaction of the kept edges. CUB writes the number of kept edges
+  // to device memory, thrust::copy_if would need a synchronization.
   std::size_t tempBytes = 0;
   ACTS_CUDA_CHECK(cub::DeviceSelect::Flagged(nullptr, tempBytes, srcNodes, keep,
                                              srcNodesOut, numEdgesOut, nEdges,
                                              stream));
-  void *temp{};
-  ACTS_CUDA_CHECK(cudaMallocAsync(&temp, tempBytes, stream));
+  auto tempAlloc = mem.make<std::byte>(tempBytes);
+  void *temp = tempAlloc.get();
   ACTS_CUDA_CHECK(cub::DeviceSelect::Flagged(temp, tempBytes, srcNodes, keep,
                                              srcNodesOut, numEdgesOut, nEdges,
                                              stream));
   ACTS_CUDA_CHECK(cub::DeviceSelect::Flagged(temp, tempBytes, dstNodes, keep,
                                              dstNodesOut, numEdgesOut, nEdges,
                                              stream));
-
-  ACTS_CUDA_CHECK(cudaFreeAsync(temp, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(buffer, stream));
 }
 
 std::pair<std::int64_t *, std::size_t> junctionRemovalCuda(
     std::size_t nEdges, std::size_t nNodes, const float *scores,
     const std::int64_t *srcNodes, const std::int64_t *dstNodes,
     cudaStream_t stream) {
-  std::int64_t *buffer{};
-  int *cudaNumEdgesOut{};
-  ACTS_CUDA_CHECK(cudaMallocAsync(
-      &buffer, std::max<std::size_t>(2 * nEdges, 1) * sizeof(std::int64_t),
-      stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&cudaNumEdgesOut, sizeof(int), stream));
+  DeviceMemory mem(stream, nullptr);
+  auto bufferAlloc =
+      mem.make<std::int64_t>(std::max<std::size_t>(2 * nEdges, 1));
+  auto cudaNumEdgesOut = mem.make<int>(1);
+  std::int64_t *buffer = bufferAlloc.get();
 
   junctionRemovalCudaAsync(nEdges, nNodes, scores, srcNodes, dstNodes, buffer,
-                           buffer + nEdges, cudaNumEdgesOut, stream);
+                           buffer + nEdges, cudaNumEdgesOut.get(), stream);
 
   int nEdgesAfter{};
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(&nEdgesAfter, cudaNumEdgesOut, sizeof(int),
-                                  cudaMemcpyDeviceToHost, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaNumEdgesOut, stream));
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(&nEdgesAfter, cudaNumEdgesOut.get(),
+                                  sizeof(int), cudaMemcpyDeviceToHost, stream));
   ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
 
   // Return src and dst contiguously as [src(nEdgesAfter) | dst(nEdgesAfter)]
@@ -160,7 +158,6 @@ std::pair<std::int64_t *, std::size_t> junctionRemovalCuda(
   ACTS_CUDA_CHECK(cudaMemcpyAsync(newSrcNodes + nEdgesAfter, buffer + nEdges,
                                   nEdgesAfter * sizeof(std::int64_t),
                                   cudaMemcpyDeviceToDevice, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(buffer, stream));
   ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
 
   return std::make_pair(newSrcNodes, static_cast<std::size_t>(nEdgesAfter));

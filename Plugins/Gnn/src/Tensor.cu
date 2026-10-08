@@ -8,6 +8,7 @@
 
 #include "ActsPlugins/Gnn/Tensor.hpp"
 #include "ActsPlugins/Gnn/detail/CudaUtils.hpp"
+#include "ActsPlugins/Gnn/detail/DeviceMemory.cuh"
 
 #include <thrust/copy.h>
 #include <thrust/count.h>
@@ -111,6 +112,11 @@ namespace ActsPlugins::detail {
 TensorPtr cudaCreateTensorMemory(std::size_t nbytes,
                                  const ExecutionContext &ctx) {
   assert(ctx.stream.has_value());
+  if (ctx.memoryResource != nullptr) {
+    auto *mr = ctx.memoryResource;
+    return TensorPtr(mr->allocate(nbytes),
+                     [mr, nbytes](void *p) { mr->deallocate(p, nbytes); });
+  }
   auto stream = *ctx.stream;
   void *ptr{};
   ACTS_CUDA_CHECK(cudaMallocAsync(&ptr, nbytes, stream));
@@ -157,11 +163,12 @@ Tensor<T> cudaSelectRows(const Tensor<T> &tensor, const Tensor<bool> &mask,
                          const ExecutionContext &execContext) {
   const auto nCols = tensor.shape()[1];
   const auto nRows = tensor.shape()[0];
-  const auto stream = execContext.stream.value();
+  DeviceMemory mem(execContext);
+  const auto stream = mem.stream();
 
   auto pred = [] __device__(bool x) { return x; };
-  const std::size_t nSelected = thrust::count(
-      thrust::device.on(stream), mask.data(), mask.data() + nRows, true);
+  const std::size_t nSelected =
+      thrust::count(mem.policy(), mask.data(), mask.data() + nRows, true);
 
   auto result = Tensor<T>::Create({nSelected, nCols}, execContext);
 
@@ -171,14 +178,13 @@ Tensor<T> cudaSelectRows(const Tensor<T> &tensor, const Tensor<bool> &mask,
 
   if (nCols == 1) {
     // Fast path: direct element selection via thrust stencil
-    thrust::copy_if(thrust::device.on(stream), tensor.data(),
-                    tensor.data() + nRows, mask.data(), result.data(), pred);
+    thrust::copy_if(mem.policy(), tensor.data(), tensor.data() + nRows,
+                    mask.data(), result.data(), pred);
   } else {
     // General path: collect surviving row indices, then gather rows
-    std::size_t *devRowIndices{};
-    ACTS_CUDA_CHECK(cudaMallocAsync(&devRowIndices,
-                                    nSelected * sizeof(std::size_t), stream));
-    thrust::copy_if(thrust::device.on(stream),
+    auto devRowIndicesAlloc = mem.make<std::size_t>(nSelected);
+    std::size_t *devRowIndices = devRowIndicesAlloc.get();
+    thrust::copy_if(mem.policy(),
                     thrust::make_counting_iterator<std::size_t>(0),
                     thrust::make_counting_iterator<std::size_t>(nRows),
                     mask.data(), devRowIndices, pred);
@@ -188,8 +194,6 @@ Tensor<T> cudaSelectRows(const Tensor<T> &tensor, const Tensor<bool> &mask,
     gatherRowsKernel<<<gridDim, blockDim, 0, stream>>>(
         devRowIndices, nSelected, nCols, tensor.data(), result.data());
     ACTS_CUDA_CHECK(cudaGetLastError());
-
-    ACTS_CUDA_CHECK(cudaFreeAsync(devRowIndices, stream));
   }
 
   return result;
@@ -200,11 +204,12 @@ Tensor<T> cudaSelectCols(const Tensor<T> &tensor, const Tensor<bool> &mask,
                          const ExecutionContext &execContext) {
   const auto nRows = tensor.shape()[0];
   const auto nColsSrc = tensor.shape()[1];
-  const auto stream = execContext.stream.value();
+  DeviceMemory mem(execContext);
+  const auto stream = mem.stream();
 
   auto pred = [] __device__(bool x) { return x; };
-  const std::size_t nSelected = thrust::count(
-      thrust::device.on(stream), mask.data(), mask.data() + nColsSrc, true);
+  const std::size_t nSelected =
+      thrust::count(mem.policy(), mask.data(), mask.data() + nColsSrc, true);
 
   auto result = Tensor<T>::Create({nRows, nSelected}, execContext);
 
@@ -213,11 +218,9 @@ Tensor<T> cudaSelectCols(const Tensor<T> &tensor, const Tensor<bool> &mask,
   }
 
   // Collect surviving column indices on device, then use gather kernel
-  std::size_t *devColIndices{};
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&devColIndices, nSelected * sizeof(std::size_t), stream));
-  thrust::copy_if(thrust::device.on(stream),
-                  thrust::make_counting_iterator<std::size_t>(0),
+  auto devColIndicesAlloc = mem.make<std::size_t>(nSelected);
+  std::size_t *devColIndices = devColIndicesAlloc.get();
+  thrust::copy_if(mem.policy(), thrust::make_counting_iterator<std::size_t>(0),
                   thrust::make_counting_iterator<std::size_t>(nColsSrc),
                   mask.data(), devColIndices, pred);
 
@@ -226,8 +229,6 @@ Tensor<T> cudaSelectCols(const Tensor<T> &tensor, const Tensor<bool> &mask,
   gatherColsKernel<<<gridDim, blockDim, 0, stream>>>(
       devColIndices, nRows, nColsSrc, nSelected, tensor.data(), result.data());
   ACTS_CUDA_CHECK(cudaGetLastError());
-
-  ACTS_CUDA_CHECK(cudaFreeAsync(devColIndices, stream));
   return result;
 }
 
@@ -239,7 +240,8 @@ Tensor<T> cudaGatherCols(const Tensor<T> &tensor,
   const auto nColsSrc = tensor.shape()[1];
   const auto nColsDst = indices.size();
   const auto total = nRows * nColsDst;
-  const auto stream = execContext.stream.value();
+  DeviceMemory mem(execContext);
+  const auto stream = mem.stream();
 
   auto result = Tensor<T>::Create({nRows, nColsDst}, execContext);
 
@@ -247,9 +249,8 @@ Tensor<T> cudaGatherCols(const Tensor<T> &tensor,
     return result;
   }
 
-  std::size_t *devIndices{};
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&devIndices, nColsDst * sizeof(std::size_t), stream));
+  auto devIndicesAlloc = mem.make<std::size_t>(nColsDst);
+  std::size_t *devIndices = devIndicesAlloc.get();
   ACTS_CUDA_CHECK(cudaMemcpyAsync(devIndices, indices.data(),
                                   nColsDst * sizeof(std::size_t),
                                   cudaMemcpyHostToDevice, stream));
@@ -259,8 +260,6 @@ Tensor<T> cudaGatherCols(const Tensor<T> &tensor,
   gatherColsByIndexKernel<<<gridDim, blockDim, 0, stream>>>(
       devIndices, nRows, nColsSrc, nColsDst, tensor.data(), result.data());
   ACTS_CUDA_CHECK(cudaGetLastError());
-
-  ACTS_CUDA_CHECK(cudaFreeAsync(devIndices, stream));
   return result;
 }
 

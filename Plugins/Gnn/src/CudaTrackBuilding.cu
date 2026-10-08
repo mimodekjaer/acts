@@ -11,6 +11,7 @@
 #include "ActsPlugins/Gnn/detail/ConnectedComponents.cuh"
 #include "ActsPlugins/Gnn/detail/CudaUtils.cuh"
 #include "ActsPlugins/Gnn/detail/CudaUtils.hpp"
+#include "ActsPlugins/Gnn/detail/DeviceMemory.cuh"
 #include "ActsPlugins/Gnn/detail/JunctionRemoval.hpp"
 
 using namespace Acts;
@@ -35,7 +36,8 @@ std::vector<std::vector<int>> CudaTrackBuilding::operator()(
     return {};
   }
 
-  auto stream = execContext.stream.value();
+  detail::DeviceMemory mem(execContext);
+  auto stream = mem.stream();
 
   auto cudaSrcPtr = tensors.edgeIndex.data();
   auto cudaTgtPtr = tensors.edgeIndex.data() + numEdges;
@@ -43,47 +45,44 @@ std::vector<std::vector<int>> CudaTrackBuilding::operator()(
   // Everything below is enqueued without host synchronization; the edge and
   // label counts stay in device memory until the results are copied back.
   // counters[0]: number of edges after junction removal, [1]: number of labels
-  int* cudaCounters{};
-  ACTS_CUDA_CHECK(cudaMallocAsync(&cudaCounters, 2 * sizeof(int), stream));
+  auto cudaCountersAlloc = mem.make<int>(2);
+  int* cudaCounters = cudaCountersAlloc.get();
   const int* cudaNumEdges = nullptr;
 
-  std::int64_t* cudaJrEdges{};
+  vecmem::unique_alloc_ptr<std::int64_t[]> cudaJrEdges;
   if (m_cfg.doJunctionRemoval) {
     assert(tensors.edgeScores->shape().at(0) ==
            tensors.edgeIndex.shape().at(1));
     ACTS_DEBUG("Do junction removal...");
-    ACTS_CUDA_CHECK(cudaMallocAsync(
-        &cudaJrEdges, 2 * numEdges * sizeof(std::int64_t), stream));
+    cudaJrEdges = mem.make<std::int64_t>(2 * numEdges);
     detail::junctionRemovalCudaAsync(
         numEdges, numSpacePoints, tensors.edgeScores->data(), cudaSrcPtr,
-        cudaTgtPtr, cudaJrEdges, cudaJrEdges + numEdges, cudaCounters, stream);
-    cudaSrcPtr = cudaJrEdges;
-    cudaTgtPtr = cudaJrEdges + numEdges;
+        cudaTgtPtr, cudaJrEdges.get(), cudaJrEdges.get() + numEdges,
+        cudaCounters, stream, execContext.memoryResource);
+    cudaSrcPtr = cudaJrEdges.get();
+    cudaTgtPtr = cudaJrEdges.get() + numEdges;
     cudaNumEdges = cudaCounters;
   }
 
-  int* cudaLabels{};
-  int* cudaSpacePointIds{};
-  int* cudaBounds{};
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&cudaLabels, numSpacePoints * sizeof(int), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(&cudaSpacePointIds,
-                                  2 * numSpacePoints * sizeof(int), stream));
-  ACTS_CUDA_CHECK(
-      cudaMallocAsync(&cudaBounds, (numSpacePoints + 1) * sizeof(int), stream));
+  auto cudaLabelsAlloc = mem.make<int>(numSpacePoints);
+  auto cudaSpacePointIdsAlloc = mem.make<int>(2 * numSpacePoints);
+  auto cudaBoundsAlloc = mem.make<int>(numSpacePoints + 1);
+  int* cudaLabels = cudaLabelsAlloc.get();
+  int* cudaSpacePointIds = cudaSpacePointIdsAlloc.get();
+  int* cudaBounds = cudaBoundsAlloc.get();
   int* cudaSortedSpacePointIds = cudaSpacePointIds + numSpacePoints;
 
   detail::connectedComponentsCudaAsync(numEdges, cudaNumEdges, cudaSrcPtr,
                                        cudaTgtPtr, numSpacePoints, cudaLabels,
-                                       cudaCounters + 1, stream);
+                                       cudaCounters + 1, mem);
 
   // Sort the space point IDs by label and compute the bounds of each label
   ACTS_CUDA_CHECK(cudaMemcpyAsync(cudaSpacePointIds, spacePointIds.data(),
                                   numSpacePoints * sizeof(int),
                                   cudaMemcpyHostToDevice, stream));
-  detail::findTrackCandidateBoundsAsync(
-      cudaLabels, cudaSpacePointIds, cudaSortedSpacePointIds, cudaBounds,
-      numSpacePoints, cudaCounters + 1, stream);
+  detail::findTrackCandidateBoundsAsync(cudaLabels, cudaSpacePointIds,
+                                        cudaSortedSpacePointIds, cudaBounds,
+                                        numSpacePoints, cudaCounters + 1, mem);
 
   int counters[2]{};
   ACTS_CUDA_CHECK(cudaMemcpyAsync(counters, cudaCounters, sizeof(counters),
@@ -108,15 +107,6 @@ std::vector<std::vector<int>> CudaTrackBuilding::operator()(
   ACTS_CUDA_CHECK(cudaMemcpyAsync(bounds.data(), cudaBounds,
                                   (numberLabels + 1) * sizeof(int),
                                   cudaMemcpyDeviceToHost, stream));
-
-  // Free Memory
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaLabels, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaSpacePointIds, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaBounds, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaCounters, stream));
-  if (m_cfg.doJunctionRemoval) {
-    ACTS_CUDA_CHECK(cudaFreeAsync(cudaJrEdges, stream));
-  }
 
   ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
   ACTS_CUDA_CHECK(cudaGetLastError());

@@ -8,6 +8,7 @@
 
 #include "ActsPlugins/Gnn/EdgeLayerConnector.hpp"
 #include "ActsPlugins/Gnn/detail/CudaUtils.hpp"
+#include "ActsPlugins/Gnn/detail/DeviceMemory.cuh"
 
 #include <MMG/CUDA_edge_layer_connector>
 #include <thrust/copy.h>
@@ -25,7 +26,8 @@ std::vector<std::vector<int>> EdgeLayerConnector::operator()(
   const auto numEdges = static_cast<int>(tensors.edgeIndex.shape().at(1));
   const auto numSpacepoints = static_cast<int>(spacepointIDs.size());
 
-  auto stream = execContext.stream.value();
+  detail::DeviceMemory mem(execContext);
+  auto stream = mem.stream();
 
   // Convert std::int64_t edge indices to int using Tensor for memory management
   auto srcInt64Ptr = tensors.edgeIndex.data();
@@ -36,10 +38,10 @@ std::vector<std::vector<int>> EdgeLayerConnector::operator()(
   auto edgeTgt =
       Tensor<int>::Create({1, static_cast<std::size_t>(numEdges)}, execContext);
 
-  thrust::copy(thrust::cuda::par.on(stream), srcInt64Ptr,
-               srcInt64Ptr + numEdges, edgeSrc.data());
-  thrust::copy(thrust::cuda::par.on(stream), tgtInt64Ptr,
-               tgtInt64Ptr + numEdges, edgeTgt.data());
+  thrust::copy(mem.policy(), srcInt64Ptr, srcInt64Ptr + numEdges,
+               edgeSrc.data());
+  thrust::copy(mem.policy(), tgtInt64Ptr, tgtInt64Ptr + numEdges,
+               edgeTgt.data());
 
   // Copy spacepoint IDs to GPU
   auto spacepointIDsTensor =

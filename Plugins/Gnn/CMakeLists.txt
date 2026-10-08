@@ -107,6 +107,9 @@ if(ACTS_ENABLE_CUDA)
         PROPERTIES CUDA_SEPARABLE_COMPILATION OFF
     )
     target_link_libraries(ActsPluginGnn PRIVATE CUDA::cudart CUDA::nvtx3)
+    # Device memory is managed with vecmem. Public, since the CUDA headers in
+    # detail/ use it.
+    target_link_libraries(ActsPluginGnn PUBLIC vecmem::core vecmem::cuda)
     target_sources(
         ActsPluginGnn
         PRIVATE

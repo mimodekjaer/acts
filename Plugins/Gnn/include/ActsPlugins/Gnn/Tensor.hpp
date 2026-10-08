@@ -18,6 +18,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <memory_resource>
 #include <optional>
 #include <ostream>
 #include <stdexcept>
@@ -84,6 +85,11 @@ struct ExecutionContext {
   Device device{Device::Type::eCPU};
   /// CUDA stream for asynchronous execution
   std::optional<cudaStream_t> stream;
+  /// Memory resource for device memory, e.g. a vecmem resource shared with
+  /// other GPU code. Memory can be released while work on the stream is still
+  /// pending, so the resource must only hand it out again to work that is
+  /// ordered after it. If not set, stream-ordered CUDA allocations are used.
+  std::pmr::memory_resource *memoryResource = nullptr;
 };
 
 /// @cond
