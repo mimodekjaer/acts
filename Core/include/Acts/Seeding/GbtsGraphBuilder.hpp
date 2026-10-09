@@ -66,7 +66,7 @@ class GbtsGraphBuilder {
     bool matchBeforeCreate = false;
 
     /// Optional validation for barrel triplets.
-    bool validateTriplets = true;
+    bool validateTriplets = false;
 
     /// Widens allowed variation in tau ratio if a layer is missed in edge
     /// connecting.
@@ -89,6 +89,14 @@ class GbtsGraphBuilder {
     float longEdgeDeltaRadius = 50.f * Acts::UnitConstants::mm;
     /// Longitudinal separation above which an edge is long.
     float longEdgeDeltaZ = 200.f * Acts::UnitConstants::mm;
+    /// Fraction by which the tau ratio cut is tightened for each of the two
+    /// curvature thresholds below that the mean curvature of the two edges is
+    /// under, as the traccc GPU GBTS does: high pT tracks scatter less.
+    float highPtTauRatioTightening = 0.2f;
+    /// First curvature threshold of the tightening.
+    float highPtCurvature = 1e-4f / Acts::UnitConstants::mm;
+    /// Second curvature threshold of the tightening.
+    float veryHighPtCurvature = 3e-5f / Acts::UnitConstants::mm;
 
     /// The same for a triplet any of whose three nodes a strip module made,
     /// whose two doublets resolved the shared node's along-strip coordinate
