@@ -15,6 +15,10 @@
 #include <boost/container/static_vector.hpp>
 #include <onnxruntime_cxx_api.h>
 
+#ifdef ACTS_GNN_WITH_CUDA
+#include "ActsPlugins/Gnn/detail/CudaUtils.hpp"
+#endif
+
 namespace bc = boost::container;
 
 namespace {
@@ -231,6 +235,14 @@ PipelineTensors OnnxEdgeClassifier::operator()(
                         .GetDimensionsCount();
   outputTensors.push_back(toOnnx(memoryInfo, scores, outputRank));
   std::vector<const char *> outputNames{m_outputName.c_str()};
+
+  // ONNX Runtime runs the model on its own CUDA stream, which is not ordered
+  // with the stream that the inputs were written on
+#ifdef ACTS_GNN_WITH_CUDA
+  if (execContext.device.isCuda() && execContext.stream.has_value()) {
+    ACTS_CUDA_CHECK(cudaStreamSynchronize(*execContext.stream));
+  }
+#endif
 
   ACTS_DEBUG("Run model");
   Ort::RunOptions options;
