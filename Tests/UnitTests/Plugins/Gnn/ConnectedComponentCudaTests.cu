@@ -44,15 +44,16 @@ Vi checkLabeling(const std::vector<int> &src, const std::vector<int> &tgt) {
                                  cudaMemcpyHostToDevice),
                       cudaSuccess);
 
+  // The raw union-find labels, before relabelling: the smallest node index
+  // of each component
   int *cudaLabels;
   BOOST_REQUIRE_EQUAL(cudaMalloc(&cudaLabels, numNodes * sizeof(int)),
                       cudaSuccess);
-  int *cudaLabelsNext;
-  BOOST_REQUIRE_EQUAL(cudaMalloc(&cudaLabelsNext, numNodes * sizeof(int)),
-                      cudaSuccess);
-
-  labelConnectedComponents<<<1, 1024>>>(src.size(), cudaSrc, cudaTgt, numNodes,
-                                        cudaLabels, cudaLabelsNext);
+  iota<<<1, 1024>>>(numNodes, cudaLabels);
+  unionFindHook<<<1, 1024>>>(src.size(), static_cast<const int *>(nullptr),
+                             cudaSrc, cudaTgt, cudaLabels);
+  unionFindFlatten<<<1, 1024>>>(numNodes, cudaLabels);
+  BOOST_REQUIRE_EQUAL(cudaDeviceSynchronize(), cudaSuccess);
 
   std::vector<int> labelsFromCuda(numNodes);
   BOOST_REQUIRE_EQUAL(
@@ -269,8 +270,9 @@ void testFullConnectedComponents(const Vi &src, const Vi &tgt) {
       cudaMallocAsync(&cudaLabels, nNodes * sizeof(int), stream), cudaSuccess);
 
   // run connected components
+  DeviceMemory mem(stream, nullptr);
   int cudaNumLabels = connectedComponentsCuda(src.size(), cudaSrc, cudaTgt,
-                                              nNodes, cudaLabels, stream);
+                                              nNodes, cudaLabels, mem);
   BOOST_REQUIRE_EQUAL(cudaStreamSynchronize(stream), cudaSuccess);
 
   // print message from last cuda error code
@@ -425,40 +427,50 @@ BOOST_AUTO_TEST_CASE(find_bounds) {
                       cudaMemcpyHostToDevice, stream),
       cudaSuccess);
 
-  // Allocate bounds array
+  // Allocate the number of labels, the sorted space point IDs and the bounds
+  DeviceMemory mem(stream, nullptr);
+  auto cudaNumLabels = mem.make<int>(1);
+  BOOST_REQUIRE_EQUAL(
+      cudaMemcpyAsync(cudaNumLabels.get(), &numberLabels, sizeof(int),
+                      cudaMemcpyHostToDevice, stream),
+      cudaSuccess);
+  auto cudaSortedSpacePointIDs = mem.make<int>(spids.size());
   int *cudaBounds{};
   BOOST_REQUIRE_EQUAL(
-      cudaMallocAsync(&cudaBounds, numberLabels * sizeof(int), stream),
+      cudaMallocAsync(&cudaBounds, (numberLabels + 1) * sizeof(int), stream),
       cudaSuccess);
 
-  ActsPlugins::detail::findTrackCandidateBounds(cudaLabels, cudaSpacePointIDs,
-                                                cudaBounds, spids.size(),
-                                                numberLabels, stream);
+  ActsPlugins::detail::findTrackCandidateBoundsAsync(
+      cudaLabels, cudaSpacePointIDs, cudaSortedSpacePointIDs.get(), cudaBounds,
+      spids.size(), cudaNumLabels.get(), mem);
   BOOST_REQUIRE_EQUAL(cudaGetLastError(), cudaSuccess);
 
   // Copy bounds back to host
-  std::vector<int> bounds(numberLabels);
-  BOOST_REQUIRE_EQUAL(
-      cudaMemcpyAsync(bounds.data(), cudaBounds, numberLabels * sizeof(int),
-                      cudaMemcpyDeviceToHost, stream),
-      cudaSuccess);
-
-  // Copy back sorted space point IDs
-  BOOST_REQUIRE_EQUAL(cudaMemcpyAsync(spids.data(), cudaSpacePointIDs,
-                                      spids.size() * sizeof(int),
+  std::vector<int> bounds(numberLabels + 1);
+  BOOST_REQUIRE_EQUAL(cudaMemcpyAsync(bounds.data(), cudaBounds,
+                                      (numberLabels + 1) * sizeof(int),
                                       cudaMemcpyDeviceToHost, stream),
                       cudaSuccess);
+
+  // Copy back sorted space point IDs
+  BOOST_REQUIRE_EQUAL(
+      cudaMemcpyAsync(spids.data(), cudaSortedSpacePointIDs.get(),
+                      spids.size() * sizeof(int), cudaMemcpyDeviceToHost,
+                      stream),
+      cudaSuccess);
 
   // Synchronize the stream
   BOOST_REQUIRE_EQUAL(cudaStreamSynchronize(stream), cudaSuccess);
 
   // Free resources
+  cudaSortedSpacePointIDs.reset();
+  cudaNumLabels.reset();
+  BOOST_REQUIRE_EQUAL(cudaStreamSynchronize(stream), cudaSuccess);
   BOOST_REQUIRE_EQUAL(cudaStreamDestroy(stream), cudaSuccess);
   BOOST_REQUIRE_EQUAL(cudaFree(cudaSpacePointIDs), cudaSuccess);
   BOOST_REQUIRE_EQUAL(cudaFree(cudaLabels), cudaSuccess);
   BOOST_REQUIRE_EQUAL(cudaFree(cudaBounds), cudaSuccess);
 
-  bounds.push_back(spids.size());  // Add the last bound
   BOOST_REQUIRE_EQUAL(bounds.size(), expectedBounds.size());
   BOOST_CHECK_EQUAL_COLLECTIONS(bounds.begin(), bounds.end(),
                                 expectedBounds.begin(), expectedBounds.end());

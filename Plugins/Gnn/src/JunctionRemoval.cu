@@ -11,8 +11,6 @@
 #include "ActsPlugins/Gnn/detail/DeviceMemory.cuh"
 #include "ActsPlugins/Gnn/detail/JunctionRemoval.hpp"
 
-#include <algorithm>
-
 #include <cub/device/device_select.cuh>
 
 namespace ActsPlugins::detail {
@@ -126,41 +124,6 @@ void junctionRemovalCudaAsync(std::size_t nEdges, std::size_t nNodes,
   ACTS_CUDA_CHECK(cub::DeviceSelect::Flagged(temp, tempBytes, dstNodes, keep,
                                              dstNodesOut, numEdgesOut, nEdges,
                                              stream));
-}
-
-std::pair<std::int64_t *, std::size_t> junctionRemovalCuda(
-    std::size_t nEdges, std::size_t nNodes, const float *scores,
-    const std::int64_t *srcNodes, const std::int64_t *dstNodes,
-    cudaStream_t stream) {
-  DeviceMemory mem(stream, nullptr);
-  auto bufferAlloc =
-      mem.make<std::int64_t>(std::max<std::size_t>(2 * nEdges, 1));
-  auto cudaNumEdgesOut = mem.make<int>(1);
-  std::int64_t *buffer = bufferAlloc.get();
-
-  junctionRemovalCudaAsync(nEdges, nNodes, scores, srcNodes, dstNodes, buffer,
-                           buffer + nEdges, cudaNumEdgesOut.get(), stream);
-
-  int nEdgesAfter{};
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(&nEdgesAfter, cudaNumEdgesOut.get(),
-                                  sizeof(int), cudaMemcpyDeviceToHost, stream));
-  ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
-
-  // Return src and dst contiguously as [src(nEdgesAfter) | dst(nEdgesAfter)]
-  std::int64_t *newSrcNodes{};
-  ACTS_CUDA_CHECK(cudaMallocAsync(
-      &newSrcNodes,
-      std::max<std::size_t>(2 * nEdgesAfter, 1) * sizeof(std::int64_t),
-      stream));
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(newSrcNodes, buffer,
-                                  nEdgesAfter * sizeof(std::int64_t),
-                                  cudaMemcpyDeviceToDevice, stream));
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(newSrcNodes + nEdgesAfter, buffer + nEdges,
-                                  nEdgesAfter * sizeof(std::int64_t),
-                                  cudaMemcpyDeviceToDevice, stream));
-  ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
-
-  return std::make_pair(newSrcNodes, static_cast<std::size_t>(nEdgesAfter));
 }
 
 }  // namespace ActsPlugins::detail
