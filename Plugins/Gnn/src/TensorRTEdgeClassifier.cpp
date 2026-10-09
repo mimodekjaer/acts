@@ -119,9 +119,10 @@ class TensorRTEdgeClassifier::Impl {
       ACTS_WARNING("Cannot handle more then one optimization profile for now");
     }
 
-    m_maxNodes =
-        m_engine->getProfileShape("node_features", 0, nvinfer1::OptProfileSelector::kMAX)
-            .d[0];
+    m_maxNodes = m_engine
+                     ->getProfileShape("node_features", 0,
+                                       nvinfer1::OptProfileSelector::kMAX)
+                     .d[0];
     ACTS_INFO("Maximum number of nodes: " << m_maxNodes);
 
     auto maxEdgesA = m_engine
