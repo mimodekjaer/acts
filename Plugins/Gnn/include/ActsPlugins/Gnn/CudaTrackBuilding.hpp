@@ -22,9 +22,6 @@ class CudaTrackBuilding final : public TrackBuildingBase {
  public:
   /// Configuration for CUDA track building
   struct Config {
-    /// No effect, kept for configuration compatibility: the connected
-    /// components always run as a union-find on the whole device
-    bool useOneBlockImplementation = true;
     /// Do junction removal
     bool doJunctionRemoval = false;
     /// Minimum candidate size

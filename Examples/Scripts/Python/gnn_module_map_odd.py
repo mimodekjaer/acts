@@ -175,7 +175,6 @@ def runGnnModuleMap(
 
     trackBuilderConfig = {
         "level": acts.logging.INFO,
-        "useOneBlockImplementation": False,
         "doJunctionRemoval": True,
     }
     trackBuilder = CudaTrackBuilding(**trackBuilderConfig)

@@ -85,8 +85,7 @@ PYBIND11_MODULE(ActsPluginsPythonBindingsGnn, gnn) {
 
 #ifdef ACTS_GNN_WITH_CUDA
   ACTS_PYTHON_DECLARE_GNN_STAGE(CudaTrackBuilding, TrackBuildingBase, gnn,
-                                useOneBlockImplementation, doJunctionRemoval,
-                                minCandidateSize);
+                                doJunctionRemoval, minCandidateSize);
   ACTS_PYTHON_DECLARE_GNN_STAGE(DWalkTrackBuilding, TrackBuildingBase, gnn,
                                 thMin, thAdd, minCandidateSize,
                                 radialFeatureIndex, pathMetric);
