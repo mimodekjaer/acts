@@ -85,13 +85,6 @@ __global__ void tracccNodeFeatures(
   moduleIds[i] = moduleIdTable[surfaces[0].index()];
 }
 
-__global__ void iotaInt(std::size_t n, int *a) {
-  const std::size_t i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i < n) {
-    a[i] = static_cast<int>(i);
-  }
-}
-
 __global__ void gatherRows(std::size_t n, std::size_t nCols, const int *rows,
                            const float *in, float *out) {
   const std::size_t i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -289,7 +282,7 @@ TracccGnnChain::Result TracccGnnChain::operator()(
   auto order = mem.make<int>(n);
   auto nodeSpacePoints = mem.make<int>(n);
   auto moduleIds = mem.make<std::uint64_t>(n);
-  iotaInt<<<nBlocks(n), kBlock, 0, stream>>>(n, order.get());
+  detail::iota<<<nBlocks(n), kBlock, 0, stream>>>(n, order.get());
   ACTS_CUDA_CHECK(cudaGetLastError());
   {
     std::size_t bytes = 0;
