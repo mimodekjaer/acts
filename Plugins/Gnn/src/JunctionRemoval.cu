@@ -85,19 +85,20 @@ void junctionRemovalCudaAsync(std::size_t nEdges, std::size_t nNodes,
     return;
   }
 
-  // One allocation for the per node counters, keys and the edge mask
-  const std::size_t countBytes = 2 * nNodes * sizeof(int);
-  const std::size_t keyOffset = (countBytes + 255) / 256 * 256;
-  const std::size_t keyBytes = 2 * nNodes * sizeof(Key);
+  // Per node: number of incoming and outgoing edges and the best edge of each
   DeviceMemory mem(stream, mr);
-  auto bufferAlloc = mem.make<char>(keyOffset + keyBytes + nEdges);
-  char *buffer = bufferAlloc.get();
-  auto *numInEdges = reinterpret_cast<int *>(buffer);
-  auto *numOutEdges = numInEdges + nNodes;
-  auto *maxInKey = reinterpret_cast<Key *>(buffer + keyOffset);
-  auto *maxOutKey = maxInKey + nNodes;
-  char *keep = buffer + keyOffset + keyBytes;
-  ACTS_CUDA_CHECK(cudaMemsetAsync(buffer, 0, keyOffset + keyBytes, stream));
+  auto counts = mem.make<int>(2 * nNodes);
+  auto keys = mem.make<Key>(2 * nNodes);
+  auto keepAlloc = mem.make<char>(nEdges);
+  int *numInEdges = counts.get();
+  int *numOutEdges = counts.get() + nNodes;
+  Key *maxInKey = keys.get();
+  Key *maxOutKey = keys.get() + nNodes;
+  char *keep = keepAlloc.get();
+  ACTS_CUDA_CHECK(
+      cudaMemsetAsync(counts.get(), 0, 2 * nNodes * sizeof(int), stream));
+  ACTS_CUDA_CHECK(
+      cudaMemsetAsync(keys.get(), 0, 2 * nNodes * sizeof(Key), stream));
 
   const dim3 blockSize = 256;
   const dim3 gridSizeEdges = (nEdges + blockSize.x - 1) / blockSize.x;
