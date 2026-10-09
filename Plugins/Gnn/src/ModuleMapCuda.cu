@@ -114,6 +114,14 @@ class ModuleMapCuda::Impl {
   vecmem::unique_alloc_ptr<int[]> cudaModuleMapVals;
   std::size_t cudaModuleMapSize{};
 
+  /// Builds the graph for node features and module ids in device memory
+  PipelineTensors buildGraph(Tensor<float> nodeFeatures,
+                             const std::uint64_t *cudaModuleIds,
+                             detail::DeviceMemory &mem,
+                             const ExecutionContext &execContext,
+                             const ModuleMapCuda::Config &cfg,
+                             const Logger &logger) const;
+
   /// Returns the [2, nEdges] edge index and the [nEdges, 6] edge features
   std::pair<Tensor<std::int64_t>, Tensor<float>> makeEdges(
       CUDA_hit_data<float> cuda_TThits, int *cuda_hit_indice,
@@ -200,7 +208,6 @@ PipelineTensors ModuleMapCuda::operator()(
     std::vector<float> &inputValues, std::size_t numNodes,
     const std::vector<std::uint64_t> &moduleIds,
     const ExecutionContext &execContext) {
-  auto t0 = std::chrono::high_resolution_clock::now();
   assert(execContext.device.isCuda());
 
   if (moduleIds.empty()) {
@@ -211,11 +218,6 @@ PipelineTensors ModuleMapCuda::operator()(
   assert(inputValues.size() % moduleIds.size() == 0);
   const auto nFeatures = inputValues.size() / moduleIds.size();
   auto &features = inputValues;
-
-  const dim3 blockDim = m_cfg.gpuBlocks;
-  const dim3 gridDimHits = (nHits + blockDim.x - 1) / blockDim.x;
-  ACTS_VERBOSE("gridDimHits: " << gridDimHits.x
-                               << ", blockDim: " << blockDim.x);
 
   // Get stream if available, otherwise use default stream
   cudaStream_t stream = cudaStreamLegacy;
@@ -233,12 +235,11 @@ PipelineTensors ModuleMapCuda::operator()(
   // Full node features to device
 
   auto nodeFeatures = Tensor<float>::Create({nHits, nFeatures}, execContext);
-  float *cudaNodeFeaturePtr = nodeFeatures.data();
   using FloatView = vecmem::data::vector_view<float>;
   copy(vecmem::data::vector_view<const float>(
            static_cast<FloatView::size_type>(features.size()), features.data()),
        FloatView(static_cast<FloatView::size_type>(features.size()),
-                 cudaNodeFeaturePtr),
+                 nodeFeatures.data()),
        vecmem::copy::type::host_to_device)
       ->ignore();
 
@@ -250,6 +251,42 @@ PipelineTensors ModuleMapCuda::operator()(
        IdView(static_cast<IdView::size_type>(nHits), cudaModuleIds.get()),
        vecmem::copy::type::host_to_device)
       ->ignore();
+
+  return m_impl->buildGraph(std::move(nodeFeatures), cudaModuleIds.get(), mem,
+                            execContext, m_cfg, logger());
+}
+
+PipelineTensors ModuleMapCuda::operator()(Tensor<float> nodeFeatures,
+                                          const std::uint64_t *moduleIds,
+                                          const ExecutionContext &execContext) {
+  assert(execContext.device.isCuda());
+  if (!nodeFeatures.device().isCuda()) {
+    throw std::invalid_argument("ModuleMapCuda: node features must be on CUDA");
+  }
+  if (nodeFeatures.shape().at(0) == 0) {
+    throw NoEdgesError{};
+  }
+
+  cudaStream_t stream = execContext.stream.value_or(cudaStreamLegacy);
+  detail::DeviceMemory mem(stream, execContext.memoryResource);
+  return m_impl->buildGraph(std::move(nodeFeatures), moduleIds, mem,
+                            execContext, m_cfg, logger());
+}
+
+PipelineTensors ModuleMapCuda::Impl::buildGraph(
+    Tensor<float> nodeFeatures, const std::uint64_t *cudaModuleIds,
+    detail::DeviceMemory &mem, const ExecutionContext &execContext,
+    const ModuleMapCuda::Config &cfg, const Logger &logger) const {
+  auto t0 = std::chrono::high_resolution_clock::now();
+  const cudaStream_t stream = mem.stream();
+  const auto nHits = nodeFeatures.shape().at(0);
+  const auto nFeatures = nodeFeatures.shape().at(1);
+  float *cudaNodeFeaturePtr = nodeFeatures.data();
+
+  const dim3 blockDim = cfg.gpuBlocks;
+  const dim3 gridDimHits = (nHits + blockDim.x - 1) / blockDim.x;
+  ACTS_VERBOSE("gridDimHits: " << gridDimHits.x
+                               << ", blockDim: " << blockDim.x);
 
   // Allocate memory for transposed node features that are needed for the
   // module map kernels in one block
@@ -264,32 +301,30 @@ PipelineTensors ModuleMapCuda::operator()(
   inputData.m_cuda_eta = cudaNodeFeaturesTransposed.get() + 5 * nHits;
 
   // Allocate helper nb hits memory
-  auto cudaNbHits = mem.make<int>(m_impl->cudaModuleMapSize + 1);
-  ACTS_CUDA_CHECK(cudaMemsetAsync(cudaNbHits.get(), 0,
-                                  (m_impl->cudaModuleMapSize + 1) * sizeof(int),
-                                  stream));
+  auto cudaNbHits = mem.make<int>(cudaModuleMapSize + 1);
+  ACTS_CUDA_CHECK(cudaMemsetAsync(
+      cudaNbHits.get(), 0, (cudaModuleMapSize + 1) * sizeof(int), stream));
 
   detail::preprocessHitFeatures<<<gridDimHits, blockDim, 0, stream>>>(
       nHits, nFeatures, cudaNodeFeaturePtr, inputData.cuda_R(),
       inputData.cuda_phi(), inputData.cuda_z(), inputData.cuda_eta(),
-      inputData.cuda_x(), inputData.cuda_y(), m_cfg.rScale, m_cfg.phiScale,
-      m_cfg.zScale);
+      inputData.cuda_x(), inputData.cuda_y(), cfg.rScale, cfg.phiScale,
+      cfg.zScale);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
   detail::mapModuleIdsToNbHits<<<gridDimHits, blockDim, 0, stream>>>(
-      cudaNbHits.get(), nHits, cudaModuleIds.get(), m_impl->cudaModuleMapSize,
-      m_impl->cudaModuleMapKeys.get(), m_impl->cudaModuleMapVals.get());
+      cudaNbHits.get(), nHits, cudaModuleIds, cudaModuleMapSize,
+      cudaModuleMapKeys.get(), cudaModuleMapVals.get());
   ACTS_CUDA_CHECK(cudaGetLastError());
 
-  exclusiveSum(cudaNbHits.get(), cudaNbHits.get(),
-               m_impl->cudaModuleMapSize + 1, mem);
+  exclusiveSum(cudaNbHits.get(), cudaNbHits.get(), cudaModuleMapSize + 1, mem);
   int *cudaHitIndice = cudaNbHits.get();
 
   ///////////////////////////////////
   // Perform module map inference
   ////////////////////////////////////
 
-  if (m_cfg.debugSynchronize) {
+  if (cfg.debugSynchronize) {
     ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
   }
   auto t1 = std::chrono::high_resolution_clock::now();
@@ -297,10 +332,10 @@ PipelineTensors ModuleMapCuda::operator()(
   // Builds the edges, and in its final pass writes the edge index and edge
   // features directly
   auto [edgeIndex, edgeFeatures] =
-      m_impl->makeEdges(inputData, cudaHitIndice, cudaNodeFeaturePtr, nFeatures,
-                        mem, execContext, m_cfg, logger());
+      makeEdges(inputData, cudaHitIndice, cudaNodeFeaturePtr, nFeatures, mem,
+                execContext, cfg, logger);
   ACTS_CUDA_CHECK(cudaGetLastError());
-  if (m_cfg.debugSynchronize) {
+  if (cfg.debugSynchronize) {
     ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
   }
 

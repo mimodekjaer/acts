@@ -126,6 +126,17 @@ else()
     target_sources(ActsPluginGnn PRIVATE src/DeviceOpsNoCuda.cpp)
 endif()
 
+if(ACTS_GNN_ENABLE_DETRAY)
+    # Header-only device helpers to build the GNN inputs from detray geometry
+    target_link_libraries(ActsPluginGnn PUBLIC detray::core_array)
+    target_compile_definitions(ActsPluginGnn PUBLIC ACTS_GNN_WITH_DETRAY)
+    # detray device code calls constexpr host functions
+    target_compile_options(
+        ActsPluginGnn
+        INTERFACE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+    )
+endif()
+
 if(ACTS_GNN_ENABLE_TORCH)
     target_compile_definitions(ActsPluginGnn PUBLIC ACTS_GNN_TORCH_BACKEND)
     target_link_libraries(ActsPluginGnn PRIVATE ${TORCH_LIBRARIES})

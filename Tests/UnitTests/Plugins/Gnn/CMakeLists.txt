@@ -7,6 +7,16 @@ if(ACTS_ENABLE_CUDA)
     add_unittest(ConnectedComponentsCuda ConnectedComponentCudaTests.cu)
     add_unittest(JunctionRemoval JunctionRemovalTests.cu)
 endif()
+if(ACTS_GNN_ENABLE_DETRAY)
+    set(_gnn_extra_libraries ${unittest_extra_libraries})
+    list(APPEND unittest_extra_libraries detray::test_common)
+    add_unittest(GnnDetrayNodeFeatures DetrayNodeFeaturesTests.cpp)
+    target_sources(
+        ActsUnitTestGnnDetrayNodeFeatures
+        PRIVATE DetrayNodeFeaturesTestKernels.cu
+    )
+    set(unittest_extra_libraries ${_gnn_extra_libraries})
+endif()
 add_unittest(Tensor TensorTests.cpp)
 add_unittest(GnnRemoveUnusedNodes GnnRemoveUnusedNodesTests.cpp)
 if(ACTS_GNN_ENABLE_ONNX)
