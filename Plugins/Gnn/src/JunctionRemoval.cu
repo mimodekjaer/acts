@@ -80,13 +80,13 @@ void junctionRemovalCudaAsync(std::size_t nEdges, std::size_t nNodes,
                               std::int64_t *dstNodesOut, int *numEdgesOut,
                               cudaStream_t stream,
                               std::pmr::memory_resource *mr) {
+  DeviceMemory mem(stream, mr);
   if (nEdges == 0) {
-    ACTS_CUDA_CHECK(cudaMemsetAsync(numEdgesOut, 0, sizeof(int), stream));
+    mem.memset(numEdgesOut, 1, 0);
     return;
   }
 
   // Per node: number of incoming and outgoing edges and the best edge of each
-  DeviceMemory mem(stream, mr);
   auto counts = mem.make<int>(2 * nNodes);
   auto keys = mem.make<Key>(2 * nNodes);
   auto keepAlloc = mem.make<char>(nEdges);
@@ -95,10 +95,8 @@ void junctionRemovalCudaAsync(std::size_t nEdges, std::size_t nNodes,
   Key *maxInKey = keys.get();
   Key *maxOutKey = keys.get() + nNodes;
   char *keep = keepAlloc.get();
-  ACTS_CUDA_CHECK(
-      cudaMemsetAsync(counts.get(), 0, 2 * nNodes * sizeof(int), stream));
-  ACTS_CUDA_CHECK(
-      cudaMemsetAsync(keys.get(), 0, 2 * nNodes * sizeof(Key), stream));
+  mem.memset(counts.get(), 2 * nNodes, 0);
+  mem.memset(keys.get(), 2 * nNodes, 0);
 
   const dim3 blockSize = 256;
   const dim3 gridSizeEdges = (nEdges + blockSize.x - 1) / blockSize.x;

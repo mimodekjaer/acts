@@ -46,10 +46,9 @@ std::vector<std::vector<int>> EdgeLayerConnector::operator()(
   // Copy spacepoint IDs to GPU
   auto spacepointIDsTensor =
       Tensor<int>::Create({1, spacepointIDs.size()}, execContext);
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(
-      spacepointIDsTensor.data(), spacepointIDs.data(),
-      spacepointIDs.size() * sizeof(int), cudaMemcpyHostToDevice, stream));
-  ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
+  mem.toDevice(spacepointIDsTensor.data(), spacepointIDs.data(),
+               spacepointIDs.size());
+  mem.synchronize();
 
   ACTS_DEBUG("Setup graph...");
   CUDA_graph<float> graph(spacepointIDsTensor.data(), numSpacepoints,
@@ -79,16 +78,12 @@ std::vector<std::vector<int>> EdgeLayerConnector::operator()(
                                  << tracksSize << ", nbTracks: " << nbTracks);
 
   std::vector<int> nbHits(nbTracks);
-  ACTS_CUDA_CHECK(
-      cudaMemcpyAsync(nbHits.data(), connector.cuda_tracks()->nb_hits(),
-                      nbTracks * sizeof(int), cudaMemcpyDeviceToHost, stream));
+  mem.toHost(nbHits.data(), connector.cuda_tracks()->nb_hits(), nbTracks);
 
   std::vector<int> flatHits(tracksSize);
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(
-      flatHits.data(), connector.cuda_tracks()->hits(),
-      tracksSize * sizeof(int), cudaMemcpyDeviceToHost, stream));
+  mem.toHost(flatHits.data(), connector.cuda_tracks()->hits(), tracksSize);
 
-  ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
+  mem.synchronize();
   ACTS_CUDA_CHECK(cudaGetLastError());
 
   std::vector<std::vector<int>> trackCandidates;

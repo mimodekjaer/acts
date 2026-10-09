@@ -61,21 +61,19 @@ PipelineTensors cudaRemoveUnusedNodes(PipelineTensors &&tensors,
   // Copy edgeIndex into a scratch buffer — thrust needs a mutable working
   // copy and the edgeIndex tensor is remapped in-place later.
   auto tmp = Tensor<std::int64_t>::Create({1, 2 * nEdges}, execCtx);
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(tmp.data(), tensors.edgeIndex.data(),
-                                  tmp.nbytes(), cudaMemcpyDeviceToDevice,
-                                  stream));
+  mem.copyDevice(tmp.data(), tensors.edgeIndex.data(), 2 * nEdges);
 
   // Sort + unique → sorted unique used-node indices in tmp[0..nUsed)
   thrust::sort(mem.policy(), tmp.data(), tmp.data() + 2 * nEdges);
   auto *uniqEnd =
       thrust::unique(mem.policy(), tmp.data(), tmp.data() + 2 * nEdges);
   // nUsed must be read on host — sync the stream just for this scalar
-  ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
+  mem.synchronize();
   const std::size_t nUsed = static_cast<std::size_t>(uniqEnd - tmp.data());
 
   // Boolean node mask [nNodes, 1]: true at each surviving node index
   auto mask = Tensor<bool>::Create({nNodes, 1}, execCtx);
-  ACTS_CUDA_CHECK(cudaMemsetAsync(mask.data(), 0, mask.nbytes(), stream));
+  mem.memset(mask.data(), nNodes, 0);
   const dim3 blockDim = 1024;
   const dim3 gridUsed = (nUsed + blockDim.x - 1) / blockDim.x;
   buildNodeMaskKernel<<<gridUsed, blockDim, 0, stream>>>(tmp.data(), nUsed,
@@ -99,10 +97,8 @@ PipelineTensors cudaRemoveUnusedNodes(PipelineTensors &&tensors,
 
   // Copy surviving node indices to host to update spacePointIds
   std::vector<std::int64_t> hostUsedNodes(nUsed);
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(hostUsedNodes.data(), tmp.data(),
-                                  nUsed * sizeof(std::int64_t),
-                                  cudaMemcpyDeviceToHost, stream));
-  ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
+  mem.toHost(hostUsedNodes.data(), tmp.data(), nUsed);
+  mem.synchronize();
 
   std::vector<int> remapped;
   remapped.reserve(nUsed);

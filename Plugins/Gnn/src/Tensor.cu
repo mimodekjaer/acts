@@ -117,25 +117,32 @@ TensorPtr cudaCreateTensorMemory(std::size_t nbytes,
     return TensorPtr(mr->allocate(nbytes),
                      [mr, nbytes](void *p) { mr->deallocate(p, nbytes); });
   }
-  auto stream = *ctx.stream;
-  void *ptr{};
-  ACTS_CUDA_CHECK(cudaMallocAsync(&ptr, nbytes, stream));
-  return TensorPtr(
-      ptr, [stream](void *p) { ACTS_CUDA_CHECK(cudaFreeAsync(p, stream)); });
+  // Stream-ordered memory, freed in order with the work on the stream
+  const auto stream = *ctx.stream;
+  CudaStreamOrderedMemoryResource mr(stream);
+  return TensorPtr(mr.allocate(nbytes), [stream, nbytes](void *p) {
+    CudaStreamOrderedMemoryResource(stream).deallocate(p, nbytes);
+  });
 }
 
 void cudaCopyTensorMemory(void *dst, const void *src, std::size_t nbytes,
                           Device from, const ExecutionContext &to) {
   assert(to.stream.has_value());
-  cudaMemcpyKind kind = cudaMemcpyHostToHost;
+  auto kind = vecmem::copy::type::host_to_host;
   if (from.isCuda() && to.device.isCuda()) {
-    kind = cudaMemcpyDeviceToDevice;
+    kind = vecmem::copy::type::device_to_device;
   } else if (from.isCpu() && to.device.isCuda()) {
-    kind = cudaMemcpyHostToDevice;
+    kind = vecmem::copy::type::host_to_device;
   } else if (from.isCuda() && to.device.isCpu()) {
-    kind = cudaMemcpyDeviceToHost;
+    kind = vecmem::copy::type::device_to_host;
   }
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(dst, src, nbytes, kind, *to.stream));
+  using View = vecmem::data::vector_view<std::byte>;
+  const auto size = static_cast<View::size_type>(nbytes);
+  vecmem::cuda::async_copy copy{vecmem::cuda::stream_wrapper{*to.stream}};
+  copy(vecmem::data::vector_view<const std::byte>(
+           size, static_cast<const std::byte *>(src)),
+       View(size, static_cast<std::byte *>(dst)), kind)
+      ->ignore();
 }
 
 void cudaSigmoid(Tensor<float> &tensor, cudaStream_t stream) {
@@ -251,9 +258,7 @@ Tensor<T> cudaGatherCols(const Tensor<T> &tensor,
 
   auto devIndicesAlloc = mem.make<std::size_t>(nColsDst);
   std::size_t *devIndices = devIndicesAlloc.get();
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(devIndices, indices.data(),
-                                  nColsDst * sizeof(std::size_t),
-                                  cudaMemcpyHostToDevice, stream));
+  mem.toDevice(devIndices, indices.data(), nColsDst);
 
   dim3 blockDim = 256;
   dim3 gridDim = (total + blockDim.x - 1) / blockDim.x;

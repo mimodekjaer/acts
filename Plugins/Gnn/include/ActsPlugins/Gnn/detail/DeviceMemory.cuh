@@ -16,8 +16,11 @@
 
 #include <cuda_runtime_api.h>
 #include <thrust/execution_policy.h>
+#include <vecmem/containers/data/vector_view.hpp>
 #include <vecmem/memory/memory_resource.hpp>
 #include <vecmem/memory/unique_ptr.hpp>
+#include <vecmem/utils/cuda/async_copy.hpp>
+#include <vecmem/utils/cuda/stream_wrapper.hpp>
 
 namespace ActsPlugins::detail {
 
@@ -77,7 +80,7 @@ class ThrustAllocator {
   vecmem::memory_resource *m_mr;
 };
 
-/// Device memory for the work of one stage on one CUDA stream.
+/// Device memory and copies for the work of one stage on one CUDA stream.
 ///
 /// Allocations come from the memory resource of the execution context, or, if
 /// it has none, from a stream-ordered resource on the stream of the context.
@@ -85,10 +88,13 @@ class ThrustAllocator {
 /// while work on the stream that uses it is still pending, so it must only be
 /// handed out again to work ordered after that (e.g. a stream-ordered or a
 /// per-stream caching resource).
+///
+/// Copies and memsets are vecmem operations on the stream, in stream order
+/// like the kernels. Copies to pageable host memory complete when they return.
 class DeviceMemory {
  public:
   DeviceMemory(cudaStream_t stream, vecmem::memory_resource *mr)
-      : m_stream(stream) {
+      : m_stream(stream), m_streamWrapper(stream), m_copy(m_streamWrapper) {
     if (mr == nullptr) {
       mr = &m_ownResource.emplace(stream);
     }
@@ -119,8 +125,62 @@ class DeviceMemory {
     return thrust::cuda::par_nosync(*m_thrustAllocator).on(m_stream);
   }
 
+  /// vecmem copy object of the stream
+  vecmem::cuda::async_copy &copy() { return m_copy; }
+
+  /// Copy @p n elements from host to device memory
+  template <typename T>
+  void toDevice(T *device, const T *host, std::size_t n) {
+    copyImpl(device, host, n, vecmem::copy::type::host_to_device);
+  }
+
+  /// Copy @p n elements from device to host memory
+  template <typename T>
+  void toHost(T *host, const T *device, std::size_t n) {
+    copyImpl(host, device, n, vecmem::copy::type::device_to_host);
+  }
+
+  /// Copy @p n elements between two device arrays
+  template <typename T>
+  void copyDevice(T *to, const T *from, std::size_t n) {
+    copyImpl(to, from, n, vecmem::copy::type::device_to_device);
+  }
+
+  /// Set the bytes of @p n device elements to @p value
+  template <typename T>
+  void memset(T *device, std::size_t n, int value) {
+    if (n == 0) {
+      return;
+    }
+    // As bytes: vecmem views do not support every element type (e.g. bool)
+    m_copy
+        .memset(view(reinterpret_cast<std::byte *>(device), n * sizeof(T)),
+                value)
+        ->ignore();
+  }
+
+  /// Wait for all work on the stream
+  void synchronize() { m_streamWrapper.synchronize(); }
+
  private:
+  template <typename T>
+  static vecmem::data::vector_view<T> view(T *ptr, std::size_t n) {
+    using size_type = typename vecmem::data::vector_view<T>::size_type;
+    return {static_cast<size_type>(n), ptr};
+  }
+
+  template <typename T>
+  void copyImpl(T *to, const T *from, std::size_t n,
+                vecmem::copy::type::copy_type type) {
+    if (n == 0) {
+      return;
+    }
+    m_copy(view(from, n), view(to, n), type)->ignore();
+  }
+
   cudaStream_t m_stream{};
+  vecmem::cuda::stream_wrapper m_streamWrapper;
+  vecmem::cuda::async_copy m_copy;
   std::optional<CudaStreamOrderedMemoryResource> m_ownResource;
   vecmem::memory_resource *m_mr = nullptr;
   std::optional<ThrustAllocator> m_thrustAllocator;

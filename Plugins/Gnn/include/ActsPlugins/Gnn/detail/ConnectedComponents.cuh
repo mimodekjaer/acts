@@ -142,7 +142,7 @@ void connectedComponentsCudaAsync(std::size_t nEdges, const int *numEdges,
   const dim3 gridDimNodes = (nNodes + blockDim.x - 1) / blockDim.x;
 
   if (nNodes == 0) {
-    ACTS_CUDA_CHECK(cudaMemsetAsync(numLabels, 0, sizeof(TLabel), stream));
+    mem.memset(numLabels, 1, 0);
     return;
   }
 
@@ -163,8 +163,7 @@ void connectedComponentsCudaAsync(std::size_t nEdges, const int *numEdges,
   auto maskBuffer = mem.make<TLabel>(2 * (nNodes + 1));
   TLabel *mask = maskBuffer.get();
   TLabel *prefixSum = mask + nNodes + 1;
-  ACTS_CUDA_CHECK(
-      cudaMemsetAsync(mask, 0, (nNodes + 1) * sizeof(TLabel), stream));
+  mem.memset(mask, nNodes + 1, 0);
   makeLabelMask<<<gridDimNodes, blockDim, 0, stream>>>(nNodes, labels, mask);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
@@ -173,8 +172,7 @@ void connectedComponentsCudaAsync(std::size_t nEdges, const int *numEdges,
   mapEdgeLabels<<<gridDimNodes, blockDim, 0, stream>>>(nNodes, labels,
                                                        prefixSum);
   ACTS_CUDA_CHECK(cudaGetLastError());
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(numLabels, prefixSum + nNodes, sizeof(TLabel),
-                                  cudaMemcpyDeviceToDevice, stream));
+  mem.copyDevice(numLabels, prefixSum + nNodes, 1);
 }
 
 /// Connected components, returns the number of labels (synchronizes).
@@ -187,9 +185,8 @@ TLabel connectedComponentsCuda(std::size_t nEdges, const TEdges *sourceEdges,
                                sourceEdges, targetEdges, nNodes, labels,
                                cudaNumLabels.get(), mem);
   TLabel nLabels{};
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(&nLabels, cudaNumLabels.get(), sizeof(TLabel),
-                                  cudaMemcpyDeviceToHost, mem.stream()));
-  ACTS_CUDA_CHECK(cudaStreamSynchronize(mem.stream()));
+  mem.toHost(&nLabels, cudaNumLabels.get(), 1);
+  mem.synchronize();
   return nLabels;
 }
 

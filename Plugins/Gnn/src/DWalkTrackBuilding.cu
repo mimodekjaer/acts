@@ -31,6 +31,10 @@
 #include <thrust/sort.h>
 #include <thrust/tuple.h>
 
+// D-WALK keeps the CUDA runtime calls for its copies and memsets: its dynamic
+// programming loop issues a small copy and a synchronization per frontier
+// step, and the event that vecmem records with every copy made the stage 6%
+// slower (5.2 instead of 4.9 ms per ttbar event).
 namespace {
 
 constexpr int kBlockSize = 256;

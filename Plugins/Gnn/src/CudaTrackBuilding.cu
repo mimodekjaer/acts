@@ -77,20 +77,15 @@ std::vector<std::vector<int>> CudaTrackBuilding::operator()(
                                        cudaCounters + 1, mem);
 
   // Sort the space point IDs by label and compute the bounds of each label
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(cudaSpacePointIds, spacePointIds.data(),
-                                  numSpacePoints * sizeof(int),
-                                  cudaMemcpyHostToDevice, stream));
+  mem.toDevice(cudaSpacePointIds, spacePointIds.data(), numSpacePoints);
   detail::findTrackCandidateBoundsAsync(cudaLabels, cudaSpacePointIds,
                                         cudaSortedSpacePointIds, cudaBounds,
                                         numSpacePoints, cudaCounters + 1, mem);
 
   int counters[2]{};
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(counters, cudaCounters, sizeof(counters),
-                                  cudaMemcpyDeviceToHost, stream));
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(spacePointIds.data(), cudaSortedSpacePointIds,
-                                  numSpacePoints * sizeof(int),
-                                  cudaMemcpyDeviceToHost, stream));
-  ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
+  mem.toHost(counters, cudaCounters, 2);
+  mem.toHost(spacePointIds.data(), cudaSortedSpacePointIds, numSpacePoints);
+  mem.synchronize();
 
   const auto numberLabels = static_cast<std::size_t>(counters[1]);
   if (m_cfg.doJunctionRemoval) {
@@ -104,11 +99,8 @@ std::vector<std::vector<int>> CudaTrackBuilding::operator()(
   ACTS_VERBOSE("Found " << numberLabels << " track candidates");
 
   std::vector<int> bounds(numberLabels + 1);
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(bounds.data(), cudaBounds,
-                                  (numberLabels + 1) * sizeof(int),
-                                  cudaMemcpyDeviceToHost, stream));
-
-  ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
+  mem.toHost(bounds.data(), cudaBounds, numberLabels + 1);
+  mem.synchronize();
   ACTS_CUDA_CHECK(cudaGetLastError());
 
   if (m_cfg.doJunctionRemoval && counters[0] == 0) {
