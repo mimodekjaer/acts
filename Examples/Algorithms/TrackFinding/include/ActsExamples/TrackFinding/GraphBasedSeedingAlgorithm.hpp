@@ -162,16 +162,31 @@ class GraphBasedSeedingAlgorithm final : public IAlgorithm {
   std::optional<Acts::Experimental::GbtsLayerIndex> gbtsLayerIndex(
       const ConstSpacePointProxy &spacePoint) const;
 
+  /// Running sums over the surfaces of one GBTS layer, from which the layer
+  /// description is finished once every surface was seen.
+  struct LayerSums {
+    /// Number of surfaces added
+    std::size_t numSurfaces{};
+    /// Sums over the surface corners of the boundary coordinate b (z for a
+    /// barrel layer, r for an endcap layer) and the reference coordinate c,
+    /// for the straight line fit c(b) that gives the layer its slope
+    double numCorners{};
+    double sumB{};
+    double sumC{};
+    double sumBB{};
+    double sumBC{};
+  };
+
   /// Add a surface of the tracking geometry to the description of its GBTS
   /// layer: the reference coordinates are summed and the bounds extended.
   /// @param surface The surface to add
   /// @param gctx The geometry context
   /// @param inputVector The layer descriptions, one per GBTS layer seen so far
-  /// @param countVector The number of surfaces added to each layer description
+  /// @param sumsVector The running sums of each layer description
   void addSurfaceToGbtsLayers(
       const Acts::Surface &surface, const Acts::GeometryContext &gctx,
       std::vector<Acts::Experimental::GbtsLayerDescription> &inputVector,
-      std::vector<std::size_t> &countVector) const;
+      std::vector<LayerSums> &sumsVector) const;
 
   /// makes the geometry objects used by GBTS that correspond to the objects in
   /// the connection table for ease these are sometimes called "logical layers"

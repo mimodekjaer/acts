@@ -51,6 +51,35 @@ class GbtsLayer final {
   bool checkCompatibility(const GbtsLayer& otherLayer, std::uint32_t b1,
                           std::uint32_t b2, float minZ0, float maxZ0) const;
 
+  /// A point in the r-z plane
+  struct PointRZ final {
+    /// Radius
+    float r{};
+    /// z coordinate
+    float z{};
+  };
+
+  /// Point of the layer line at a boundary coordinate (z for a barrel layer, r
+  /// for an endcap layer), following the layer's slope
+  /// @param bound Boundary coordinate
+  /// @return The point on the layer line
+  PointRZ pointAt(float bound) const;
+
+  /// Boundary coordinate where the layer line reaches an eta value
+  /// @param eta Pseudorapidity
+  /// @return The boundary coordinate
+  float boundAt(float eta) const;
+
+  /// Lower edge of a bin along the boundary coordinate
+  /// @param bin Bin index within the layer
+  /// @return The boundary coordinate of the bin's lower edge
+  float minBinCoord(std::uint32_t bin) const { return m_minBinCoord.at(bin); }
+
+  /// Upper edge of a bin along the boundary coordinate
+  /// @param bin Bin index within the layer
+  /// @return The boundary coordinate of the bin's upper edge
+  float maxBinCoord(std::uint32_t bin) const { return m_maxBinCoord.at(bin); }
+
  private:
   GbtsLayerDescription m_layerDescription;
   GbtsLayerBinning m_binning;

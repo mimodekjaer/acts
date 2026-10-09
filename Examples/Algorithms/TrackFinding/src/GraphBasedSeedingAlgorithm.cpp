@@ -30,6 +30,7 @@
 #include <numbers>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ActsExamples {
@@ -211,7 +212,7 @@ GraphBasedSeedingAlgorithm::gbtsLayerIndex(
 void GraphBasedSeedingAlgorithm::addSurfaceToGbtsLayers(
     const Acts::Surface &surface, const Acts::GeometryContext &gctx,
     std::vector<Acts::Experimental::GbtsLayerDescription> &inputVector,
-    std::vector<std::size_t> &countVector) const {
+    std::vector<LayerSums> &sumsVector) const {
   Acts::GeometryIdentifier geoId = surface.geometryId();
   auto actsVolId = geoId.volume();
   auto actsLayId = geoId.layer();
@@ -226,6 +227,9 @@ void GraphBasedSeedingAlgorithm::addSurfaceToGbtsLayers(
   float rc = 0.0;
   float minBound = std::numeric_limits<float>::infinity();
   float maxBound = -std::numeric_limits<float>::infinity();
+  // (boundary, reference) coordinate of each corner, for the slope fit
+  std::vector<std::pair<double, double>> cornerCoords;
+  cornerCoords.reserve(corners.size());
 
   // convert to Gbts ID
   const auto find = m_actsGbtsMap.find(geoId);
@@ -249,6 +253,8 @@ void GraphBasedSeedingAlgorithm::addSurfaceToGbtsLayers(
     for (const Acts::Vector3 &corner : corners) {
       minBound = std::min(minBound, static_cast<float>(corner.z()));
       maxBound = std::max(maxBound, static_cast<float>(corner.z()));
+      cornerCoords.emplace_back(corner.z(),
+                                Acts::fastHypot(corner.x(), corner.y()));
     }
   } else if (barrelEc == Acts::Experimental::GbtsLayerType::Endcap) {
     rc = center.z();  // not barrel center in Z
@@ -258,6 +264,7 @@ void GraphBasedSeedingAlgorithm::addSurfaceToGbtsLayers(
           static_cast<float>(Acts::fastHypot(corner.x(), corner.y()));
       minBound = std::min(minBound, r);
       maxBound = std::max(maxBound, r);
+      cornerCoords.emplace_back(r, corner.z());
     }
   } else {
     throw std::runtime_error("Invalid barrel/endcap assignment for GbtsLayer");
@@ -266,18 +273,18 @@ void GraphBasedSeedingAlgorithm::addSurfaceToGbtsLayers(
   const auto currentIndex =
       find_if(inputVector.begin(), inputVector.end(),
               [gbtsId](auto n) { return n.id == gbtsId; });
+  std::size_t index = 0;
   if (currentIndex != inputVector.end()) {  // not end so does exist
-    const auto index = static_cast<std::size_t>(
+    index = static_cast<std::size_t>(
         std::distance(inputVector.begin(), currentIndex));
     inputVector[index].refCoord += rc;
     inputVector[index].minBound =
         std::min(inputVector[index].minBound, minBound);
     inputVector[index].maxBound =
         std::max(inputVector[index].maxBound, maxBound);
-    countVector[index] += 1;  // increase count at the index
-
   } else {  // end so doesn't exists
     // make new if one with Gbts ID doesn't exist:
+    index = inputVector.size();
     inputVector.push_back(
         Acts::Experimental::GbtsLayerDescription{.id = gbtsId,
                                                  .type = barrelEc,
@@ -285,8 +292,17 @@ void GraphBasedSeedingAlgorithm::addSurfaceToGbtsLayers(
                                                  .refCoord = rc,
                                                  .minBound = minBound,
                                                  .maxBound = maxBound});
-    // so the element exists and not divinding by 0
-    countVector.push_back(1);
+    sumsVector.emplace_back();
+  }
+
+  LayerSums &sums = sumsVector[index];
+  sums.numSurfaces += 1;
+  for (const auto &[b, c] : cornerCoords) {
+    sums.numCorners += 1;
+    sums.sumB += b;
+    sums.sumC += c;
+    sums.sumBB += b * b;
+    sums.sumBC += b * c;
   }
 
   // add to file each time,
@@ -309,15 +325,38 @@ std::vector<Acts::Experimental::GbtsLayerDescription>
 GraphBasedSeedingAlgorithm::layerNumbering(
     const Acts::GeometryContext &gctx) const {
   std::vector<Acts::Experimental::GbtsLayerDescription> inputVector;
-  std::vector<std::size_t> countVector;
+  std::vector<LayerSums> sumsVector;
 
   m_cfg.trackingGeometry->visitSurfaces(
-      [this, &inputVector, &countVector, &gctx](const Acts::Surface *surface) {
-        addSurfaceToGbtsLayers(*surface, gctx, inputVector, countVector);
+      [this, &inputVector, &sumsVector, &gctx](const Acts::Surface *surface) {
+        addSurfaceToGbtsLayers(*surface, gctx, inputVector, sumsVector);
       });
 
+  // Below this a layer counts as a cylinder or a flat disc. A tilt this small
+  // moves no bin edge, while the fit of a flat layer is only noise.
+  constexpr double minSlope = 1e-3;
+
   for (std::size_t i = 0; i < inputVector.size(); i++) {
-    inputVector[i].refCoord = inputVector[i].refCoord / countVector[i];
+    const LayerSums &sums = sumsVector[i];
+    inputVector[i].refCoord = inputVector[i].refCoord / sums.numSurfaces;
+
+    // least squares line c = c0 + slope * b through the corners of every
+    // module: the tilt of the modules in an inclined ring, zero for a
+    // cylinder or a flat disc
+    const double n = sums.numCorners;
+    const double varB = sums.sumBB - sums.sumB * sums.sumB / n;
+    const double covBC = sums.sumBC - sums.sumB * sums.sumC / n;
+    if (varB > 0) {
+      const double slope = covBC / varB;
+      if (std::abs(slope) >= minSlope) {
+        inputVector[i].slope = static_cast<float>(slope);
+      }
+    }
+    ACTS_DEBUG("GBTS layer " << inputVector[i].id << ": refCoord "
+                             << inputVector[i].refCoord << " bounds ["
+                             << inputVector[i].minBound << ", "
+                             << inputVector[i].maxBound << "] slope "
+                             << inputVector[i].slope);
   }
 
   return inputVector;

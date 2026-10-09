@@ -46,6 +46,14 @@ struct GbtsLayerDescription final {
   float minBound{};
   /// Maximum boundary coordinate.
   float maxBound{};
+  /// Slope of the reference coordinate along the boundary coordinate, so that
+  /// the layer is the straight line
+  /// `ref(b) = refCoord + slope * (b - (minBound + maxBound) / 2)` in the r-z
+  /// plane: dr/dz for a barrel layer, dz/dr for an endcap layer. Zero for a
+  /// cylinder or a flat disc; a ring of inclined modules sets the module tilt
+  /// so its eta bins follow the sensors instead of a disc through their
+  /// centre.
+  float slope{0.f};
   /// Position of the layer in the inside-out ordering of the pixel barrel,
   /// -1 for every other layer. Derived from `refCoord` when left unset; set it
   /// on every pixel barrel layer or on none of them.

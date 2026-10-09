@@ -774,6 +774,61 @@ BOOST_AUTO_TEST_CASE(StripLayersNeedTheirPairResolved) {
   BOOST_CHECK_EQUAL(seed(kWalk, true), tracks.size());
 }
 
+// A ring of inclined modules is a straight line in r-z, not a disc through the
+// module centres. Its eta bins and the bin table have to follow that line.
+BOOST_AUTO_TEST_CASE(InclinedRingBinsFollowTheModules) {
+  // a thin disc at eta ~ 3 feeding an inclined ring: the line
+  // z = 1200 + 3 (r - 140) runs from (120, 1140) to (160, 1260)
+  Experimental::GbtsLayerDescription inner;
+  inner.id = 70000;
+  inner.type = GbtsLayerType::Endcap;
+  inner.refCoord = 1000.f;
+  inner.minBound = 100.f;
+  inner.maxBound = 101.f;
+
+  Experimental::GbtsLayerDescription ring;
+  ring.id = 70001;
+  ring.type = GbtsLayerType::Endcap;
+  ring.refCoord = 1200.f;
+  ring.minBound = 120.f;
+  ring.maxBound = 160.f;
+
+  const std::vector<Experimental::GbtsLayerConnection> connections = {
+      {ring.id, inner.id}};
+
+  const auto build = [&](const float slope) {
+    ring.slope = slope;
+    const std::vector<Experimental::GbtsLayerDescription> layers = {inner,
+                                                                    ring};
+    return Experimental::GbtsGeometry(layers, connections, kEtaBinWidth);
+  };
+
+  // as a flat disc the ring spans eta from asinh(1200/160) to asinh(1200/120)
+  const Experimental::GbtsGeometry flat = build(0.f);
+  {
+    const Experimental::GbtsLayerBinning& binning = flat.layerBinning(1);
+    BOOST_CHECK_CLOSE(binning.minEta, std::asinh(1200.f / 160.f), 1e-3);
+    BOOST_CHECK_CLOSE(binning.minEta + binning.numBins * binning.etaBinWidth,
+                      std::asinh(1200.f / 120.f), 1e-3);
+  }
+  // a line from (100, 1000) through the disc crosses the beam line at z0 = 0,
+  // inside the z0 range, so the layers link
+  BOOST_CHECK(!flat.binGroups().empty());
+
+  // along the inclined line the ring spans asinh(1260/160) to asinh(1140/120)
+  const Experimental::GbtsGeometry tilted = build(3.f);
+  {
+    const Experimental::GbtsLayerBinning& binning = tilted.layerBinning(1);
+    BOOST_CHECK_CLOSE(binning.minEta, std::asinh(1260.f / 160.f), 1e-3);
+    BOOST_CHECK_CLOSE(binning.minEta + binning.numBins * binning.etaBinWidth,
+                      std::asinh(1140.f / 120.f), 1e-3);
+  }
+  // lines from (100, 1000) through the inclined ring cross the beam line
+  // between z0 = 300 and 567, outside the default z0 range, so no bin pair
+  // survives
+  BOOST_CHECK(tilted.binGroups().empty());
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 }  // namespace Acts::Test
