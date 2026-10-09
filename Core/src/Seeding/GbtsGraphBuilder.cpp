@@ -225,6 +225,7 @@ GbtsGraph GbtsGraphBuilder::buildTheGraph(const GbtsRoiDescriptor& roi,
   // the loosest tau ratio threshold the triplet matching can apply
   const float maxTauRatioCut =
       m_cfg.tauRatioCut + (m_cfg.useAdaptiveCuts ? m_cfg.tauRatioCorr : 0.0f) +
+      m_cfg.tauRatioCorrLongEdge +
       (nodeStorage.hasStrips() ? m_cfg.tauRatioCorrStrip : 0.0f);
 
   // the default sliding window along phi. Taken from the node storage so that
@@ -547,6 +548,10 @@ GbtsGraph GbtsGraphBuilder::buildTheGraph(const GbtsRoiDescriptor& roi,
             edgeStorage.emplace_back(n1Idx, n2Idx, barrelOrder2, expEta, curv,
                                      phi1 + dPhi1);
 
+            const bool longEdge = std::abs(dr) > m_cfg.longEdgeDeltaRadius ||
+                                  std::abs(dz) > m_cfg.longEdgeDeltaZ;
+            edgeStorage.back().longEdge = longEdge;
+
             ++numCreatedEdges;
 
             const float uat2 = invExpEta;
@@ -592,6 +597,9 @@ GbtsGraph GbtsGraphBuilder::buildTheGraph(const GbtsRoiDescriptor& roi,
                     addTauRatioCorr = m_cfg.tauRatioCorr;
                   }
                 }
+              }
+              if (longEdge || pS->longEdge) {
+                addTauRatioCorr += m_cfg.tauRatioCorrLongEdge;
               }
               // The two doublets sharing a strip node resolved it separately,
               // so a triplet through a strip may disagree on tau by more. Any

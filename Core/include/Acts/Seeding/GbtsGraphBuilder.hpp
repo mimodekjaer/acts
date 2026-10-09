@@ -70,7 +70,7 @@ class GbtsGraphBuilder {
 
     /// Widens allowed variation in tau ratio if a layer is missed in edge
     /// connecting.
-    bool useAdaptiveCuts = true;
+    bool useAdaptiveCuts = false;
 
     /// Tau ratio cut threshold.
     float tauRatioCut = 0.007f;
@@ -81,6 +81,14 @@ class GbtsGraphBuilder {
     /// Correction applied to tau acceptance if a layer is missed during edge
     /// connecting.
     float tauRatioCorr = 0.006f;
+
+    /// Correction applied to the tau acceptance if either edge is long, i.e.
+    /// may have crossed a layer without a hit, as the traccc GPU GBTS does.
+    float tauRatioCorrLongEdge = 0.003f;
+    /// Radial separation above which an edge is long.
+    float longEdgeDeltaRadius = 50.f * Acts::UnitConstants::mm;
+    /// Longitudinal separation above which an edge is long.
+    float longEdgeDeltaZ = 200.f * Acts::UnitConstants::mm;
 
     /// The same for a triplet any of whose three nodes a strip module made,
     /// whose two doublets resolved the shared node's along-strip coordinate

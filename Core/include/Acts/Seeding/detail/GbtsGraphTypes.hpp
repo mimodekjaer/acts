@@ -207,6 +207,9 @@ struct GbtsEdge final {
   /// than chased through the node's bin.
   std::int32_t n2BarrelOrder{-1};
 
+  /// Whether the nodes are far apart, widening the tau ratio cut.
+  bool longEdge{false};
+
   std::array<std::uint32_t, kGbtsMaxEdgeNeighbours> vNei{};
 };
 //! [gbts edge]
