@@ -11,9 +11,9 @@
 #include "Acts/Definitions/Units.hpp"
 #include "Acts/EventData/SeedContainer.hpp"
 #include "Acts/EventData/SpacePointContainer.hpp"
+#include "Acts/Seeding/GbtsBinConnection.hpp"
 #include "Acts/Seeding/GbtsGeometry.hpp"
 #include "Acts/Seeding/GbtsGraphBuilder.hpp"
-#include "Acts/Seeding/GbtsLayerConnection.hpp"
 #include "Acts/Seeding/GbtsRoiDescriptor.hpp"
 #include "Acts/Seeding/GbtsTrackingFilter.hpp"
 #include "Acts/Seeding/GraphBasedTrackSeeder.hpp"
@@ -22,10 +22,12 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <iterator>
 #include <memory>
 #include <numbers>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -136,7 +138,7 @@ ToyDetector forwardDetector() {
   return detector;
 }
 
-std::shared_ptr<Experimental::GbtsGeometry> makeGeometry(
+std::vector<Experimental::GbtsLayerDescription> makeLayerDescriptions(
     const ToyDetector& detector) {
   std::vector<Experimental::GbtsLayerDescription> layers;
   layers.reserve(detector.layers.size());
@@ -150,11 +152,29 @@ std::shared_ptr<Experimental::GbtsGeometry> makeGeometry(
     layer.maxBound = spec.maxBound;
     layers.push_back(layer);
   }
+  return layers;
+}
 
-  std::vector<Experimental::GbtsLayerConnection> connections;
-  connections.reserve(detector.links.size());
+std::shared_ptr<Experimental::GbtsGeometry> makeGeometry(
+    const ToyDetector& detector) {
+  const std::vector<Experimental::GbtsLayerDescription> layers =
+      makeLayerDescriptions(detector);
+
+  // every eta bin of a linked layer may connect to every bin of the other
+  const Experimental::GbtsGeometry bins(
+      layers, std::span<const Experimental::GbtsBinConnection>{}, kEtaBinWidth);
+  const auto numBins = [&](Experimental::GbtsExperimentLayerId id) {
+    return bins.layerBinning(bins.layerIndex(id).value()).numBins;
+  };
+
+  std::vector<Experimental::GbtsBinConnection> connections;
   for (const auto& [src, dst] : detector.links) {
-    connections.push_back({src, dst});
+    for (std::uint32_t dstBin = 0; dstBin < numBins(dst); ++dstBin) {
+      for (std::uint32_t srcBin = 0; srcBin < numBins(src); ++srcBin) {
+        connections.push_back({.src = {.layer = src, .bin = srcBin},
+                               .dst = {.layer = dst, .bin = dstBin}});
+      }
+    }
   }
 
   return std::make_shared<Experimental::GbtsGeometry>(layers, connections,
@@ -565,6 +585,50 @@ BOOST_AUTO_TEST_CASE(LayerBinningTilesTheBins) {
       BOOST_CHECK_LT(link, geometry->numBins());
     }
   }
+}
+
+// The connections name eta bins by their index inside the layer, and the
+// geometry joins only the bin pairs they list.
+BOOST_AUTO_TEST_CASE(BinConnectionsJoinOnlyTheirBins) {
+  const std::vector<Experimental::GbtsLayerDescription> layers =
+      makeLayerDescriptions(barrelDetector());
+  const Experimental::GbtsGeometry bins(
+      layers, std::span<const Experimental::GbtsBinConnection>{}, kEtaBinWidth);
+  BOOST_CHECK(bins.binGroups().empty());
+
+  const Experimental::GbtsLayerIndex inner = bins.layerIndex(80000).value();
+  const Experimental::GbtsLayerIndex outer = bins.layerIndex(81000).value();
+  const std::uint32_t numOuterBins = bins.layerBinning(outer).numBins;
+
+  // a hit just above z = 0, off the edge between the two middle bins, is in
+  // the upper middle bin of a barrel layer, counted from the first bin of that
+  // layer rather than of the whole geometry
+  const std::uint32_t innerBin = bins.etaBin(inner, 1.f, 40.f);
+  const std::uint32_t outerBin = bins.etaBin(outer, 1.f, 80.f);
+  BOOST_CHECK_EQUAL(innerBin, bins.layerBinning(inner).numBins / 2);
+  BOOST_CHECK_EQUAL(outerBin, numOuterBins / 2);
+  BOOST_CHECK_GT(bins.layerBinning(outer).firstBin, 0u);
+
+  const std::vector<Experimental::GbtsBinConnection> connections = {
+      {.src = {.layer = 81000, .bin = outerBin},
+       .dst = {.layer = 80000, .bin = innerBin}},
+      // a bin the layer does not have is skipped
+      {.src = {.layer = 81000, .bin = numOuterBins},
+       .dst = {.layer = 80000, .bin = innerBin}}};
+  const Experimental::GbtsGeometry geometry(layers, connections, kEtaBinWidth);
+
+  // the outer bin keeps a group of its own, which links to nothing
+  std::vector<Experimental::GbtsBinGroup> linkedGroups;
+  std::ranges::copy_if(
+      geometry.binGroups(), std::back_inserter(linkedGroups),
+      [](const Experimental::GbtsBinGroup& g) { return !g.links.empty(); });
+  BOOST_REQUIRE_EQUAL(linkedGroups.size(), 1u);
+  const Experimental::GbtsBinGroup& group = linkedGroups.front();
+  BOOST_CHECK_EQUAL(group.bin,
+                    geometry.layerBinning(inner).firstBin + innerBin);
+  BOOST_REQUIRE_EQUAL(group.links.size(), 1u);
+  BOOST_CHECK_EQUAL(group.links.front(),
+                    geometry.layerBinning(outer).firstBin + outerBin);
 }
 
 // Filling the node storage from a caller's own EDM has to give the same seeds

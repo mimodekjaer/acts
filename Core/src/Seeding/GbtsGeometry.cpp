@@ -289,8 +289,8 @@ using BinConnections =
 
 GbtsGeometry::GbtsGeometry(
     std::span<const GbtsLayerDescription> layerDescriptions,
-    std::span<const GbtsLayerConnection> layerConnections,
-    const float etaBinWidth, const GbtsZ0Range& z0Range, const Logger& logger)
+    std::span<const GbtsBinConnection> binConnections, const float etaBinWidth,
+    const GbtsZ0Range& z0Range, const Logger& logger)
     : m_etaBinWidth(etaBinWidth) {
   const float minZ0 = z0Range.min;
   const float maxZ0 = z0Range.max;
@@ -335,46 +335,49 @@ GbtsGeometry::GbtsGeometry(
 
   std::vector<const detail::GbtsLayer*> binLayerMap;
   binLayerMap.resize(m_nEtaBins);
-  std::optional<std::uint32_t> lastBin1;
+  // the group of an inner bin, so all its links stay in one group
+  std::unordered_map<std::uint32_t, std::size_t> groupOfBin;
 
-  for (const GbtsLayerConnection& connection : layerConnections) {
-    const detail::GbtsLayer* pL1 = layerById(connection.dst);  // n1
-    const detail::GbtsLayer* pL2 = layerById(connection.src);  // n2
+  for (const GbtsBinConnection& connection : binConnections) {
+    const detail::GbtsLayer* pL1 = layerById(connection.dst.layer);  // n1
+    const detail::GbtsLayer* pL2 = layerById(connection.src.layer);  // n2
     if (pL1 == nullptr) {
-      ACTS_WARNING("Skipping invalid dst layer " << connection.dst);
+      ACTS_WARNING("Skipping invalid dst layer " << connection.dst.layer);
       continue;
     }
     if (pL2 == nullptr) {
-      ACTS_WARNING("Skipping invalid src layer " << connection.src);
+      ACTS_WARNING("Skipping invalid src layer " << connection.src.layer);
       continue;
     }
 
-    const std::uint32_t nSrcBins = pL2->binning().numBins;
-    const std::uint32_t nDstBins = pL1->binning().numBins;
+    const std::uint32_t b1 = connection.dst.bin;
+    const std::uint32_t b2 = connection.src.bin;
+    if (b1 >= pL1->binning().numBins || b2 >= pL2->binning().numBins) {
+      ACTS_WARNING("Skipping connection of bin "
+                   << b2 << " of layer " << connection.src.layer << " to bin "
+                   << b1 << " of layer " << connection.dst.layer
+                   << ", which the layers do not have");
+      continue;
+    }
 
-    // loop over bins in Layer 1
-    for (std::uint32_t b1 = 0; b1 < nDstBins; ++b1) {
-      // loop over bins in Layer 2
-      for (std::uint32_t b2 = 0; b2 < nSrcBins; ++b2) {
-        if (!pL1->checkCompatibility(*pL2, b1, b2, minZ0, maxZ0)) {
-          continue;
-        }
+    if (!pL1->checkCompatibility(*pL2, b1, b2, minZ0, maxZ0)) {
+      continue;
+    }
 
-        const std::uint32_t bin1Idx = pL1->binning().firstBin + b1;
-        const std::uint32_t bin2Idx = pL2->binning().firstBin + b2;
+    const std::uint32_t bin1Idx = pL1->binning().firstBin + b1;
+    const std::uint32_t bin2Idx = pL2->binning().firstBin + b2;
 
-        binLayerMap[bin1Idx] = pL1;
-        binLayerMap[bin2Idx] = pL2;
+    binLayerMap[bin1Idx] = pL1;
+    binLayerMap[bin2Idx] = pL2;
 
-        if (bin1Idx != lastBin1) {
-          // adding a new group
-          m_binGroups.push_back({bin1Idx, {bin2Idx}});
-          lastBin1 = bin1Idx;
-        } else {
-          // extend the last group
-          m_binGroups.back().links.push_back(bin2Idx);
-        }
-      }
+    const auto [group, isNew] =
+        groupOfBin.try_emplace(bin1Idx, m_binGroups.size());
+    if (isNew) {
+      // adding a new group
+      m_binGroups.push_back({bin1Idx, {bin2Idx}});
+    } else {
+      // extend the group of that inner bin
+      m_binGroups[group->second].links.push_back(bin2Idx);
     }
   }
   // find stages of eta-bin pairs using the graph ablation algorithm
@@ -509,6 +512,12 @@ GbtsGeometry::GbtsGeometry(
       m_binGroups.push_back({bin1Idx, bin2List});
     }
   }
+}
+
+std::uint32_t GbtsGeometry::etaBin(const GbtsLayerIndex idx, const float z,
+                                   const float r) const {
+  const detail::GbtsLayer& layer = layerByIndex(idx);
+  return layer.getEtaBin(z, r) - layer.binning().firstBin;
 }
 
 std::optional<GbtsLayerIndex> GbtsGeometry::layerIndex(

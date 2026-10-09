@@ -675,7 +675,7 @@ def addGbtsTraining(
 ):
     logLevel = acts.examples.defaultLogging(s, logLevel)()
 
-    gbtsLayerConnectionToolConfig = acts.examples.GbtsLayerConnectionToolConfig(
+    gbtsBinConnectionToolConfig = acts.examples.GbtsBinConnectionToolConfig(
         probThreshold=probThreshold,
         doSymmetrization=doSymmetrization,
     )
@@ -687,7 +687,7 @@ def addGbtsTraining(
         inputMeasurements="measurements",
         inputSimHits="simhits",
         inputMeasurementSimHitsMap="measurement_simhits_map",
-        gbtsLayerConnectionToolConfig=gbtsLayerConnectionToolConfig,
+        gbtsBinConnectionToolConfig=gbtsBinConnectionToolConfig,
         geometryFileDir=str(geometryFile),
         trackingGeometry=trackingGeometry,
         outputFileDir=str(outputConnectionTable),
