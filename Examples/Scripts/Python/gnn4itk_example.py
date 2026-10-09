@@ -186,7 +186,6 @@ def runGNN4ITk(
     else:
         trackBuilderObj = CudaTrackBuilding(
             level=logLevel,
-            useOneBlockImplementation=False,
             doJunctionRemoval=True,
         )
 
