@@ -40,23 +40,6 @@ static_assert(std::is_same_v<data_type2, double>);
 
 namespace {
 
-template <typename T>
-struct CUDA_hit_data {
-  T *m_cuda_x;
-  T *m_cuda_y;
-  T *m_cuda_R;
-  T *m_cuda_phi;
-  T *m_cuda_z;
-  T *m_cuda_eta;
-
-  T *cuda_x() { return m_cuda_x; }
-  T *cuda_y() { return m_cuda_y; }
-  T *cuda_z() { return m_cuda_z; }
-  T *cuda_R() { return m_cuda_R; }
-  T *cuda_phi() { return m_cuda_phi; }
-  T *cuda_eta() { return m_cuda_eta; }
-};
-
 struct CastBoolToInt {
   int __host__ __device__ operator()(bool b) const {
     return static_cast<int>(b);
@@ -124,7 +107,7 @@ class ModuleMapCuda::Impl {
 
   /// Returns the [2, nEdges] edge index and the [nEdges, 6] edge features
   std::pair<Tensor<std::int64_t>, Tensor<float>> makeEdges(
-      CUDA_hit_data<float> cuda_TThits, int *cuda_hit_indice,
+      const detail::HitArrays<float> &hits, int *cuda_hit_indice,
       const float *cudaNodeFeatures, std::size_t nNodeFeatures,
       detail::DeviceMemory &mem, const ExecutionContext &execContext,
       const ModuleMapCuda::Config &cfg, const Logger &logger) const;
@@ -292,13 +275,11 @@ PipelineTensors ModuleMapCuda::Impl::buildGraph(
   // module map kernels in one block
   auto cudaNodeFeaturesTransposed = mem.make<float>(6 * nHits);
 
-  CUDA_hit_data<float> inputData{};
-  inputData.m_cuda_R = cudaNodeFeaturesTransposed.get() + 0 * nHits;
-  inputData.m_cuda_phi = cudaNodeFeaturesTransposed.get() + 1 * nHits;
-  inputData.m_cuda_z = cudaNodeFeaturesTransposed.get() + 2 * nHits;
-  inputData.m_cuda_x = cudaNodeFeaturesTransposed.get() + 3 * nHits;
-  inputData.m_cuda_y = cudaNodeFeaturesTransposed.get() + 4 * nHits;
-  inputData.m_cuda_eta = cudaNodeFeaturesTransposed.get() + 5 * nHits;
+  float *transposed = cudaNodeFeaturesTransposed.get();
+  const detail::HitArrays<float> hits{
+      /*R=*/transposed + 0 * nHits,   /*z=*/transposed + 2 * nHits,
+      /*x=*/transposed + 3 * nHits,   /*y=*/transposed + 4 * nHits,
+      /*eta=*/transposed + 5 * nHits, /*phi=*/transposed + 1 * nHits};
 
   // Allocate helper nb hits memory
   auto cudaNbHits = mem.make<int>(cudaModuleMapSize + 1);
@@ -306,9 +287,9 @@ PipelineTensors ModuleMapCuda::Impl::buildGraph(
       cudaNbHits.get(), 0, (cudaModuleMapSize + 1) * sizeof(int), stream));
 
   detail::preprocessHitFeatures<<<gridDimHits, blockDim, 0, stream>>>(
-      nHits, nFeatures, cudaNodeFeaturePtr, inputData.cuda_R(),
-      inputData.cuda_phi(), inputData.cuda_z(), inputData.cuda_eta(),
-      inputData.cuda_x(), inputData.cuda_y(), cfg.rScale, cfg.phiScale,
+      nHits, nFeatures, cudaNodeFeaturePtr, transposed + 0 * nHits,
+      transposed + 1 * nHits, transposed + 2 * nHits, transposed + 5 * nHits,
+      transposed + 3 * nHits, transposed + 4 * nHits, cfg.rScale, cfg.phiScale,
       cfg.zScale);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
@@ -332,7 +313,7 @@ PipelineTensors ModuleMapCuda::Impl::buildGraph(
   // Builds the edges, and in its final pass writes the edge index and edge
   // features directly
   auto [edgeIndex, edgeFeatures] =
-      makeEdges(inputData, cudaHitIndice, cudaNodeFeaturePtr, nFeatures, mem,
+      makeEdges(hits, cudaHitIndice, cudaNodeFeaturePtr, nFeatures, mem,
                 execContext, cfg, logger);
   ACTS_CUDA_CHECK(cudaGetLastError());
   if (cfg.debugSynchronize) {
@@ -354,7 +335,7 @@ PipelineTensors ModuleMapCuda::Impl::buildGraph(
 }
 
 std::pair<Tensor<std::int64_t>, Tensor<float>> ModuleMapCuda::Impl::makeEdges(
-    CUDA_hit_data<float> cuda_TThits, int *cuda_hit_indice,
+    const detail::HitArrays<float> &hits, int *cuda_hit_indice,
     const float *cudaNodeFeatures, std::size_t nNodeFeatures,
     detail::DeviceMemory &mem, const ExecutionContext &execContext,
     const ModuleMapCuda::Config &cfg, const Logger &logger) const {
@@ -364,6 +345,24 @@ std::pair<Tensor<std::int64_t>, Tensor<float>> ModuleMapCuda::Impl::makeEdges(
     return dim3(
         static_cast<unsigned int>((nThreads + block_dim.x - 1) / block_dim.x));
   };
+
+  // The cut windows of the module map, as device pointers
+  // (the accessors of the module map are not const)
+  auto doubletCuts = [](auto &md) {
+    return detail::DoubletCuts<float>{
+        md.cuda_z0_min(),   md.cuda_z0_max(),        md.cuda_deta_min(),
+        md.cuda_deta_max(), md.cuda_phi_slope_min(), md.cuda_phi_slope_max(),
+        md.cuda_dphi_min(), md.cuda_dphi_max()};
+  };
+  const detail::DoubletCuts<float> doublet_cuts =
+      doubletCuts(*cudaModuleMapDoublet);
+  const detail::TripletCuts<float> triplet_cuts{
+      doubletCuts(cudaModuleMapTriplet->module12()),
+      doubletCuts(cudaModuleMapTriplet->module23()),
+      cudaModuleMapTriplet->cuda_diff_dydx_min(),
+      cudaModuleMapTriplet->cuda_diff_dydx_max(),
+      cudaModuleMapTriplet->cuda_diff_dzdr_min(),
+      cudaModuleMapTriplet->cuda_diff_dzdr_max()};
 
   // ---------------------------------------------
   // count source hits per module doublet (sync 1)
@@ -416,17 +415,9 @@ std::pair<Tensor<std::int64_t>, Tensor<float>> ModuleMapCuda::Impl::makeEdges(
           cuda_edge_sum_per_src_hit.get(), cuda_pair_masks.get(),
           cuda_src_work_to_doublet.get(), cuda_nb_src_hits_per_doublet.get(),
           cudaModuleMapDoublet->cuda_module1(),
-          cudaModuleMapDoublet->cuda_module2(), cuda_TThits.cuda_R(),
-          cuda_TThits.cuda_z(), cuda_TThits.cuda_eta(), cuda_TThits.cuda_phi(),
-          cudaModuleMapDoublet->cuda_z0_min(),
-          cudaModuleMapDoublet->cuda_deta_min(),
-          cudaModuleMapDoublet->cuda_phi_slope_min(),
-          cudaModuleMapDoublet->cuda_dphi_min(),
-          cudaModuleMapDoublet->cuda_z0_max(),
-          cudaModuleMapDoublet->cuda_deta_max(),
-          cudaModuleMapDoublet->cuda_phi_slope_max(),
-          cudaModuleMapDoublet->cuda_dphi_max(), cuda_hit_indice, detail::g_pi,
-          cfg.epsilon, sum_nb_src_hits_per_doublet);
+          cudaModuleMapDoublet->cuda_module2(), hits, doublet_cuts,
+          cuda_hit_indice, detail::g_pi, cfg.epsilon,
+          sum_nb_src_hits_per_doublet);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
   exclusiveSum(cuda_edge_sum_per_src_hit.get(), cuda_edge_sum_per_src_hit.get(),
@@ -508,16 +499,8 @@ std::pair<Tensor<std::int64_t>, Tensor<float>> ModuleMapCuda::Impl::makeEdges(
           cuda_src_work_to_doublet.get(), cuda_nb_src_hits_per_doublet.get(),
           cuda_hit_indice, cuda_edge_sum_per_src_hit.get(),
           cudaModuleMapDoublet->cuda_module1(),
-          cudaModuleMapDoublet->cuda_module2(), cuda_TThits.cuda_R(),
-          cuda_TThits.cuda_z(), cuda_TThits.cuda_eta(), cuda_TThits.cuda_phi(),
-          cudaModuleMapDoublet->cuda_z0_min(),
-          cudaModuleMapDoublet->cuda_deta_min(),
-          cudaModuleMapDoublet->cuda_phi_slope_min(),
-          cudaModuleMapDoublet->cuda_dphi_min(),
-          cudaModuleMapDoublet->cuda_z0_max(),
-          cudaModuleMapDoublet->cuda_deta_max(),
-          cudaModuleMapDoublet->cuda_phi_slope_max(),
-          cudaModuleMapDoublet->cuda_dphi_max(), detail::g_pi, cfg.epsilon);
+          cudaModuleMapDoublet->cuda_module2(), hits, doublet_cuts,
+          detail::g_pi, cfg.epsilon);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
   ACTS_VERBOSE("First 10 doublet edges:\n"
@@ -533,9 +516,8 @@ std::pair<Tensor<std::int64_t>, Tensor<float>> ModuleMapCuda::Impl::makeEdges(
   detail::hits_geometric_cuts_packed<<<gridFor(nb_doublet_edges), block_dim, 0,
                                        stream>>>(
       cuda_geo.get(), cuda_edge_slope.get(), cuda_reduced_M1_hits.get(),
-      cuda_reduced_M2_hits.get(), cuda_TThits.cuda_R(), cuda_TThits.cuda_z(),
-      cuda_TThits.cuda_x(), cuda_TThits.cuda_y(), cuda_TThits.cuda_eta(),
-      cuda_TThits.cuda_phi(), detail::g_pi, cfg.epsilon, nb_doublet_edges);
+      cuda_reduced_M2_hits.get(), hits, detail::g_pi, cfg.epsilon,
+      nb_doublet_edges);
   ACTS_CUDA_CHECK(cudaGetLastError());
   if (cfg.debugSynchronize) {
     ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -572,33 +554,11 @@ std::pair<Tensor<std::int64_t>, Tensor<float>> ModuleMapCuda::Impl::makeEdges(
             cuda_src_hits_per_triplet.get(), cuda_work_to_triplet.get(),
             cudaModuleMapTriplet->cuda_module12_map(),
             cudaModuleMapTriplet->cuda_module23_map(), cuda_geo.get(),
-            cuda_edge_slope.get(),
-            cudaModuleMapTriplet->module12().cuda_z0_min(),
-            cudaModuleMapTriplet->module12().cuda_phi_slope_min(),
-            cudaModuleMapTriplet->module12().cuda_deta_min(),
-            cudaModuleMapTriplet->module12().cuda_dphi_min(),
-            cudaModuleMapTriplet->module12().cuda_z0_max(),
-            cudaModuleMapTriplet->module12().cuda_phi_slope_max(),
-            cudaModuleMapTriplet->module12().cuda_deta_max(),
-            cudaModuleMapTriplet->module12().cuda_dphi_max(),
-            cudaModuleMapTriplet->module23().cuda_z0_min(),
-            cudaModuleMapTriplet->module23().cuda_phi_slope_min(),
-            cudaModuleMapTriplet->module23().cuda_deta_min(),
-            cudaModuleMapTriplet->module23().cuda_dphi_min(),
-            cudaModuleMapTriplet->module23().cuda_z0_max(),
-            cudaModuleMapTriplet->module23().cuda_phi_slope_max(),
-            cudaModuleMapTriplet->module23().cuda_deta_max(),
-            cudaModuleMapTriplet->module23().cuda_dphi_max(),
-            cudaModuleMapTriplet->cuda_diff_dydx_min(),
-            cudaModuleMapTriplet->cuda_diff_dydx_max(),
-            cudaModuleMapTriplet->cuda_diff_dzdr_min(),
-            cudaModuleMapTriplet->cuda_diff_dzdr_max(),
-            cuda_reduced_M1_hits.get(), cuda_reduced_M2_hits.get(),
-            cuda_edge_sum.get(), cuda_nb_src_hits_per_doublet.get(),
+            cuda_edge_slope.get(), triplet_cuts, cuda_reduced_M1_hits.get(),
+            cuda_reduced_M2_hits.get(), cuda_edge_sum.get(),
+            cuda_nb_src_hits_per_doublet.get(),
             cudaModuleMapDoublet->cuda_module1(), cuda_hit_indice,
-            cuda_edge_sum_per_src_hit.get(), cuda_TThits.cuda_R(),
-            cuda_TThits.cuda_z(), cuda_TThits.cuda_x(), cuda_TThits.cuda_y(),
-            cuda_TThits.cuda_phi(), detail::g_pi, cfg.epsilon,
+            cuda_edge_sum_per_src_hit.get(), hits, detail::g_pi, cfg.epsilon,
             cuda_fallback_pairs.get(), cuda_fallback_count.get(),
             detail::kTripletFallbackCapacity);
     ACTS_CUDA_CHECK(cudaGetLastError());
@@ -611,31 +571,9 @@ std::pair<Tensor<std::int64_t>, Tensor<float>> ModuleMapCuda::Impl::makeEdges(
   detail::triplet_pair_cuts_fallback<float>
       <<<kFallbackBlocks, kFallbackThreads, 0, stream>>>(
           cuda_mask.get(), cuda_fallback_pairs.get(), cuda_fallback_count.get(),
-          detail::kTripletFallbackCapacity, cuda_geo.get(),
-          cudaModuleMapTriplet->module12().cuda_z0_min(),
-          cudaModuleMapTriplet->module12().cuda_phi_slope_min(),
-          cudaModuleMapTriplet->module12().cuda_deta_min(),
-          cudaModuleMapTriplet->module12().cuda_dphi_min(),
-          cudaModuleMapTriplet->module12().cuda_z0_max(),
-          cudaModuleMapTriplet->module12().cuda_phi_slope_max(),
-          cudaModuleMapTriplet->module12().cuda_deta_max(),
-          cudaModuleMapTriplet->module12().cuda_dphi_max(),
-          cudaModuleMapTriplet->module23().cuda_z0_min(),
-          cudaModuleMapTriplet->module23().cuda_phi_slope_min(),
-          cudaModuleMapTriplet->module23().cuda_deta_min(),
-          cudaModuleMapTriplet->module23().cuda_dphi_min(),
-          cudaModuleMapTriplet->module23().cuda_z0_max(),
-          cudaModuleMapTriplet->module23().cuda_phi_slope_max(),
-          cudaModuleMapTriplet->module23().cuda_deta_max(),
-          cudaModuleMapTriplet->module23().cuda_dphi_max(),
-          cudaModuleMapTriplet->cuda_diff_dydx_min(),
-          cudaModuleMapTriplet->cuda_diff_dydx_max(),
-          cudaModuleMapTriplet->cuda_diff_dzdr_min(),
-          cudaModuleMapTriplet->cuda_diff_dzdr_max(),
-          cuda_reduced_M1_hits.get(), cuda_reduced_M2_hits.get(),
-          cuda_TThits.cuda_R(), cuda_TThits.cuda_z(), cuda_TThits.cuda_x(),
-          cuda_TThits.cuda_y(), cuda_TThits.cuda_phi(), detail::g_pi,
-          cfg.epsilon);
+          detail::kTripletFallbackCapacity, cuda_geo.get(), triplet_cuts,
+          cuda_reduced_M1_hits.get(), cuda_reduced_M2_hits.get(), hits,
+          detail::g_pi, cfg.epsilon);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
   //------------------------
