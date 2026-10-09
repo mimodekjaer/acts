@@ -70,6 +70,20 @@ class ModuleMapCuda : public GraphConstructionBase {
                              const std::vector<std::uint64_t> &moduleIds,
                              const ExecutionContext &execContext = {}) override;
 
+  /// Graph construction for inputs that are already in device memory, e.g.
+  /// node features and module ids made on the GPU from the measurements and
+  /// space points of a GPU reconstruction chain
+  /// @param nodeFeatures [nNodes, nFeatures] node features on the device, with
+  ///        the scaled (r, phi, z, eta) as the first four features. The nodes
+  ///        must be sorted by module id.
+  /// @param moduleIds device array with the module id of each node
+  /// @param execContext CUDA execution context
+  /// @return Pipeline tensors with the node features, edge index and edge
+  ///         features
+  PipelineTensors operator()(Tensor<float> nodeFeatures,
+                             const std::uint64_t *moduleIds,
+                             const ExecutionContext &execContext);
+
  private:
   class Impl;
   std::unique_ptr<Impl> m_impl;

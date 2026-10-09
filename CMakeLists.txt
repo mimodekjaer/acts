@@ -106,6 +106,7 @@ option(ACTS_GNN_ENABLE_ONNX "Build the Onnx backend for the gnn plugin" OFF)
 option(ACTS_GNN_ENABLE_TORCH "Build the torchscript backend for the gnn plugin" ON)
 option(ACTS_GNN_ENABLE_MODULEMAP "Enable Module-Map-based graph construction" OFF)
 option(ACTS_GNN_ENABLE_TENSORRT "Enable the native TensorRT inference modules" OFF)
+option(ACTS_GNN_ENABLE_DETRAY "Enable detray geometry support for the CUDA GNN stages" OFF)
 option(ACTS_BUILD_PLUGIN_JSON "Build json plugin" OFF)
 option(ACTS_BUILD_PLUGIN_GBL "Build General Broken Lines (GBL) plugin from Mille" OFF)
 option(ACTS_BUILD_PLUGIN_MILLE "Build Mille plugin" OFF)
@@ -244,8 +245,15 @@ set_option_if(
     AND
     ACTS_BUILD_PLUGIN_GNN
 )
+set_option_if(ACTS_ENABLE_CUDA ACTS_GNN_ENABLE_DETRAY AND ACTS_BUILD_PLUGIN_GNN)
 # The CUDA code of the GNN plugin manages device memory with vecmem
 set_option_if(ACTS_SETUP_VECMEM ACTS_BUILD_PLUGIN_GNN AND ACTS_ENABLE_CUDA)
+set_option_if(
+    ACTS_SETUP_DETRAY
+    ACTS_GNN_ENABLE_DETRAY
+    AND
+    ACTS_BUILD_PLUGIN_GNN
+)
 
 set_option_if(ACTS_BUILD_PYTHON_BINDINGS ACTS_BUILD_PYTHON_WHEEL)
 set_option_if(ACTS_BUILD_ALIGNMENT ACTS_BUILD_PLUGIN_MILLE)

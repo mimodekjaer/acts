@@ -121,6 +121,10 @@ if(PluginGnn IN_LIST Acts_COMPONENTS)
     if(@ACTS_ENABLE_CUDA@)
         find_dependency(vecmem @vecmem_VERSION@ CONFIG EXACT)
     endif()
+    if(@ACTS_GNN_ENABLE_DETRAY@)
+        find_dependency(covfie @covfie_VERSION@ CONFIG EXACT)
+        find_dependency(detray @detray_VERSION@ CONFIG EXACT)
+    endif()
 endif()
 
 # load **all** available components. we can not just include the requested
