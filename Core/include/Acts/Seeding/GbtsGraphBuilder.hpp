@@ -83,20 +83,28 @@ class GbtsGraphBuilder {
     float tauRatioCorr = 0.006f;
 
     /// Correction applied to the tau acceptance if either edge is long, i.e.
-    /// may have crossed a layer without a hit, as the traccc GPU GBTS does.
+    /// may have crossed a layer without a hit.
     float tauRatioCorrLongEdge = 0.003f;
+
     /// Radial separation above which an edge is long.
     float longEdgeDeltaRadius = 50.f * Acts::UnitConstants::mm;
+
     /// Longitudinal separation above which an edge is long.
     float longEdgeDeltaZ = 200.f * Acts::UnitConstants::mm;
+
     /// Fraction by which the tau ratio cut is tightened for each of the two
-    /// curvature thresholds below that the mean curvature of the two edges is
-    /// under, as the traccc GPU GBTS does: high pT tracks scatter less.
+    /// curvature thresholds.
     float highPtTauRatioTightening = 0.2f;
+
     /// First curvature threshold of the tightening.
     float highPtCurvature = 1e-4f / Acts::UnitConstants::mm;
+
     /// Second curvature threshold of the tightening.
     float veryHighPtCurvature = 3e-5f / Acts::UnitConstants::mm;
+
+    /// Cut on the sum of the tau ratio, phi and curvature differences of two
+    /// edges.
+    float maxCutRatioSum = 1.3f;
 
     /// The same for a triplet any of whose three nodes a strip module made,
     /// whose two doublets resolved the shared node's along-strip coordinate

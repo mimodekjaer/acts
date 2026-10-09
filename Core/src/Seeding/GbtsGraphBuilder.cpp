@@ -643,6 +643,15 @@ GbtsGraph GbtsGraphBuilder::buildTheGraph(const GbtsRoiDescriptor& roi,
                 continue;
               }
 
+              // all three close to their cuts at once is a bad match
+              if (m_cfg.maxCutRatioSum > 0.f &&
+                  absTauRatio / tauRatioCut +
+                          std::abs(dPhi) / m_cfg.cutDPhiMax +
+                          std::abs(dcurv) / m_cfg.cutDCurvMax >
+                      m_cfg.maxCutRatioSum) {
+                continue;
+              }
+
               // final check: cuts on pT and d0
               if (m_cfg.validateTriplets && isPixelBarrel1 && isPixelBarrel2 &&
                   isPixelBarrel3) {
