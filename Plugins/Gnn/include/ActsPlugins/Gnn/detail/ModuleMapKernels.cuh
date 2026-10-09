@@ -482,9 +482,12 @@ struct TripletFallbackPair {
   int l;
 };
 
-// Capacity of the fallback queue (typically ~100 pairs per event are queued).
-// On overflow the host reruns the triplet cuts with inline fallback.
-constexpr int kTripletFallbackCapacity = 1 << 20;
+// Capacity of the fallback queue. The queue is empty or nearly so in practice
+// (0 pairs on ttbar events with 25-40 M triplet work items), but keeping the
+// double-precision fallback out of the triplet kernel is worth 1.6x on its
+// run time, so the queue stays. On overflow the host reruns the triplet cuts
+// with inline fallback, which is correct for any number of queued pairs.
+constexpr int kTripletFallbackCapacity = 1 << 16;
 
 // Triplet cuts on pairs of doublet edges (k: M1->M2, l: M2->M3), evaluated
 // on the float geometry from hits_geometric_cuts_packed. Pairs that cannot be
