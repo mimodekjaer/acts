@@ -34,6 +34,56 @@ namespace ActsPlugins::detail {
 // error bounds it has to cover are given next to each use.
 constexpr float kFilterErrScale = 6.f * std::numeric_limits<float>::epsilon();
 
+// Hit coordinates, one array per quantity (indexed by hit)
+template <class T>
+struct HitArrays {
+  const T *R;
+  const T *z;
+  const T *x;
+  const T *y;
+  const T *eta;
+  const T *phi;
+};
+
+// Cut window of one module doublet or of one doublet of a module triplet
+template <class T>
+struct DoubletWindow {
+  T z0_min, z0_max;
+  T deta_min, deta_max;
+  T phi_slope_min, phi_slope_max;
+  T dphi_min, dphi_max;
+};
+
+// Cut windows of all module doublets (indexed by doublet)
+template <class T>
+struct DoubletCuts {
+  const T *z0_min;
+  const T *z0_max;
+  const T *deta_min;
+  const T *deta_max;
+  const T *phi_slope_min;
+  const T *phi_slope_max;
+  const T *dphi_min;
+  const T *dphi_max;
+
+  __device__ __forceinline__ DoubletWindow<T> window(int i) const {
+    return {z0_min[i],        z0_max[i],        deta_min[i], deta_max[i],
+            phi_slope_min[i], phi_slope_max[i], dphi_min[i], dphi_max[i]};
+  }
+};
+
+// Cut windows of all module triplets (indexed by triplet): the windows of
+// the M1-M2 and M2-M3 doublets and the slope differences between them
+template <class T>
+struct TripletCuts {
+  DoubletCuts<T> m12;
+  DoubletCuts<T> m23;
+  const T *diff_dydx_min;
+  const T *diff_dydx_max;
+  const T *diff_dzdr_min;
+  const T *diff_dzdr_max;
+};
+
 // Reference double-precision geometry of one doublet edge, used when a float
 // approximation is too close to a cut edge. Must stay arithmetically identical
 // to the reference implementation.
@@ -46,10 +96,14 @@ struct EdgeGeoReference {
 };
 
 template <class T>
-__device__ EdgeGeoReference<T> edge_geo_reference(
-    int SP1, int SP2, const T *__restrict__ R, const T *__restrict__ z,
-    const T *__restrict__ x, const T *__restrict__ y, const T *__restrict__ phi,
-    double pi, T epsilon) {
+__device__ EdgeGeoReference<T> edge_geo_reference(int SP1, int SP2,
+                                                  const HitArrays<T> &hits,
+                                                  double pi, T epsilon) {
+  const T *__restrict__ R = hits.R;
+  const T *__restrict__ z = hits.z;
+  const T *__restrict__ x = hits.x;
+  const T *__restrict__ y = hits.y;
+  const T *__restrict__ phi = hits.phi;
   double R1 = R[SP1];
   T R2 = R[SP2];
   T z1 = z[SP1];
@@ -98,14 +152,18 @@ __device__ EdgeGeoReference<T> edge_geo_reference(
 template <class T>
 __global__ __launch_bounds__(512, 3) void hits_geometric_cuts_packed(
     float4 *geo, float4 *slope, const int *__restrict__ SPi,
-    const int *__restrict__ SPo, const T *__restrict__ R,
-    const T *__restrict__ z, const T *__restrict__ x, const T *__restrict__ y,
-    const T *__restrict__ eta, const T *__restrict__ phi, T pi, T epsilon,
+    const int *__restrict__ SPo, HitArrays<T> hits, T pi, T epsilon,
     int nb_doublets) {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= nb_doublets) {
     return;
   }
+  const T *__restrict__ R = hits.R;
+  const T *__restrict__ z = hits.z;
+  const T *__restrict__ x = hits.x;
+  const T *__restrict__ y = hits.y;
+  const T *__restrict__ eta = hits.eta;
+  const T *__restrict__ phi = hits.phi;
 
   const int SP1 = SPi[i];
   const int SP2 = SPo[i];
@@ -200,9 +258,10 @@ template <class T>
 __device__ __forceinline__ bool doublet_pair_passes(
     T R1, T z1, T eta1, T phi1, const T *__restrict__ R,
     const T *__restrict__ z, const T *__restrict__ eta,
-    const T *__restrict__ phi, int l, T z0_min, T z0_max, T deta_min,
-    T deta_max, T phi_slope_min, T phi_slope_max, T dphi_min, T dphi_max, T pi,
+    const T *__restrict__ phi, int l, const DoubletWindow<T> &w, T pi,
     T epsilon) {
+  const auto [z0_min, z0_max, deta_min, deta_max, phi_slope_min, phi_slope_max,
+              dphi_min, dphi_max] = w;
   const T deta = eta[l] - eta1;
   if (!((deta_min <= deta) && (deta <= deta_max))) {
     return false;
@@ -258,18 +317,17 @@ __global__ __launch_bounds__(512, 3) void count_doublet_edges(
     int *nb_edges_per_src_hit, std::uint64_t *pair_masks,
     const int *__restrict__ src_work_to_doublet,
     const int *__restrict__ doublet_offsets, const int *__restrict__ modules1,
-    const int *__restrict__ modules2, const T *__restrict__ R,
-    const T *__restrict__ z, const T *__restrict__ eta,
-    const T *__restrict__ phi, const T *__restrict__ z0_min,
-    const T *__restrict__ deta_min, const T *__restrict__ phi_slope_min,
-    const T *__restrict__ dphi_min, const T *__restrict__ z0_max,
-    const T *__restrict__ deta_max, const T *__restrict__ phi_slope_max,
-    const T *__restrict__ dphi_max, const int *__restrict__ indices, T pi,
-    T epsilon, int sum_nb_src_hits_per_doublet) {
+    const int *__restrict__ modules2, HitArrays<T> hits, DoubletCuts<T> cuts,
+    const int *__restrict__ indices, T pi, T epsilon,
+    int sum_nb_src_hits_per_doublet) {
   const int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= sum_nb_src_hits_per_doublet) {
     return;
   }
+  const T *__restrict__ R = hits.R;
+  const T *__restrict__ z = hits.z;
+  const T *__restrict__ eta = hits.eta;
+  const T *__restrict__ phi = hits.phi;
 
   const int doublet_idx = src_work_to_doublet[i];
   const int module1 = modules1[doublet_idx];
@@ -280,14 +338,7 @@ __global__ __launch_bounds__(512, 3) void count_doublet_edges(
   const T eta_SP1 = eta[k];
   const T R_SP1 = R[k];
   const T z_SP1 = z[k];
-  const T z0_min_v = z0_min[doublet_idx];
-  const T deta_min_v = deta_min[doublet_idx];
-  const T phi_slope_min_v = phi_slope_min[doublet_idx];
-  const T dphi_min_v = dphi_min[doublet_idx];
-  const T z0_max_v = z0_max[doublet_idx];
-  const T deta_max_v = deta_max[doublet_idx];
-  const T phi_slope_max_v = phi_slope_max[doublet_idx];
-  const T dphi_max_v = dphi_max[doublet_idx];
+  const DoubletWindow<T> w = cuts.window(doublet_idx);
 
   const int begin2 = indices[module2];
   const int end2 = indices[module2 + 1];
@@ -296,10 +347,8 @@ __global__ __launch_bounds__(512, 3) void count_doublet_edges(
   int edges = 0;
   std::uint64_t mask = 0;
   for (int l = begin2; l < end2; l++) {
-    const bool pass = doublet_pair_passes<T>(
-        R_SP1, z_SP1, eta_SP1, phi_SP1, R, z, eta, phi, l, z0_min_v, z0_max_v,
-        deta_min_v, deta_max_v, phi_slope_min_v, phi_slope_max_v, dphi_min_v,
-        dphi_max_v, pi, epsilon);
+    const bool pass = doublet_pair_passes<T>(R_SP1, z_SP1, eta_SP1, phi_SP1, R,
+                                             z, eta, phi, l, w, pi, epsilon);
     edges += pass;
     if (use_mask && pass) {
       mask |= std::uint64_t{1} << (l - begin2);
@@ -328,13 +377,8 @@ __global__ __launch_bounds__(512, 3) void build_doublet_edges_active(
     const int *__restrict__ src_work_to_doublet,
     const int *__restrict__ doublet_offsets, const int *__restrict__ indices,
     const int *__restrict__ edge_sum, const int *__restrict__ modules1,
-    const int *__restrict__ modules2, const T *__restrict__ R,
-    const T *__restrict__ z, const T *__restrict__ eta,
-    const T *__restrict__ phi, const T *__restrict__ z0_min,
-    const T *__restrict__ deta_min, const T *__restrict__ phi_slope_min,
-    const T *__restrict__ dphi_min, const T *__restrict__ z0_max,
-    const T *__restrict__ deta_max, const T *__restrict__ phi_slope_max,
-    const T *__restrict__ dphi_max, T pi, T epsilon) {
+    const int *__restrict__ modules2, HitArrays<T> hits, DoubletCuts<T> cuts,
+    T pi, T epsilon) {
   const int a = blockIdx.x * blockDim.x + threadIdx.x;
   if (a >= nb_active_src) {
     return;
@@ -363,24 +407,19 @@ __global__ __launch_bounds__(512, 3) void build_doublet_edges_active(
     return;
   }
 
+  const T *__restrict__ R = hits.R;
+  const T *__restrict__ z = hits.z;
+  const T *__restrict__ eta = hits.eta;
+  const T *__restrict__ phi = hits.phi;
   const T phi_SP1 = phi[k];
   const T eta_SP1 = eta[k];
   const T R_SP1 = R[k];
   const T z_SP1 = z[k];
-  const T z0_min_v = z0_min[doublet_idx];
-  const T deta_min_v = deta_min[doublet_idx];
-  const T phi_slope_min_v = phi_slope_min[doublet_idx];
-  const T dphi_min_v = dphi_min[doublet_idx];
-  const T z0_max_v = z0_max[doublet_idx];
-  const T deta_max_v = deta_max[doublet_idx];
-  const T phi_slope_max_v = phi_slope_max[doublet_idx];
-  const T dphi_max_v = dphi_max[doublet_idx];
+  const DoubletWindow<T> w = cuts.window(doublet_idx);
 
   for (int l = begin2; l < end2; l++) {
     if (!doublet_pair_passes<T>(R_SP1, z_SP1, eta_SP1, phi_SP1, R, z, eta, phi,
-                                l, z0_min_v, z0_max_v, deta_min_v, deta_max_v,
-                                phi_slope_min_v, phi_slope_max_v, dphi_min_v,
-                                dphi_max_v, pi, epsilon)) {
+                                l, w, pi, epsilon)) {
       continue;
     }
     reduced_M1_hits[out] = k;
@@ -461,26 +500,14 @@ __global__ void triplet_pair_cuts_fused_m23(
     const int *__restrict__ work_to_triplet,
     const int *__restrict__ modules12_map,
     const int *__restrict__ modules23_map, const float4 *__restrict__ geo,
-    const float4 *__restrict__ edge_slope, const T *__restrict__ MD12_z0_min,
-    const T *__restrict__ MD12_phi_slope_min,
-    const T *__restrict__ MD12_deta_min, const T *__restrict__ MD12_dphi_min,
-    const T *__restrict__ MD12_z0_max, const T *__restrict__ MD12_phi_slope_max,
-    const T *__restrict__ MD12_deta_max, const T *__restrict__ MD12_dphi_max,
-    const T *__restrict__ MD23_z0_min, const T *__restrict__ MD23_phi_slope_min,
-    const T *__restrict__ MD23_deta_min, const T *__restrict__ MD23_dphi_min,
-    const T *__restrict__ MD23_z0_max, const T *__restrict__ MD23_phi_slope_max,
-    const T *__restrict__ MD23_deta_max, const T *__restrict__ MD23_dphi_max,
-    const T *__restrict__ diff_dydx_min, const T *__restrict__ diff_dydx_max,
-    const T *__restrict__ diff_dzdr_min, const T *__restrict__ diff_dzdr_max,
+    const float4 *__restrict__ edge_slope, TripletCuts<T> cuts,
     const int *__restrict__ M1_SP, const int *__restrict__ M2_SP,
     const int *__restrict__ edge_indices,
     const int *__restrict__ doublet_src_offsets,
     const int *__restrict__ doublet_module1,
     const int *__restrict__ hit_indices,
-    const int *__restrict__ edge_sum_per_src_hit, const T *__restrict__ R,
-    const T *__restrict__ z, const T *__restrict__ x, const T *__restrict__ y,
-    const T *__restrict__ phi, T pi, T epsilon,
-    TripletFallbackPair *fallback_pairs, int *fallback_count,
+    const int *__restrict__ edge_sum_per_src_hit, HitArrays<T> hits, T pi,
+    T epsilon, TripletFallbackPair *fallback_pairs, int *fallback_count,
     int fallback_capacity) {
   int work_i = blockIdx.x * blockDim.x + threadIdx.x;
   if (work_i >= nb_work_items) {
@@ -497,21 +524,16 @@ __global__ void triplet_pair_cuts_fused_m23(
 
   // ---- cuts on edge k (module doublet M1-M2) ----
   const float4 gk = geo[k];
-  if (!(in_range<T>(gk.z, MD12_deta_min[triplet_index],
-                    MD12_deta_max[triplet_index]) &&
-        in_range<T>(gk.w, MD12_dphi_min[triplet_index],
-                    MD12_dphi_max[triplet_index]))) {
+  const DoubletWindow<T> w12 = cuts.m12.window(triplet_index);
+  if (!(in_range<T>(gk.z, w12.deta_min, w12.deta_max) &&
+        in_range<T>(gk.w, w12.dphi_min, w12.dphi_max))) {
     return;
   }
 
   const float4 sk = edge_slope[k];
-  const T z0_min12 = MD12_z0_min[triplet_index];
-  const T z0_max12 = MD12_z0_max[triplet_index];
-  const T ps_min12 = MD12_phi_slope_min[triplet_index];
-  const T ps_max12 = MD12_phi_slope_max[triplet_index];
-  const int z0_ok_k = in_range_filtered<T>(gk.x, sk.z, z0_min12, z0_max12);
-  const int ps_ok_k = in_range_filtered<T>(gk.y, kFilterErrScale * fabs(gk.y),
-                                           ps_min12, ps_max12);
+  const int z0_ok_k = in_range_filtered<T>(gk.x, sk.z, w12.z0_min, w12.z0_max);
+  const int ps_ok_k = in_range_filtered<T>(
+      gk.y, kFilterErrScale * fabs(gk.y), w12.phi_slope_min, w12.phi_slope_max);
   if (z0_ok_k == 0 || ps_ok_k == 0) {
     return;
   }
@@ -522,11 +544,11 @@ __global__ void triplet_pair_cuts_fused_m23(
   bool have_ref_k = false;
   if constexpr (!kDeferFallback) {
     if (k_undecided) {
-      ref_k = edge_geo_reference<T>(M1_SP[k], M2_SP[k], R, z, x, y, phi, pi,
-                                    epsilon);
+      ref_k = edge_geo_reference<T>(M1_SP[k], M2_SP[k], hits, pi, epsilon);
       have_ref_k = true;
-      if (!(in_range<T>(ref_k.z0, z0_min12, z0_max12) &&
-            in_range<T>(ref_k.phi_slope, ps_min12, ps_max12))) {
+      if (!(in_range<T>(ref_k.z0, w12.z0_min, w12.z0_max) &&
+            in_range<T>(ref_k.phi_slope, w12.phi_slope_min,
+                        w12.phi_slope_max))) {
         return;
       }
       k_undecided = false;
@@ -544,18 +566,12 @@ __global__ void triplet_pair_cuts_fused_m23(
   }
 
   // Load the per-triplet cuts once instead of on every loop iteration
-  const T z0_min = MD23_z0_min[triplet_index];
-  const T z0_max = MD23_z0_max[triplet_index];
-  const T ps_min = MD23_phi_slope_min[triplet_index];
-  const T ps_max = MD23_phi_slope_max[triplet_index];
-  const T deta_min = MD23_deta_min[triplet_index];
-  const T deta_max = MD23_deta_max[triplet_index];
-  const T dphi_min = MD23_dphi_min[triplet_index];
-  const T dphi_max = MD23_dphi_max[triplet_index];
-  const T dydx_min = diff_dydx_min[triplet_index];
-  const T dydx_max = diff_dydx_max[triplet_index];
-  const T dzdr_min = diff_dzdr_min[triplet_index];
-  const T dzdr_max = diff_dzdr_max[triplet_index];
+  const auto [z0_min, z0_max, deta_min, deta_max, ps_min, ps_max, dphi_min,
+              dphi_max] = cuts.m23.window(triplet_index);
+  const T dydx_min = cuts.diff_dydx_min[triplet_index];
+  const T dydx_max = cuts.diff_dydx_max[triplet_index];
+  const T dzdr_min = cuts.diff_dzdr_min[triplet_index];
+  const T dzdr_max = cuts.diff_dzdr_max[triplet_index];
 
   bool any_accepted = false;
 
@@ -601,8 +617,8 @@ __global__ void triplet_pair_cuts_fused_m23(
         }
         continue;
       } else {
-        const EdgeGeoReference<T> ref_l = edge_geo_reference<T>(
-            M1_SP[l], M2_SP[l], R, z, x, y, phi, pi, epsilon);
+        const EdgeGeoReference<T> ref_l =
+            edge_geo_reference<T>(M1_SP[l], M2_SP[l], hits, pi, epsilon);
         if (z0_ok < 0 && !in_range<T>(ref_l.z0, z0_min, z0_max)) {
           continue;
         }
@@ -611,8 +627,8 @@ __global__ void triplet_pair_cuts_fused_m23(
         }
         if (dydx_ok < 0 || dzdr_ok < 0) {
           if (!have_ref_k) {
-            ref_k = edge_geo_reference<T>(M1_SP[k], M2_SP[k], R, z, x, y, phi,
-                                          pi, epsilon);
+            ref_k =
+                edge_geo_reference<T>(M1_SP[k], M2_SP[k], hits, pi, epsilon);
             have_ref_k = true;
           }
           if (dydx_ok < 0 &&
@@ -645,20 +661,9 @@ template <typename T>
 __global__ void triplet_pair_cuts_fallback(
     bool *edge_tag, const TripletFallbackPair *__restrict__ fallback_pairs,
     const int *__restrict__ fallback_count, int fallback_capacity,
-    const float4 *__restrict__ geo, const T *__restrict__ MD12_z0_min,
-    const T *__restrict__ MD12_phi_slope_min,
-    const T *__restrict__ MD12_deta_min, const T *__restrict__ MD12_dphi_min,
-    const T *__restrict__ MD12_z0_max, const T *__restrict__ MD12_phi_slope_max,
-    const T *__restrict__ MD12_deta_max, const T *__restrict__ MD12_dphi_max,
-    const T *__restrict__ MD23_z0_min, const T *__restrict__ MD23_phi_slope_min,
-    const T *__restrict__ MD23_deta_min, const T *__restrict__ MD23_dphi_min,
-    const T *__restrict__ MD23_z0_max, const T *__restrict__ MD23_phi_slope_max,
-    const T *__restrict__ MD23_deta_max, const T *__restrict__ MD23_dphi_max,
-    const T *__restrict__ diff_dydx_min, const T *__restrict__ diff_dydx_max,
-    const T *__restrict__ diff_dzdr_min, const T *__restrict__ diff_dzdr_max,
+    const float4 *__restrict__ geo, TripletCuts<T> cuts,
     const int *__restrict__ M1_SP, const int *__restrict__ M2_SP,
-    const T *__restrict__ R, const T *__restrict__ z, const T *__restrict__ x,
-    const T *__restrict__ y, const T *__restrict__ phi, T pi, T epsilon) {
+    HitArrays<T> hits, T pi, T epsilon) {
   const int n = min(*fallback_count, fallback_capacity);
   for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
        i += gridDim.x * blockDim.x) {
@@ -666,25 +671,26 @@ __global__ void triplet_pair_cuts_fallback(
     const int t = p.triplet_index;
     const float4 gk = geo[p.k];
     const float4 gl = geo[p.l];
-    const EdgeGeoReference<T> ref_k = edge_geo_reference<T>(
-        M1_SP[p.k], M2_SP[p.k], R, z, x, y, phi, pi, epsilon);
-    const EdgeGeoReference<T> ref_l = edge_geo_reference<T>(
-        M1_SP[p.l], M2_SP[p.l], R, z, x, y, phi, pi, epsilon);
+    const DoubletWindow<T> w12 = cuts.m12.window(t);
+    const DoubletWindow<T> w23 = cuts.m23.window(t);
+    const EdgeGeoReference<T> ref_k =
+        edge_geo_reference<T>(M1_SP[p.k], M2_SP[p.k], hits, pi, epsilon);
+    const EdgeGeoReference<T> ref_l =
+        edge_geo_reference<T>(M1_SP[p.l], M2_SP[p.l], hits, pi, epsilon);
 
-    const bool pass = in_range<T>(gk.z, MD12_deta_min[t], MD12_deta_max[t]) &&
-                      in_range<T>(gk.w, MD12_dphi_min[t], MD12_dphi_max[t]) &&
-                      in_range<T>(ref_k.z0, MD12_z0_min[t], MD12_z0_max[t]) &&
-                      in_range<T>(ref_k.phi_slope, MD12_phi_slope_min[t],
-                                  MD12_phi_slope_max[t]) &&
-                      in_range<T>(gl.z, MD23_deta_min[t], MD23_deta_max[t]) &&
-                      in_range<T>(gl.w, MD23_dphi_min[t], MD23_dphi_max[t]) &&
-                      in_range<T>(ref_l.z0, MD23_z0_min[t], MD23_z0_max[t]) &&
-                      in_range<T>(ref_l.phi_slope, MD23_phi_slope_min[t],
-                                  MD23_phi_slope_max[t]) &&
-                      in_range<T>(static_cast<T>(ref_k.dydx - ref_l.dydx),
-                                  diff_dydx_min[t], diff_dydx_max[t]) &&
-                      in_range<T>(static_cast<T>(ref_k.dzdr - ref_l.dzdr),
-                                  diff_dzdr_min[t], diff_dzdr_max[t]);
+    const bool pass =
+        in_range<T>(gk.z, w12.deta_min, w12.deta_max) &&
+        in_range<T>(gk.w, w12.dphi_min, w12.dphi_max) &&
+        in_range<T>(ref_k.z0, w12.z0_min, w12.z0_max) &&
+        in_range<T>(ref_k.phi_slope, w12.phi_slope_min, w12.phi_slope_max) &&
+        in_range<T>(gl.z, w23.deta_min, w23.deta_max) &&
+        in_range<T>(gl.w, w23.dphi_min, w23.dphi_max) &&
+        in_range<T>(ref_l.z0, w23.z0_min, w23.z0_max) &&
+        in_range<T>(ref_l.phi_slope, w23.phi_slope_min, w23.phi_slope_max) &&
+        in_range<T>(static_cast<T>(ref_k.dydx - ref_l.dydx),
+                    cuts.diff_dydx_min[t], cuts.diff_dydx_max[t]) &&
+        in_range<T>(static_cast<T>(ref_k.dzdr - ref_l.dzdr),
+                    cuts.diff_dzdr_min[t], cuts.diff_dzdr_max[t]);
     if (pass) {
       edge_tag[p.k] = true;
       edge_tag[p.l] = true;
