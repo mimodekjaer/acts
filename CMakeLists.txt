@@ -107,6 +107,7 @@ option(ACTS_GNN_ENABLE_TORCH "Build the torchscript backend for the gnn plugin" 
 option(ACTS_GNN_ENABLE_MODULEMAP "Enable Module-Map-based graph construction" OFF)
 option(ACTS_GNN_ENABLE_TENSORRT "Enable the native TensorRT inference modules" OFF)
 option(ACTS_GNN_ENABLE_DETRAY "Enable detray geometry support for the CUDA GNN stages" OFF)
+option(ACTS_GNN_ENABLE_TRACCC "Enable the GNN track reconstruction chain on traccc event data" OFF)
 option(ACTS_BUILD_PLUGIN_JSON "Build json plugin" OFF)
 option(ACTS_BUILD_PLUGIN_GBL "Build General Broken Lines (GBL) plugin from Mille" OFF)
 option(ACTS_BUILD_PLUGIN_MILLE "Build Mille plugin" OFF)
@@ -242,6 +243,13 @@ set_option_if(ACTS_BUILD_PLUGIN_JSON ACTS_BUILD_PLUGIN_TRACCC)
 set_option_if(
     ACTS_ENABLE_CUDA
     ACTS_GNN_ENABLE_MODULEMAP
+    AND
+    ACTS_BUILD_PLUGIN_GNN
+)
+set_option_if(ACTS_GNN_ENABLE_DETRAY ACTS_GNN_ENABLE_TRACCC)
+set_option_if(
+    ACTS_BUILD_TRACCC
+    ACTS_GNN_ENABLE_TRACCC
     AND
     ACTS_BUILD_PLUGIN_GNN
 )
