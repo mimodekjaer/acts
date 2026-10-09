@@ -68,16 +68,14 @@ __global__ void fillKeepMask(std::size_t nEdges, const float *scores,
   const Key key = edgeKey(scores, i);
 
   const bool removeIn = numInEdges[dstNode] >= 2 && maxInKey[dstNode] != key;
-  const bool removeOut =
-      numOutEdges[srcNode] >= 2 && maxOutKey[srcNode] != key;
+  const bool removeOut = numOutEdges[srcNode] >= 2 && maxOutKey[srcNode] != key;
   keep[i] = !(removeIn || removeOut);
 }
 
 }  // namespace
 
 void junctionRemovalCudaAsync(std::size_t nEdges, std::size_t nNodes,
-                              const float *scores,
-                              const std::int64_t *srcNodes,
+                              const float *scores, const std::int64_t *srcNodes,
                               const std::int64_t *dstNodes,
                               std::int64_t *srcNodesOut,
                               std::int64_t *dstNodesOut, int *numEdgesOut,
@@ -99,8 +97,7 @@ void junctionRemovalCudaAsync(std::size_t nEdges, std::size_t nNodes,
   auto *maxInKey = reinterpret_cast<Key *>(buffer + keyOffset);
   auto *maxOutKey = maxInKey + nNodes;
   char *keep = buffer + keyOffset + keyBytes;
-  ACTS_CUDA_CHECK(
-      cudaMemsetAsync(buffer, 0, keyOffset + keyBytes, stream));
+  ACTS_CUDA_CHECK(cudaMemsetAsync(buffer, 0, keyOffset + keyBytes, stream));
 
   const dim3 blockSize = 256;
   const dim3 gridSizeEdges = (nEdges + blockSize.x - 1) / blockSize.x;
@@ -115,9 +112,9 @@ void junctionRemovalCudaAsync(std::size_t nEdges, std::size_t nNodes,
 
   // Stable compaction of the kept edges
   std::size_t tempBytes = 0;
-  ACTS_CUDA_CHECK(cub::DeviceSelect::Flagged(nullptr, tempBytes, srcNodes,
-                                             keep, srcNodesOut, numEdgesOut,
-                                             nEdges, stream));
+  ACTS_CUDA_CHECK(cub::DeviceSelect::Flagged(nullptr, tempBytes, srcNodes, keep,
+                                             srcNodesOut, numEdgesOut, nEdges,
+                                             stream));
   void *temp{};
   ACTS_CUDA_CHECK(cudaMallocAsync(&temp, tempBytes, stream));
   ACTS_CUDA_CHECK(cub::DeviceSelect::Flagged(temp, tempBytes, srcNodes, keep,

@@ -28,8 +28,7 @@ namespace ActsPlugins::detail {
 /// original order to srcNodesOut / dstNodesOut (capacity nEdges each), their
 /// number to numEdgesOut (device memory).
 void junctionRemovalCudaAsync(std::size_t nEdges, std::size_t nNodes,
-                              const float *scores,
-                              const std::int64_t *srcNodes,
+                              const float *scores, const std::int64_t *srcNodes,
                               const std::int64_t *dstNodes,
                               std::int64_t *srcNodesOut,
                               std::int64_t *dstNodesOut, int *numEdgesOut,

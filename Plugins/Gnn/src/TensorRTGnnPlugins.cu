@@ -146,8 +146,8 @@ __global__ void segmentSumKernel(const T *__restrict__ messages, int nChannels,
   for (int c = lane; c < nChannels; c += kWarpSize) {
     float acc = 0.f;
     for (int k = begin; k < end; ++k) {
-      acc += toFloat(
-          messages[static_cast<std::int64_t>(perm[k]) * nChannels + c]);
+      acc +=
+          toFloat(messages[static_cast<std::int64_t>(perm[k]) * nChannels + c]);
     }
     out[static_cast<std::int64_t>(node) * nChannels + c] = fromFloat<T>(acc);
   }
@@ -184,16 +184,17 @@ class PluginBase : public IPluginV3,
     return kPluginNamespace;
   }
 
-  int32_t configurePlugin(const DynamicPluginTensorDesc * /*in*/,
-                          int32_t /*nbInputs*/,
-                          const DynamicPluginTensorDesc * /*out*/,
-                          int32_t /*nbOutputs*/) noexcept override {
+  std::int32_t configurePlugin(const DynamicPluginTensorDesc * /*in*/,
+                               std::int32_t /*nbInputs*/,
+                               const DynamicPluginTensorDesc * /*out*/,
+                               std::int32_t /*nbOutputs*/) noexcept override {
     return 0;
   }
 
-  int32_t onShapeChange(const PluginTensorDesc * /*in*/, int32_t /*nbInputs*/,
-                        const PluginTensorDesc * /*out*/,
-                        int32_t /*nbOutputs*/) noexcept override {
+  std::int32_t onShapeChange(const PluginTensorDesc * /*in*/,
+                             std::int32_t /*nbInputs*/,
+                             const PluginTensorDesc * /*out*/,
+                             std::int32_t /*nbOutputs*/) noexcept override {
     return 0;
   }
 
@@ -225,40 +226,41 @@ class BuildCsrPlugin final : public PluginBase {
 
   IPluginV3 *clone() noexcept override { return new BuildCsrPlugin(*this); }
 
-  int32_t getNbOutputs() const noexcept override { return 4; }
+  std::int32_t getNbOutputs() const noexcept override { return 4; }
 
-  int32_t getOutputDataTypes(DataType *outputTypes, int32_t nbOutputs,
-                             const DataType * /*inputTypes*/,
-                             int32_t /*nbInputs*/) const noexcept override {
-    for (int32_t i = 0; i < nbOutputs; ++i) {
+  std::int32_t getOutputDataTypes(
+      DataType *outputTypes, std::int32_t nbOutputs,
+      const DataType * /*inputTypes*/,
+      std::int32_t /*nbInputs*/) const noexcept override {
+    for (std::int32_t i = 0; i < nbOutputs; ++i) {
       outputTypes[i] = DataType::kINT32;
     }
     return 0;
   }
 
-  int32_t getOutputShapes(const DimsExprs *inputs, int32_t nbInputs,
-                          const DimsExprs * /*shapeInputs*/,
-                          int32_t /*nbShapeInputs*/, DimsExprs *outputs,
-                          int32_t nbOutputs,
-                          IExprBuilder &exprBuilder) noexcept override {
+  std::int32_t getOutputShapes(const DimsExprs *inputs, std::int32_t nbInputs,
+                               const DimsExprs * /*shapeInputs*/,
+                               std::int32_t /*nbShapeInputs*/,
+                               DimsExprs *outputs, std::int32_t nbOutputs,
+                               IExprBuilder &exprBuilder) noexcept override {
     if (nbInputs != 2 || nbOutputs != 4) {
       return -1;
     }
     const IDimensionExpr *nEdges = inputs[0].d[1];
     const IDimensionExpr *nOffsets = exprBuilder.operation(
         DimensionOperation::kSUM, *inputs[1].d[0], *exprBuilder.constant(1));
-    for (int32_t i = 0; i < 4; ++i) {
+    for (std::int32_t i = 0; i < 4; ++i) {
       outputs[i].nbDims = 1;
       outputs[i].d[0] = (i % 2 == 0) ? nEdges : nOffsets;
     }
     return 0;
   }
 
-  bool supportsFormatCombination(int32_t pos,
-                                 const DynamicPluginTensorDesc *inOut,
-                                 int32_t /*nbInputs*/,
-                                 int32_t /*nbOutputs*/) noexcept override {
-    const auto &d = inOut[pos];
+  bool supportsFormatCombination(std::int32_t pos,
+                                 const DynamicPluginTensorDesc *tensorDescs,
+                                 std::int32_t /*nbInputs*/,
+                                 std::int32_t /*nbOutputs*/) noexcept override {
+    const auto &d = tensorDescs[pos];
     if (!isLinear(d)) {
       return false;
     }
@@ -269,17 +271,17 @@ class BuildCsrPlugin final : public PluginBase {
     return d.desc.type == DataType::kINT32;
   }
 
-  std::size_t getWorkspaceSize(const DynamicPluginTensorDesc *inputs,
-                               int32_t /*nbInputs*/,
-                               const DynamicPluginTensorDesc * /*outputs*/,
-                               int32_t /*nbOutputs*/) const noexcept override {
+  std::size_t getWorkspaceSize(
+      const DynamicPluginTensorDesc *inputs, std::int32_t /*nbInputs*/,
+      const DynamicPluginTensorDesc * /*outputs*/,
+      std::int32_t /*nbOutputs*/) const noexcept override {
     return workspaceSize(inputs[0].max.d[1], 32);
   }
 
-  int32_t enqueue(const PluginTensorDesc *inputDesc,
-                  const PluginTensorDesc * /*outputDesc*/,
-                  const void *const *inputs, void *const *outputs,
-                  void *workspace, cudaStream_t stream) noexcept override {
+  std::int32_t enqueue(const PluginTensorDesc *inputDesc,
+                       const PluginTensorDesc * /*outputDesc*/,
+                       const void *const *inputs, void *const *outputs,
+                       void *workspace, cudaStream_t stream) noexcept override {
     const auto nEdges = static_cast<int>(inputDesc[0].dims.d[1]);
     const auto nNodes = static_cast<int>(inputDesc[1].dims.d[0]);
     const auto *edgeList = static_cast<const unsigned *>(inputs[0]);
@@ -291,8 +293,7 @@ class BuildCsrPlugin final : public PluginBase {
     void *cubTemp = ws + 2 * alignUp(nEdges * 4ul);
 
     if (nEdges > 0) {
-      iotaKernel<<<numBlocks(nEdges), kBlockSize, 0, stream>>>(edgeIds,
-                                                               nEdges);
+      iotaKernel<<<numBlocks(nEdges), kBlockSize, 0, stream>>>(edgeIds, nEdges);
     }
 
     // Output 0/1: grouped by target node (edge_list row 1)
@@ -303,10 +304,9 @@ class BuildCsrPlugin final : public PluginBase {
       auto *offsets = static_cast<int *>(outputs[2 * dir + 1]);
       if (nEdges > 0) {
         // Stable radix sort: edges of a node keep increasing edge index
-        if (cub::DeviceRadixSort::SortPairs(cubTemp, cubBytes, keys,
-                                            sortedKeys, edgeIds, perm, nEdges,
-                                            0, keyBits(nNodes),
-                                            stream) != cudaSuccess) {
+        if (cub::DeviceRadixSort::SortPairs(
+                cubTemp, cubBytes, keys, sortedKeys, edgeIds, perm, nEdges, 0,
+                keyBits(nNodes), stream) != cudaSuccess) {
           return -1;
         }
       }
@@ -343,28 +343,28 @@ class SegmentSumPlugin final : public PluginBase {
 
   IPluginV3 *clone() noexcept override { return new SegmentSumPlugin(*this); }
 
-  int32_t getNbOutputs() const noexcept override { return 2; }
+  std::int32_t getNbOutputs() const noexcept override { return 2; }
 
-  int32_t getOutputDataTypes(DataType *outputTypes, int32_t nbOutputs,
-                             const DataType *inputTypes,
-                             int32_t /*nbInputs*/) const noexcept override {
-    for (int32_t i = 0; i < nbOutputs; ++i) {
+  std::int32_t getOutputDataTypes(
+      DataType *outputTypes, std::int32_t nbOutputs, const DataType *inputTypes,
+      std::int32_t /*nbInputs*/) const noexcept override {
+    for (std::int32_t i = 0; i < nbOutputs; ++i) {
       outputTypes[i] = inputTypes[0];
     }
     return 0;
   }
 
-  int32_t getOutputShapes(const DimsExprs *inputs, int32_t nbInputs,
-                          const DimsExprs * /*shapeInputs*/,
-                          int32_t /*nbShapeInputs*/, DimsExprs *outputs,
-                          int32_t nbOutputs,
-                          IExprBuilder &exprBuilder) noexcept override {
+  std::int32_t getOutputShapes(const DimsExprs *inputs, std::int32_t nbInputs,
+                               const DimsExprs * /*shapeInputs*/,
+                               std::int32_t /*nbShapeInputs*/,
+                               DimsExprs *outputs, std::int32_t nbOutputs,
+                               IExprBuilder &exprBuilder) noexcept override {
     if (nbInputs != 5 || nbOutputs != 2) {
       return -1;
     }
     const IDimensionExpr *nNodes = exprBuilder.operation(
         DimensionOperation::kSUB, *inputs[2].d[0], *exprBuilder.constant(1));
-    for (int32_t i = 0; i < 2; ++i) {
+    for (std::int32_t i = 0; i < 2; ++i) {
       outputs[i].nbDims = 2;
       outputs[i].d[0] = nNodes;
       outputs[i].d[1] = inputs[0].d[1];
@@ -372,11 +372,11 @@ class SegmentSumPlugin final : public PluginBase {
     return 0;
   }
 
-  bool supportsFormatCombination(int32_t pos,
-                                 const DynamicPluginTensorDesc *inOut,
-                                 int32_t /*nbInputs*/,
-                                 int32_t /*nbOutputs*/) noexcept override {
-    const auto &d = inOut[pos];
+  bool supportsFormatCombination(std::int32_t pos,
+                                 const DynamicPluginTensorDesc *tensorDescs,
+                                 std::int32_t /*nbInputs*/,
+                                 std::int32_t /*nbOutputs*/) noexcept override {
+    const auto &d = tensorDescs[pos];
     if (!isLinear(d)) {
       return false;
     }
@@ -386,13 +386,14 @@ class SegmentSumPlugin final : public PluginBase {
     if (pos <= 4) {
       return d.desc.type == DataType::kINT32;
     }
-    return d.desc.type == inOut[0].desc.type;
+    return d.desc.type == tensorDescs[0].desc.type;
   }
 
-  int32_t enqueue(const PluginTensorDesc *inputDesc,
-                  const PluginTensorDesc * /*outputDesc*/,
-                  const void *const *inputs, void *const *outputs,
-                  void * /*workspace*/, cudaStream_t stream) noexcept override {
+  std::int32_t enqueue(const PluginTensorDesc *inputDesc,
+                       const PluginTensorDesc * /*outputDesc*/,
+                       const void *const *inputs, void *const *outputs,
+                       void * /*workspace*/,
+                       cudaStream_t stream) noexcept override {
     const auto nChannels = static_cast<int>(inputDesc[0].dims.d[1]);
     const auto nNodes = static_cast<int>(inputDesc[2].dims.d[0] - 1);
     if (nNodes <= 0) {

@@ -56,8 +56,7 @@ std::vector<std::vector<int>> CudaTrackBuilding::operator()(
         &cudaJrEdges, 2 * numEdges * sizeof(std::int64_t), stream));
     detail::junctionRemovalCudaAsync(
         numEdges, numSpacePoints, tensors.edgeScores->data(), cudaSrcPtr,
-        cudaTgtPtr, cudaJrEdges, cudaJrEdges + numEdges, cudaCounters,
-        stream);
+        cudaTgtPtr, cudaJrEdges, cudaJrEdges + numEdges, cudaCounters, stream);
     cudaSrcPtr = cudaJrEdges;
     cudaTgtPtr = cudaJrEdges + numEdges;
     cudaNumEdges = cudaCounters;
@@ -68,10 +67,10 @@ std::vector<std::vector<int>> CudaTrackBuilding::operator()(
   int* cudaBounds{};
   ACTS_CUDA_CHECK(
       cudaMallocAsync(&cudaLabels, numSpacePoints * sizeof(int), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(
-      &cudaSpacePointIds, 2 * numSpacePoints * sizeof(int), stream));
-  ACTS_CUDA_CHECK(cudaMallocAsync(
-      &cudaBounds, (numSpacePoints + 1) * sizeof(int), stream));
+  ACTS_CUDA_CHECK(cudaMallocAsync(&cudaSpacePointIds,
+                                  2 * numSpacePoints * sizeof(int), stream));
+  ACTS_CUDA_CHECK(
+      cudaMallocAsync(&cudaBounds, (numSpacePoints + 1) * sizeof(int), stream));
   int* cudaSortedSpacePointIds = cudaSpacePointIds + numSpacePoints;
 
   detail::connectedComponentsCudaAsync(numEdges, cudaNumEdges, cudaSrcPtr,
@@ -89,8 +88,7 @@ std::vector<std::vector<int>> CudaTrackBuilding::operator()(
   int counters[2]{};
   ACTS_CUDA_CHECK(cudaMemcpyAsync(counters, cudaCounters, sizeof(counters),
                                   cudaMemcpyDeviceToHost, stream));
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(spacePointIds.data(),
-                                  cudaSortedSpacePointIds,
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(spacePointIds.data(), cudaSortedSpacePointIds,
                                   numSpacePoints * sizeof(int),
                                   cudaMemcpyDeviceToHost, stream));
   ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));

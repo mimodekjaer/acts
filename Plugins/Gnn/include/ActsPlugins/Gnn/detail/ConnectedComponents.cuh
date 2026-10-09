@@ -301,9 +301,8 @@ void connectedComponentsCudaAsync(std::size_t nEdges, const int *numEdges,
   mapEdgeLabels<<<gridDimNodes, blockDim, 0, stream>>>(nNodes, labels,
                                                        prefixSum);
   ACTS_CUDA_CHECK(cudaGetLastError());
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(numLabels, prefixSum + nNodes,
-                                  sizeof(TLabel), cudaMemcpyDeviceToDevice,
-                                  stream));
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(numLabels, prefixSum + nNodes, sizeof(TLabel),
+                                  cudaMemcpyDeviceToDevice, stream));
 
   ACTS_CUDA_CHECK(cudaFreeAsync(temp, stream));
   ACTS_CUDA_CHECK(cudaFreeAsync(mask, stream));
@@ -425,8 +424,8 @@ void findTrackCandidateBoundsAsync(const TLabel *labels,
   }
 
   TLabel *sortedLabels{};
-  ACTS_CUDA_CHECK(cudaMallocAsync(&sortedLabels,
-                                  numSpacePoints * sizeof(TLabel), stream));
+  ACTS_CUDA_CHECK(
+      cudaMallocAsync(&sortedLabels, numSpacePoints * sizeof(TLabel), stream));
   std::size_t tempBytes = 0;
   ACTS_CUDA_CHECK(cub::DeviceRadixSort::SortPairs(
       nullptr, tempBytes, labels, sortedLabels, spacePointIds,
@@ -434,8 +433,8 @@ void findTrackCandidateBoundsAsync(const TLabel *labels,
   void *temp{};
   ACTS_CUDA_CHECK(cudaMallocAsync(&temp, tempBytes, stream));
   ACTS_CUDA_CHECK(cub::DeviceRadixSort::SortPairs(
-      temp, tempBytes, labels, sortedLabels, spacePointIds,
-      sortedSpacePointIds, numSpacePoints, 0, endBit, stream));
+      temp, tempBytes, labels, sortedLabels, spacePointIds, sortedSpacePointIds,
+      numSpacePoints, 0, endBit, stream));
 
   const dim3 blockDim = 256;
   const dim3 gridDim = (numSpacePoints + 1 + blockDim.x - 1) / blockDim.x;
