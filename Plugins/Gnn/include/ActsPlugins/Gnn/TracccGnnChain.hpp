@@ -123,6 +123,9 @@ class TracccGnnChain {
     traccc::edm::track_container<traccc::default_algebra>::buffer tracks;
     /// Number of track candidates
     std::size_t nCandidates = 0;
+    /// Device copy of the measurements, when the chain was given host
+    /// measurements (the candidates and tracks refer to it)
+    traccc::edm::measurement_collection::buffer measurements;
   };
 
   /// @param cfg chain configuration
@@ -153,6 +156,22 @@ class TracccGnnChain {
       const traccc::magnetic_field &field,
       const traccc::edm::measurement_collection::const_view &measurements,
       const traccc::edm::spacepoint_collection::const_view &spacePoints,
+      GnnTiming *timing = nullptr) const;
+
+  /// Run the chain on measurements and space points in host memory, e.g.
+  /// from the CPU reconstruction. They are copied to the device first.
+  /// @param detector traccc detector buffer
+  /// @param field magnetic field for the parameter estimation and the fit
+  /// @param measurements measurements in host memory
+  /// @param spacePoints space points in host memory
+  /// @param timing optional timing of the GNN stages
+  /// @return candidates and fitted tracks, with the device copy of the
+  ///         measurements they refer to
+  Result operator()(
+      const traccc::detector_buffer &detector,
+      const traccc::magnetic_field &field,
+      const traccc::edm::measurement_collection::host &measurements,
+      const traccc::edm::spacepoint_collection::host &spacePoints,
       GnnTiming *timing = nullptr) const;
 
   /// Access the configuration

@@ -368,8 +368,7 @@ TracccGnnChain::Result TracccGnnChain::operator()(
   // ---------------------------------------------------------------
   auto keep = mem.make<unsigned int>(numNodes + 1);
   auto candidateIndex = mem.make<unsigned int>(numNodes + 1);
-  ACTS_CUDA_CHECK(cudaMemsetAsync(
-      keep.get(), 0, (numNodes + 1) * sizeof(unsigned int), stream));
+  mem.memset(keep.get(), (numNodes + 1), 0);
   markCandidates<<<nBlocks(numNodes), kBlock, 0, stream>>>(
       bounds.get(), numLabels, static_cast<unsigned int>(m_cfg.minSpacePoints),
       static_cast<unsigned int>(m_cfg.maxSpacePoints), keep.get());
@@ -380,13 +379,9 @@ TracccGnnChain::Result TracccGnnChain::operator()(
   // The candidate count is needed on the host to size the buffers
   int hostCounters[2] = {};
   unsigned int nCandidates = 0;
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(hostCounters, counters.get(),
-                                  sizeof(hostCounters), cudaMemcpyDeviceToHost,
-                                  stream));
-  ACTS_CUDA_CHECK(cudaMemcpyAsync(&nCandidates, candidateIndex.get() + numNodes,
-                                  sizeof(unsigned int), cudaMemcpyDeviceToHost,
-                                  stream));
-  ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
+  mem.toHost(hostCounters, counters.get(), 2);
+  mem.toHost(&nCandidates, candidateIndex.get() + numNodes, 1);
+  mem.synchronize();
   ACTS_DEBUG("Labels: " << hostCounters[1]
                         << ", track candidates: " << nCandidates);
   result.nCandidates = nCandidates;
@@ -427,17 +422,40 @@ TracccGnnChain::Result TracccGnnChain::operator()(
     result.tracks = m_impl->fitting(
         detector, field,
         traccc::edm::track_container<algebra_t>::const_view{result.candidates});
-    ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
+    mem.synchronize();
     ACTS_NVTX_STOP(gnn_chain_fit);
     ACTS_DEBUG("Fitted " << nCandidates << " track candidates");
   } else {
     ACTS_NVTX_START(gnn_chain_ckf);
     result.tracks = m_impl->finding(detector, field, measurements, params);
-    ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
+    mem.synchronize();
     ACTS_NVTX_STOP(gnn_chain_ckf);
     ACTS_DEBUG("Ran the combinatorial Kalman filter on " << nCandidates
                                                          << " seeds");
   }
+  return result;
+}
+
+TracccGnnChain::Result TracccGnnChain::operator()(
+    const traccc::detector_buffer &detector,
+    const traccc::magnetic_field &field,
+    const traccc::edm::measurement_collection::host &measurements,
+    const traccc::edm::spacepoint_collection::host &spacePoints,
+    GnnTiming *timing) const {
+  // Copy the event to the device and run on it there. The buffers live until
+  // the chain is done with them, which the synchronization at its end ensures.
+  traccc::edm::measurement_collection::buffer measurementBuffer(
+      static_cast<unsigned int>(measurements.size()), m_impl->mr.main);
+  m_impl->copy.setup(measurementBuffer)->ignore();
+  m_impl->copy(vecmem::get_data(measurements), measurementBuffer)->ignore();
+  traccc::edm::spacepoint_collection::buffer spacePointBuffer(
+      static_cast<unsigned int>(spacePoints.size()), m_impl->mr.main);
+  m_impl->copy.setup(spacePointBuffer)->ignore();
+  m_impl->copy(vecmem::get_data(spacePoints), spacePointBuffer)->ignore();
+  Result result =
+      (*this)(detector, field, measurementBuffer, spacePointBuffer, timing);
+  // The results refer to the measurements: keep the device copy alive
+  result.measurements = std::move(measurementBuffer);
   return result;
 }
 
