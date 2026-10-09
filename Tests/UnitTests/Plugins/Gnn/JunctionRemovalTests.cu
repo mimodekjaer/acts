@@ -9,6 +9,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "ActsPlugins/Gnn/detail/CudaUtils.hpp"
+#include "ActsPlugins/Gnn/detail/DeviceMemory.cuh"
 #include "ActsPlugins/Gnn/detail/JunctionRemoval.hpp"
 
 #include <algorithm>
@@ -50,9 +51,19 @@ void testJunctionRemoval(const Vi &srcNodes, const Vi &dstNodes,
                                   nEdges * sizeof(float),
                                   cudaMemcpyHostToDevice, stream));
 
-  auto [cudaSrcNodesOut, nEdgesOut] = junctionRemovalCuda(
-      nEdges, nNodes, cudaScores, cudaSrcNodes, cudaDstNodes, stream);
-  auto cudaDstNodesOut = cudaSrcNodesOut + nEdgesOut;
+  DeviceMemory mem(stream, nullptr);
+  auto cudaOut = mem.make<std::int64_t>(2 * nEdges);
+  auto cudaNumEdgesOut = mem.make<int>(1);
+  std::int64_t *cudaSrcNodesOut = cudaOut.get();
+  std::int64_t *cudaDstNodesOut = cudaOut.get() + nEdges;
+  junctionRemovalCudaAsync(nEdges, nNodes, cudaScores, cudaSrcNodes,
+                           cudaDstNodes, cudaSrcNodesOut, cudaDstNodesOut,
+                           cudaNumEdgesOut.get(), stream);
+  int nEdgesOutInt{};
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(&nEdgesOutInt, cudaNumEdgesOut.get(),
+                                  sizeof(int), cudaMemcpyDeviceToHost, stream));
+  ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
+  const auto nEdgesOut = static_cast<std::size_t>(nEdgesOutInt);
 
   Vi srcNodesOut(nEdgesOut);
   Vi dstNodesOut(nEdgesOut);
@@ -67,7 +78,9 @@ void testJunctionRemoval(const Vi &srcNodes, const Vi &dstNodes,
   ACTS_CUDA_CHECK(cudaFreeAsync(cudaSrcNodes, stream));
   ACTS_CUDA_CHECK(cudaFreeAsync(cudaDstNodes, stream));
   ACTS_CUDA_CHECK(cudaFreeAsync(cudaScores, stream));
-  ACTS_CUDA_CHECK(cudaFreeAsync(cudaSrcNodesOut, stream));
+  cudaOut.reset();
+  cudaNumEdgesOut.reset();
+  ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
 
   ACTS_CUDA_CHECK(cudaStreamDestroy(stream));
 
