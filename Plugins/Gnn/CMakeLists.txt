@@ -10,7 +10,15 @@ acts_add_library(
     ACTS_INCLUDE_FOLDER include/ActsPlugins
 )
 
-acts_compile_headers(PluginGnn GLOB include/**/*.hpp)
+set(_gnn_header_excludes "")
+if(NOT ACTS_GNN_ENABLE_TRACCC)
+    list(APPEND _gnn_header_excludes "Traccc")
+endif()
+acts_compile_headers(
+    PluginGnn
+    GLOB include/**/*.hpp
+    EXCLUDE ${_gnn_header_excludes}
+)
 
 if(ACTS_GNN_ENABLE_MODULEMAP)
     target_compile_definitions(ActsPluginGnn PUBLIC ACTS_GNN_WITH_MODULEMAP)
@@ -135,6 +143,23 @@ if(ACTS_GNN_ENABLE_DETRAY)
         ActsPluginGnn
         INTERFACE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
     )
+endif()
+
+if(ACTS_GNN_ENABLE_TRACCC)
+    target_sources(ActsPluginGnn PRIVATE src/TracccGnnChain.cu)
+    # Private, since traccc itself depends on ACTS: users of TracccGnnChain.hpp
+    # link traccc themselves
+    target_link_libraries(
+        ActsPluginGnn
+        PRIVATE traccc::core traccc::cuda traccc::device_common
+    )
+    if(TARGET ActsPluginGnn_HEADERS)
+        target_link_libraries(
+            ActsPluginGnn_HEADERS
+            PRIVATE traccc::core traccc::cuda
+        )
+    endif()
+    target_compile_definitions(ActsPluginGnn PUBLIC ACTS_GNN_WITH_TRACCC)
 endif()
 
 if(ACTS_GNN_ENABLE_TORCH)

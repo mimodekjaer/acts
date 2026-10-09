@@ -60,10 +60,13 @@ endfunction()
 #       LINK detray::core_array
 #       GLOB include/detray/**/*.hpp
 #   )
+#
+# Headers matching one of the regular expressions given with `EXCLUDE` are
+# skipped, e.g. headers of optional components that are not built.
 function(acts_compile_headers target)
     set(options "")
     set(oneValueArgs NAME LINK)
-    set(multiValueArgs GLOB)
+    set(multiValueArgs GLOB EXCLUDE)
     cmake_parse_arguments(
         PARSE_ARGV 0
         ARGS
@@ -95,6 +98,10 @@ function(acts_compile_headers target)
             ${ARGS_GLOB}
         )
     endif()
+
+    foreach(_exclude ${ARGS_EXCLUDE})
+        list(FILTER _headers EXCLUDE REGEX "${_exclude}")
+    endforeach()
 
     if("${_headers}" STREQUAL "")
         message(SEND_ERROR "No headers specified")
