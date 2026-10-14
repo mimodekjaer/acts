@@ -84,6 +84,10 @@ functionality check, not a performance figure.
 
 ## Running on ITk
 
+traccc forms pixel space points only, so the GNN sees no strip space points.
+Use a pixel-only model (`--node-features 4`) with a matching module map; a
+pixel+strip model gets incomplete graphs.
+
 The ITk cells of the traccc test data carry detray barcodes, not ACTS
 geometry ids, so pass `--use-acts-geom-source 0`. The GNN4ITk module map and
 model are not public; with them and the module id map:
