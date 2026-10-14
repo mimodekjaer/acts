@@ -250,6 +250,9 @@ class TracccGnnChain
     vecmem::unique_alloc_ptr<std::uint64_t[]> moduleIds;
     /// Space point index of each node
     vecmem::unique_alloc_ptr<int[]> spacePoints;
+    /// Per space point: 1 if its second measurement comes first along the
+    /// track (strip space points), indexed by space point
+    vecmem::unique_alloc_ptr<unsigned char[]> secondFirst;
   };
 
   output_type run(
@@ -280,6 +283,7 @@ class TracccGnnChain
   /// estimation.
   traccc::edm::seed_collection::buffer buildCandidates(
       const PipelineTensors &graph, const int *nodeSpacePoints,
+      const unsigned char *secondFirst,
       const traccc::edm::spacepoint_collection::const_view &spacePoints,
       detail::DeviceMemory &mem, output_type &result) const;
 

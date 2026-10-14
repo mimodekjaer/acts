@@ -62,17 +62,41 @@ __host__ __device__ inline auto measurementGlobalPosition(
   return sf.local_to_global(typename detector_t::geometry_context{}, local, {});
 }
 
+/// Position of a one dimensional (strip) measurement: the space point moved
+/// onto the measurement surface, with the measured local coordinate
+/// (@p measuredIndex) taken from the measurement. The coordinate along the
+/// strip is not measured (in traccc it is not set), so it comes from the
+/// space point.
+template <typename detector_t, typename point3_t>
+__host__ __device__ inline auto stripMeasurementPosition(
+    const detector_t &det, detray::geometry::identifier surface,
+    const detray::dpoint2D<typename detector_t::algebra_type> &local,
+    unsigned int measuredIndex, const point3_t &spacePoint) {
+  using algebra_t = typename detector_t::algebra_type;
+  const detray::tracking_surface sf{det, surface};
+  const typename detector_t::geometry_context ctx{};
+  const detray::dpoint3D<algebra_t> sp{spacePoint[0], spacePoint[1],
+                                       spacePoint[2]};
+  const auto dir = detray::vector::normalize(sp);
+  auto bound = sf.global_to_bound(ctx, sp, dir);
+  bound[measuredIndex] = local[measuredIndex];
+  return sf.local_to_global(ctx, bound, dir);
+}
+
 /// Writes the GNN node features of one space point: the (r, phi, z, eta) of
 /// the space point, followed by the (r, phi, z, eta) of its first and second
 /// measurement if @p nFeatures is 12. Single measurement (pixel) space points
 /// repeat the space point features for both measurements, as the measurement
 /// is at the space point. The global positions of the two measurements of
-/// strip space points come from their surfaces in the detray detector.
+/// strip space points come from their surfaces in the detray detector; for
+/// one dimensional measurements (@p dimensions 1, measured coordinate
+/// @p measuredIndices) see stripMeasurementPosition.
 template <typename detector_t, typename point3_t>
 __host__ __device__ inline void writeSpacePointFeatures(
     const detector_t &det, const point3_t &spacePoint,
     unsigned int nMeasurements, const detray::geometry::identifier *surfaces,
     const detray::dpoint2D<typename detector_t::algebra_type> *locals,
+    const unsigned int *dimensions, const unsigned int *measuredIndices,
     std::size_t nFeatures, float *f, const NodeFeatureScales &s) {
   writeNodeFeatures(spacePoint, f, s);
   for (std::size_t j = 4, m = 0; j + 4 <= nFeatures; j += 4, ++m) {
@@ -81,8 +105,15 @@ __host__ __device__ inline void writeSpacePointFeatures(
         f[j + k] = f[k];
       }
     } else {
-      writeNodeFeatures(measurementGlobalPosition(det, surfaces[m], locals[m]),
-                        f + j, s);
+      if (dimensions[m] == 1u) {
+        writeNodeFeatures(
+            stripMeasurementPosition(det, surfaces[m], locals[m],
+                                     measuredIndices[m], spacePoint),
+            f + j, s);
+      } else {
+        writeNodeFeatures(
+            measurementGlobalPosition(det, surfaces[m], locals[m]), f + j, s);
+      }
     }
   }
 }

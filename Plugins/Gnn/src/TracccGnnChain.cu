@@ -50,7 +50,8 @@ __global__ void tracccNodeFeatures(
     traccc::edm::measurement_collection::const_view measurementsView,
     traccc::edm::spacepoint_collection::const_view spacePointsView,
     const std::uint64_t *moduleIdTable, detail::NodeFeatureScales scales,
-    std::size_t nFeatures, float *features, std::uint64_t *moduleIds) {
+    std::size_t nFeatures, float *features, std::uint64_t *moduleIds,
+    unsigned char *secondFirst) {
   const spacepoint_device_t spacePoints(spacePointsView);
   const std::size_t i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= spacePoints.size()) {
@@ -67,16 +68,39 @@ __global__ void tracccNodeFeatures(
   detray::geometry::identifier surfaces[2] = {m1.surface_link(),
                                               m1.surface_link()};
   traccc::point2 locals[2] = {m1.local_position(), m1.local_position()};
+  unsigned int dimensions[2] = {m1.dimensions(), m1.dimensions()};
+  unsigned int measured[2] = {m1.subspace()[0], m1.subspace()[0]};
   if (twoMeasurements) {
     const auto m2 = measurements.at(sp.measurement_index_2());
     surfaces[1] = m2.surface_link();
     locals[1] = m2.local_position();
+    dimensions[1] = m2.dimensions();
+    measured[1] = m2.subspace()[0];
   }
 
   detail::writeSpacePointFeatures(det, sp.global(), twoMeasurements ? 2u : 1u,
-                                  surfaces, locals, nFeatures,
-                                  features + i * nFeatures, scales);
+                                  surfaces, locals, dimensions, measured,
+                                  nFeatures, features + i * nFeatures, scales);
   moduleIds[i] = moduleIdTable[surfaces[0].index()];
+
+  // Order of the two measurements of a strip space point along the track:
+  // compare the positions of the two sensors along the space point direction
+  // (from the beam line outwards)
+  secondFirst[i] = 0u;
+  if (twoMeasurements) {
+    const auto x = sp.global();
+    detray::dpoint3D<typename detector_t::algebra_type> pos[2];
+    for (unsigned int m = 0; m < 2u; ++m) {
+      pos[m] =
+          dimensions[m] == 1u
+              ? detail::stripMeasurementPosition(det, surfaces[m], locals[m],
+                                                 measured[m], x)
+              : detail::measurementGlobalPosition(det, surfaces[m], locals[m]);
+    }
+    const float along0 = pos[0][0] * x[0] + pos[0][1] * x[1] + pos[0][2] * x[2];
+    const float along1 = pos[1][0] * x[0] + pos[1][1] * x[1] + pos[1][2] * x[2];
+    secondFirst[i] = along1 < along0 ? 1u : 0u;
+  }
 }
 
 /// out[i] = in[rows[i]] for rows of nCols elements
@@ -137,11 +161,12 @@ __global__ void appendSpacePoints(
   t.radius_variance() = s.radius_variance();
 }
 
-/// Squared distance from the origin, which increases along the trajectory of
-/// tracks from the beam line both in the barrel and in the endcaps
+/// Squared transverse radius, which increases along the trajectory of tracks
+/// from the beam line in the barrel and in the endcaps, also for tracks from
+/// vertices away from z = 0 (unlike the distance from the origin)
 __device__ float distance2(const spacepoint_device_t &sps, unsigned int i) {
   const auto g = sps.at(i).global();
-  return g[0] * g[0] + g[1] * g[1] + g[2] * g[2];
+  return g[0] * g[0] + g[1] * g[1];
 }
 
 /// Writes the seed (first, middle and last space point along the trajectory)
@@ -150,6 +175,7 @@ template <unsigned int kMaxSize>
 __global__ void fillCandidates(
     const int *bounds, const int *sortedSpacePoints, const int *numLabels,
     const unsigned int *keep, const unsigned int *candidateIndex,
+    const unsigned char *secondFirst,
     traccc::edm::spacepoint_collection::const_view spacePointsView,
     traccc::edm::seed_collection::view seedsView,
     traccc::edm::track_collection<algebra_t>::view tracksView) {
@@ -194,13 +220,20 @@ __global__ void fillCandidates(
   using link_t = traccc::edm::track_constituent_link;
   for (unsigned int k = 0; k < size; ++k) {
     const auto s = spacePoints.at(sp[k]);
-    track.constituent_links().push_back(
-        {link_t::measurement, s.measurement_index_1()});
-    if (s.measurement_index_2() !=
+    if (s.measurement_index_2() ==
         traccc::edm::spacepoint_collection::device::INVALID_MEASUREMENT_INDEX) {
       track.constituent_links().push_back(
-          {link_t::measurement, s.measurement_index_2()});
+          {link_t::measurement, s.measurement_index_1()});
+      continue;
     }
+    // Both measurements in the order the track crosses their sensors
+    const bool swap = secondFirst[sp[k]] != 0u;
+    track.constituent_links().push_back(
+        {link_t::measurement,
+         swap ? s.measurement_index_2() : s.measurement_index_1()});
+    track.constituent_links().push_back(
+        {link_t::measurement,
+         swap ? s.measurement_index_1() : s.measurement_index_2()});
   }
 }
 
@@ -367,8 +400,9 @@ TracccGnnChain::output_type TracccGnnChain::run(
   // Track candidates with their seeds
   const auto t1 = Clock::now();
   ACTS_NVTX_START(gnn_chain_track_building);
-  const traccc::edm::seed_collection::buffer seeds = buildCandidates(
-      *graph, nodes.spacePoints.get(), spacePoints, mem, result);
+  const traccc::edm::seed_collection::buffer seeds =
+      buildCandidates(*graph, nodes.spacePoints.get(), nodes.secondFirst.get(),
+                      spacePoints, mem, result);
   ACTS_NVTX_STOP(gnn_chain_track_building);
   if (timing != nullptr) {
     timing->trackBuildingTime = Clock::now() - t1;
@@ -421,6 +455,7 @@ TracccGnnChain::Nodes TracccGnnChain::makeNodes(
   // Features and module ids in space point order
   auto unsortedFeatures = mem.make<float>(n * nFeatures);
   auto unsortedModuleIds = mem.make<std::uint64_t>(n);
+  auto secondFirst = mem.make<unsigned char>(n);
   const detail::NodeFeatureScales scales{
       m_cfg.featureScales[0], m_cfg.featureScales[1], m_cfg.featureScales[2],
       m_cfg.featureScales[3]};
@@ -429,7 +464,7 @@ TracccGnnChain::Nodes TracccGnnChain::makeNodes(
                     const detray::detector_view_t<detector_t> &det) {
         tracccNodeFeatures<detector_t><<<nBlocks(n), kBlock, 0, cudaStream>>>(
             det, measurements, spacePoints, m_moduleIds, scales, nFeatures,
-            unsortedFeatures.get(), unsortedModuleIds.get());
+            unsortedFeatures.get(), unsortedModuleIds.get(), secondFirst.get());
       });
   ACTS_CUDA_CHECK(cudaGetLastError());
 
@@ -457,7 +492,7 @@ TracccGnnChain::Nodes TracccGnnChain::makeNodes(
       features.data());
   ACTS_CUDA_CHECK(cudaGetLastError());
   return Nodes{std::move(features), std::move(moduleIds),
-               std::move(nodeSpacePoints)};
+               std::move(nodeSpacePoints), std::move(secondFirst)};
 }
 
 std::optional<PipelineTensors> TracccGnnChain::buildGraph(
@@ -490,6 +525,7 @@ std::optional<PipelineTensors> TracccGnnChain::buildGraph(
 
 traccc::edm::seed_collection::buffer TracccGnnChain::buildCandidates(
     const PipelineTensors &graph, const int *nodeSpacePoints,
+    const unsigned char *secondFirst,
     const traccc::edm::spacepoint_collection::const_view &spacePoints,
     detail::DeviceMemory &mem, output_type &result) const {
   const cudaStream_t cudaStream = mem.stream();
@@ -565,7 +601,8 @@ traccc::edm::seed_collection::buffer TracccGnnChain::buildCandidates(
   fillCandidates<kMaxCandidateSize>
       <<<nBlocks(numNodes), kBlock, 0, cudaStream>>>(
           bounds.get(), sortedSpacePoints.get(), numLabels, keep.get(),
-          candidateIndex.get(), spacePoints, seeds, result.candidates.tracks);
+          candidateIndex.get(), secondFirst, spacePoints, seeds,
+          result.candidates.tracks);
   ACTS_CUDA_CHECK(cudaGetLastError());
   return seeds;
 }
