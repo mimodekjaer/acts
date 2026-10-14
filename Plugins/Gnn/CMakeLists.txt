@@ -164,6 +164,8 @@ if(ACTS_GNN_ENABLE_TRACCC)
         )
     endif()
     target_compile_definitions(ActsPluginGnn PUBLIC ACTS_GNN_WITH_TRACCC)
+    find_package(Threads REQUIRED)
+    add_subdirectory(apps)
 endif()
 
 if(ACTS_GNN_ENABLE_TORCH)
