@@ -51,7 +51,7 @@ __global__ void tracccNodeFeatures(
     traccc::edm::spacepoint_collection::const_view spacePointsView,
     const std::uint64_t *moduleIdTable, detail::NodeFeatureScales scales,
     std::size_t nFeatures, float *features, std::uint64_t *moduleIds,
-    unsigned char *secondFirst) {
+    unsigned char *secondFirst, const float *measurementPositions) {
   const spacepoint_device_t spacePoints(spacePointsView);
   const std::size_t i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i >= spacePoints.size()) {
@@ -78,9 +78,15 @@ __global__ void tracccNodeFeatures(
     measured[1] = m2.subspace()[0];
   }
 
-  detail::writeSpacePointFeatures(det, sp.global(), twoMeasurements ? 2u : 1u,
-                                  surfaces, locals, dimensions, measured,
-                                  nFeatures, features + i * nFeatures, scales);
+  // Given positions of the two measurements (NaN: not given for this one)
+  const float *given = nullptr;
+  if (twoMeasurements && measurementPositions != nullptr &&
+      !isnan(measurementPositions[6 * i])) {
+    given = measurementPositions + 6 * i;
+  }
+  detail::writeSpacePointFeatures(
+      det, sp.global(), twoMeasurements ? 2u : 1u, surfaces, locals, dimensions,
+      measured, nFeatures, features + i * nFeatures, scales, given);
   moduleIds[i] = moduleIdTable[surfaces[0].index()];
 
   // Order of the two measurements of a strip space point along the track:
@@ -91,6 +97,10 @@ __global__ void tracccNodeFeatures(
     const auto x = sp.global();
     detray::dpoint3D<typename detector_t::algebra_type> pos[2];
     for (unsigned int m = 0; m < 2u; ++m) {
+      if (given != nullptr) {
+        pos[m] = {given[3 * m], given[3 * m + 1], given[3 * m + 2]};
+        continue;
+      }
       pos[m] =
           dimensions[m] == 1u
               ? detail::stripMeasurementPosition(det, surfaces[m], locals[m],
@@ -311,16 +321,32 @@ TracccGnnChain::output_type TracccGnnChain::operator()(
     const std::vector<traccc::edm::spacepoint_collection::const_view>
         &spacePointCollections,
     GnnTiming *timing) const {
+  std::vector<TracccGnnSpacePoints> inputs;
+  for (const auto &view : spacePointCollections) {
+    inputs.push_back({view, nullptr});
+  }
+  return (*this)(detector, field, measurements, inputs, timing);
+}
+
+TracccGnnChain::output_type TracccGnnChain::operator()(
+    const traccc::detector_buffer &detector,
+    const traccc::magnetic_field &field,
+    const traccc::edm::measurement_collection::const_view &measurements,
+    const std::vector<TracccGnnSpacePoints> &spacePointCollections,
+    GnnTiming *timing) const {
   if (spacePointCollections.size() == 1) {
-    return run(detector, field, measurements, spacePointCollections.front(),
-               timing);
+    return run(detector, field, measurements,
+               spacePointCollections.front().spacePoints, timing,
+               spacePointCollections.front().measurementPositions);
   }
   const auto cudaStream = static_cast<cudaStream_t>(stream().cudaStream());
   std::vector<unsigned int> sizes;
   unsigned int total = 0;
-  for (const auto &view : spacePointCollections) {
-    sizes.push_back(copy().get_size(view));
+  bool anyPositions = false;
+  for (const auto &input : spacePointCollections) {
+    sizes.push_back(copy().get_size(input.spacePoints));
     total += sizes.back();
+    anyPositions |= input.measurementPositions != nullptr;
   }
   traccc::edm::spacepoint_collection::buffer spacePoints(total, *m_temporaryMr);
   copy().setup(spacePoints)->ignore();
@@ -328,12 +354,32 @@ TracccGnnChain::output_type TracccGnnChain::operator()(
   for (std::size_t c = 0; c < spacePointCollections.size(); ++c) {
     if (sizes[c] > 0) {
       appendSpacePoints<<<nBlocks(sizes[c]), kBlock, 0, cudaStream>>>(
-          spacePointCollections[c], spacePoints, offset);
+          spacePointCollections[c].spacePoints, spacePoints, offset);
       ACTS_CUDA_CHECK(cudaGetLastError());
     }
     offset += sizes[c];
   }
-  output_type result = run(detector, field, measurements, spacePoints, timing);
+  // Measurement positions of all collections, NaN where not given
+  vecmem::unique_alloc_ptr<float[]> positions;
+  if (anyPositions) {
+    positions = vecmem::make_unique_alloc<float[]>(*m_temporaryMr, 6 * total);
+    ACTS_CUDA_CHECK(cudaMemsetAsync(positions.get(), 0xff,
+                                    6 * total * sizeof(float), cudaStream));
+    std::size_t at = 0;
+    for (std::size_t c = 0; c < spacePointCollections.size(); ++c) {
+      if (spacePointCollections[c].measurementPositions != nullptr &&
+          sizes[c] > 0) {
+        ACTS_CUDA_CHECK(
+            cudaMemcpyAsync(positions.get() + 6 * at,
+                            spacePointCollections[c].measurementPositions,
+                            6 * sizes[c] * sizeof(float),
+                            cudaMemcpyDeviceToDevice, cudaStream));
+      }
+      at += sizes[c];
+    }
+  }
+  output_type result =
+      run(detector, field, measurements, spacePoints, timing, positions.get());
   // The concatenated space points are freed here
   stream().synchronize();
   return result;
@@ -369,7 +415,7 @@ TracccGnnChain::output_type TracccGnnChain::run(
     const traccc::magnetic_field &field,
     const traccc::edm::measurement_collection::const_view &measurements,
     const traccc::edm::spacepoint_collection::const_view &spacePoints,
-    GnnTiming *timing) const {
+    GnnTiming *timing, const float *measurementPositions) const {
   const auto cudaStream = static_cast<cudaStream_t>(stream().cudaStream());
   detail::DeviceMemory mem(cudaStream, m_temporaryMr);
   const ExecutionContext ctx{Device::Cuda(), cudaStream, m_temporaryMr};
@@ -387,8 +433,8 @@ TracccGnnChain::output_type TracccGnnChain::run(
   // Nodes, graph construction and classification
   const auto t0 = Clock::now();
   ACTS_NVTX_START(gnn_chain_node_features);
-  Nodes nodes =
-      makeNodes(detector, measurements, spacePoints, nSpacePoints, mem, ctx);
+  Nodes nodes = makeNodes(detector, measurements, spacePoints,
+                          measurementPositions, nSpacePoints, mem, ctx);
   ACTS_NVTX_STOP(gnn_chain_node_features);
   const std::optional<PipelineTensors> graph =
       buildGraph(nodes, ctx, t0, timing);
@@ -446,8 +492,8 @@ TracccGnnChain::Nodes TracccGnnChain::makeNodes(
     const traccc::detector_buffer &detector,
     const traccc::edm::measurement_collection::const_view &measurements,
     const traccc::edm::spacepoint_collection::const_view &spacePoints,
-    std::size_t nSpacePoints, detail::DeviceMemory &mem,
-    const ExecutionContext &ctx) const {
+    const float *measurementPositions, std::size_t nSpacePoints,
+    detail::DeviceMemory &mem, const ExecutionContext &ctx) const {
   const cudaStream_t cudaStream = mem.stream();
   const std::size_t n = nSpacePoints;
   const std::size_t nFeatures = m_cfg.nNodeFeatures;
@@ -464,7 +510,8 @@ TracccGnnChain::Nodes TracccGnnChain::makeNodes(
                     const detray::detector_view_t<detector_t> &det) {
         tracccNodeFeatures<detector_t><<<nBlocks(n), kBlock, 0, cudaStream>>>(
             det, measurements, spacePoints, m_moduleIds, scales, nFeatures,
-            unsortedFeatures.get(), unsortedModuleIds.get(), secondFirst.get());
+            unsortedFeatures.get(), unsortedModuleIds.get(), secondFirst.get(),
+            measurementPositions);
       });
   ACTS_CUDA_CHECK(cudaGetLastError());
 

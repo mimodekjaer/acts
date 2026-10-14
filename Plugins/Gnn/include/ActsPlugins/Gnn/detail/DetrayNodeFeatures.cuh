@@ -90,20 +90,24 @@ __host__ __device__ inline auto stripMeasurementPosition(
 /// is at the space point. The global positions of the two measurements of
 /// strip space points come from their surfaces in the detray detector; for
 /// one dimensional measurements (@p dimensions 1, measured coordinate
-/// @p measuredIndices) see stripMeasurementPosition.
+/// @p measuredIndices) see stripMeasurementPosition. Given
+/// @p measurementPositions (x, y, z of both measurements) are used instead.
 template <typename detector_t, typename point3_t>
 __host__ __device__ inline void writeSpacePointFeatures(
     const detector_t &det, const point3_t &spacePoint,
     unsigned int nMeasurements, const detray::geometry::identifier *surfaces,
     const detray::dpoint2D<typename detector_t::algebra_type> *locals,
     const unsigned int *dimensions, const unsigned int *measuredIndices,
-    std::size_t nFeatures, float *f, const NodeFeatureScales &s) {
+    std::size_t nFeatures, float *f, const NodeFeatureScales &s,
+    const float *measurementPositions = nullptr) {
   writeNodeFeatures(spacePoint, f, s);
   for (std::size_t j = 4, m = 0; j + 4 <= nFeatures; j += 4, ++m) {
     if (nMeasurements < 2) {
       for (std::size_t k = 0; k < 4; ++k) {
         f[j + k] = f[k];
       }
+    } else if (measurementPositions != nullptr) {
+      writeNodeFeatures(measurementPositions + 3 * m, f + j, s);
     } else {
       if (dimensions[m] == 1u) {
         writeNodeFeatures(

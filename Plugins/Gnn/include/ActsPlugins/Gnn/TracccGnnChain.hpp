@@ -70,6 +70,18 @@ struct TracccGnnResult {
   traccc::edm::measurement_collection::buffer measurements;
 };
 
+/// One collection of space points for TracccGnnChain
+struct TracccGnnSpacePoints {
+  /// Space points in device memory
+  traccc::edm::spacepoint_collection::const_view spacePoints;
+  /// Optional device array with six floats per space point: the global
+  /// (x, y, z) of its first and of its second measurement. If given, they
+  /// are the measurement features of space points with two measurements
+  /// (strips), instead of positions from the detector and the measurements,
+  /// e.g. the strip centres the GNN was trained with.
+  const float *measurementPositions = nullptr;
+};
+
 /// Default Kalman fitter configuration for GNN track candidates.
 ///
 /// The initial parameters of the candidates come from three of their space
@@ -219,6 +231,20 @@ class TracccGnnChain
           &spacePointCollections,
       GnnTiming *timing = nullptr) const;
 
+  /// As above, with optional measurement positions per collection
+  /// @param detector traccc detector buffer
+  /// @param field magnetic field for the parameter estimation and the fit
+  /// @param measurements measurements in device memory
+  /// @param spacePointCollections space points in device memory
+  /// @param timing optional timing of the GNN stages
+  /// @return candidates and fitted tracks
+  output_type operator()(
+      const traccc::detector_buffer &detector,
+      const traccc::magnetic_field &field,
+      const traccc::edm::measurement_collection::const_view &measurements,
+      const std::vector<TracccGnnSpacePoints> &spacePointCollections,
+      GnnTiming *timing = nullptr) const;
+
   /// Run the chain on measurements and space points in host memory, e.g.
   /// from the CPU reconstruction. They are copied to the device first.
   /// @param detector traccc detector buffer
@@ -260,15 +286,15 @@ class TracccGnnChain
       const traccc::magnetic_field &field,
       const traccc::edm::measurement_collection::const_view &measurements,
       const traccc::edm::spacepoint_collection::const_view &spacePoints,
-      GnnTiming *timing) const;
+      GnnTiming *timing, const float *measurementPositions = nullptr) const;
 
   /// Node features and module ids of the space points, sorted by module id
   Nodes makeNodes(
       const traccc::detector_buffer &detector,
       const traccc::edm::measurement_collection::const_view &measurements,
       const traccc::edm::spacepoint_collection::const_view &spacePoints,
-      std::size_t nSpacePoints, detail::DeviceMemory &mem,
-      const ExecutionContext &ctx) const;
+      const float *measurementPositions, std::size_t nSpacePoints,
+      detail::DeviceMemory &mem, const ExecutionContext &ctx) const;
 
   /// Graph construction and edge classification. Takes the node features of
   /// @p nodes. Returns nothing if no edges are left.
