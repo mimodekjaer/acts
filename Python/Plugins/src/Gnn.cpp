@@ -80,7 +80,8 @@ PYBIND11_MODULE(ActsPluginsPythonBindingsGnn, gnn) {
 #ifdef ACTS_GNN_WITH_TENSORRT
   ACTS_PYTHON_DECLARE_GNN_STAGE(TensorRTEdgeClassifier, EdgeClassificationBase,
                                 gnn, modelPath, selectedFeatures, cut,
-                                numExecutionContexts);
+                                numExecutionContexts, nodeFeaturesName,
+                                edgeIndexName, edgeFeaturesName, outputName);
 #endif
 
 #ifdef ACTS_GNN_WITH_CUDA
@@ -99,7 +100,8 @@ PYBIND11_MODULE(ActsPluginsPythonBindingsGnn, gnn) {
 #ifdef ACTS_GNN_WITH_MODULEMAP
   ACTS_PYTHON_DECLARE_GNN_STAGE(ModuleMapCuda, GraphConstructionBase, gnn,
                                 moduleMapPath, rScale, phiScale, zScale,
-                                etaScale, gpuDevice, gpuBlocks, epsilon);
+                                etaScale, gpuDevice, gpuBlocks, epsilon,
+                                debugSynchronize, retainMemPool);
 
   ACTS_PYTHON_DECLARE_GNN_STAGE(EdgeLayerConnector, TrackBuildingBase, gnn,
                                 blockSize, maxHitsPerTrack, minHits,

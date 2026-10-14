@@ -10,7 +10,11 @@ acts_add_library(
     ACTS_INCLUDE_FOLDER include/ActsPlugins
 )
 
+# Headers of optional components that are not built
 set(_gnn_header_excludes "")
+if(NOT ACTS_GNN_ENABLE_DETRAY)
+    list(APPEND _gnn_header_excludes "Detray")
+endif()
 if(NOT ACTS_GNN_ENABLE_TRACCC)
     list(APPEND _gnn_header_excludes "Traccc")
 endif()
@@ -156,7 +160,7 @@ if(ACTS_GNN_ENABLE_TRACCC)
     if(TARGET ActsPluginGnn_HEADERS)
         target_link_libraries(
             ActsPluginGnn_HEADERS
-            PRIVATE traccc::core traccc::cuda
+            PRIVATE traccc::core traccc::cuda traccc::device_common
         )
     endif()
     target_compile_definitions(ActsPluginGnn PUBLIC ACTS_GNN_WITH_TRACCC)

@@ -58,7 +58,7 @@ std::vector<std::vector<int>> CudaTrackBuilding::operator()(
     detail::junctionRemovalCudaAsync(
         numEdges, numSpacePoints, tensors.edgeScores->data(), cudaSrcPtr,
         cudaTgtPtr, cudaJrEdges.get(), cudaJrEdges.get() + numEdges,
-        cudaCounters, stream, execContext.memoryResource);
+        cudaCounters, mem);
     cudaSrcPtr = cudaJrEdges.get();
     cudaTgtPtr = cudaJrEdges.get() + numEdges;
     cudaNumEdges = cudaCounters;

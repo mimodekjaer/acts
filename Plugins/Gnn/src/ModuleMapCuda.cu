@@ -106,7 +106,7 @@ class ModuleMapCuda::Impl {
 
   /// Returns the [2, nEdges] edge index and the [nEdges, 6] edge features
   std::pair<Tensor<std::int64_t>, Tensor<float>> makeEdges(
-      const detail::HitArrays<float> &hits, int *cuda_hit_indice,
+      const detail::HitArrays<float> &hits, const int *cudaHitOffsets,
       const float *cudaNodeFeatures, std::size_t nNodeFeatures,
       detail::DeviceMemory &mem, const ExecutionContext &execContext,
       const ModuleMapCuda::Config &cfg, const Logger &logger) const;
@@ -199,40 +199,16 @@ PipelineTensors ModuleMapCuda::operator()(
   const auto nHits = moduleIds.size();
   assert(inputValues.size() % moduleIds.size() == 0);
   const auto nFeatures = inputValues.size() / moduleIds.size();
-  auto &features = inputValues;
 
-  // Get stream if available, otherwise use default stream
-  cudaStream_t stream = cudaStreamLegacy;
-  if (execContext.stream) {
-    ACTS_DEBUG("Got stream " << *execContext.stream);
-    stream = execContext.stream.value();
-  }
+  // Use the default stream if none is given
+  const cudaStream_t stream = execContext.stream.value_or(cudaStreamLegacy);
   detail::DeviceMemory mem(stream, execContext.memoryResource);
-  vecmem::cuda::async_copy copy{vecmem::cuda::stream_wrapper{stream}};
 
-  /////////////////////////
-  // Prepare input data
-  ////////////////////////
-
-  // Full node features to device
-
+  // Node features and module ids to the device
   auto nodeFeatures = Tensor<float>::Create({nHits, nFeatures}, execContext);
-  using FloatView = vecmem::data::vector_view<float>;
-  copy(vecmem::data::vector_view<const float>(
-           static_cast<FloatView::size_type>(features.size()), features.data()),
-       FloatView(static_cast<FloatView::size_type>(features.size()),
-                 nodeFeatures.data()),
-       vecmem::copy::type::host_to_device)
-      ->ignore();
-
-  // Module IDs to device
+  mem.toDevice(nodeFeatures.data(), inputValues.data(), inputValues.size());
   auto cudaModuleIds = mem.make<std::uint64_t>(nHits);
-  using IdView = vecmem::data::vector_view<std::uint64_t>;
-  copy(vecmem::data::vector_view<const std::uint64_t>(
-           static_cast<IdView::size_type>(nHits), moduleIds.data()),
-       IdView(static_cast<IdView::size_type>(nHits), cudaModuleIds.get()),
-       vecmem::copy::type::host_to_device)
-      ->ignore();
+  mem.toDevice(cudaModuleIds.get(), moduleIds.data(), nHits);
 
   return m_impl->buildGraph(std::move(nodeFeatures), cudaModuleIds.get(), mem,
                             execContext, m_cfg, logger());
@@ -249,7 +225,7 @@ PipelineTensors ModuleMapCuda::operator()(Tensor<float> nodeFeatures,
     throw NoEdgesError{};
   }
 
-  cudaStream_t stream = execContext.stream.value_or(cudaStreamLegacy);
+  const cudaStream_t stream = execContext.stream.value_or(cudaStreamLegacy);
   detail::DeviceMemory mem(stream, execContext.memoryResource);
   return m_impl->buildGraph(std::move(nodeFeatures), moduleIds, mem,
                             execContext, m_cfg, logger());
@@ -270,34 +246,33 @@ PipelineTensors ModuleMapCuda::Impl::buildGraph(
   ACTS_VERBOSE("gridDimHits: " << gridDimHits.x
                                << ", blockDim: " << blockDim.x);
 
-  // Allocate memory for transposed node features that are needed for the
-  // module map kernels in one block
-  auto cudaNodeFeaturesTransposed = mem.make<float>(6 * nHits);
-
-  float *transposed = cudaNodeFeaturesTransposed.get();
-  const detail::HitArrays<float> hits{
-      /*R=*/transposed + 0 * nHits,   /*z=*/transposed + 2 * nHits,
-      /*x=*/transposed + 3 * nHits,   /*y=*/transposed + 4 * nHits,
-      /*eta=*/transposed + 5 * nHits, /*phi=*/transposed + 1 * nHits};
-
-  // Allocate helper nb hits memory
-  auto cudaNbHits = mem.make<int>(cudaModuleMapSize + 1);
-  mem.memset(cudaNbHits.get(), (cudaModuleMapSize + 1), 0);
+  // The module map kernels read the unscaled hit coordinates as one array
+  // per coordinate
+  auto cudaHitCoordinates = mem.make<float>(6 * nHits);
+  float *cudaR = cudaHitCoordinates.get();
+  float *cudaPhi = cudaR + nHits;
+  float *cudaZ = cudaPhi + nHits;
+  float *cudaX = cudaZ + nHits;
+  float *cudaY = cudaX + nHits;
+  float *cudaEta = cudaY + nHits;
+  const detail::HitArrays<float> hits{cudaR, cudaZ,   cudaX,
+                                      cudaY, cudaEta, cudaPhi};
 
   detail::preprocessHitFeatures<<<gridDimHits, blockDim, 0, stream>>>(
-      nHits, nFeatures, cudaNodeFeaturePtr, transposed + 0 * nHits,
-      transposed + 1 * nHits, transposed + 2 * nHits, transposed + 5 * nHits,
-      transposed + 3 * nHits, transposed + 4 * nHits, cfg.rScale, cfg.phiScale,
-      cfg.zScale);
+      nHits, nFeatures, cudaNodeFeaturePtr, cudaR, cudaPhi, cudaZ, cudaEta,
+      cudaX, cudaY, cfg.rScale, cfg.phiScale, cfg.zScale);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
+  // Offsets of the hits of each module in the (module-sorted) hits: the hit
+  // counts per module, followed by an exclusive scan
+  auto cudaHitOffsets = mem.make<int>(cudaModuleMapSize + 1);
+  mem.memset(cudaHitOffsets.get(), cudaModuleMapSize + 1, 0);
   detail::mapModuleIdsToNbHits<<<gridDimHits, blockDim, 0, stream>>>(
-      cudaNbHits.get(), nHits, cudaModuleIds, cudaModuleMapSize,
+      cudaHitOffsets.get(), nHits, cudaModuleIds, cudaModuleMapSize,
       cudaModuleMapKeys.get(), cudaModuleMapVals.get());
   ACTS_CUDA_CHECK(cudaGetLastError());
-
-  exclusiveSum(cudaNbHits.get(), cudaNbHits.get(), cudaModuleMapSize + 1, mem);
-  int *cudaHitIndice = cudaNbHits.get();
+  exclusiveSum(cudaHitOffsets.get(), cudaHitOffsets.get(),
+               cudaModuleMapSize + 1, mem);
 
   ///////////////////////////////////
   // Perform module map inference
@@ -311,7 +286,7 @@ PipelineTensors ModuleMapCuda::Impl::buildGraph(
   // Builds the edges, and in its final pass writes the edge index and edge
   // features directly
   auto [edgeIndex, edgeFeatures] =
-      makeEdges(hits, cudaHitIndice, cudaNodeFeaturePtr, nFeatures, mem,
+      makeEdges(hits, cudaHitOffsets.get(), cudaNodeFeaturePtr, nFeatures, mem,
                 execContext, cfg, logger);
   ACTS_CUDA_CHECK(cudaGetLastError());
   if (cfg.debugSynchronize) {
@@ -333,30 +308,33 @@ PipelineTensors ModuleMapCuda::Impl::buildGraph(
 }
 
 std::pair<Tensor<std::int64_t>, Tensor<float>> ModuleMapCuda::Impl::makeEdges(
-    const detail::HitArrays<float> &hits, int *cuda_hit_indice,
+    const detail::HitArrays<float> &hits, const int *cudaHitOffsets,
     const float *cudaNodeFeatures, std::size_t nNodeFeatures,
     detail::DeviceMemory &mem, const ExecutionContext &execContext,
     const ModuleMapCuda::Config &cfg, const Logger &logger) const {
+  // The doublet stage has one work item per (module doublet, source hit)
+  // pair, the triplet stage one per (module triplet, M1-M2 edge) pair. The
+  // *Offsets arrays are exclusive scans of the item counts, so their last
+  // element is the total.
   cudaStream_t stream = mem.stream();
-  const dim3 block_dim = cfg.gpuBlocks;
+  const dim3 blockDim = cfg.gpuBlocks;
   auto gridFor = [&](std::size_t nThreads) {
     return dim3(
-        static_cast<unsigned int>((nThreads + block_dim.x - 1) / block_dim.x));
+        static_cast<unsigned int>((nThreads + blockDim.x - 1) / blockDim.x));
   };
 
   // The cut windows of the module map, as device pointers
   // (the accessors of the module map are not const)
-  auto doubletCuts = [](auto &md) {
+  auto cutsOf = [](auto &md) {
     return detail::DoubletCuts<float>{
         md.cuda_z0_min(),   md.cuda_z0_max(),        md.cuda_deta_min(),
         md.cuda_deta_max(), md.cuda_phi_slope_min(), md.cuda_phi_slope_max(),
         md.cuda_dphi_min(), md.cuda_dphi_max()};
   };
-  const detail::DoubletCuts<float> doublet_cuts =
-      doubletCuts(*cudaModuleMapDoublet);
-  const detail::TripletCuts<float> triplet_cuts{
-      doubletCuts(cudaModuleMapTriplet->module12()),
-      doubletCuts(cudaModuleMapTriplet->module23()),
+  const detail::DoubletCuts<float> doubletCuts = cutsOf(*cudaModuleMapDoublet);
+  const detail::TripletCuts<float> tripletCuts{
+      cutsOf(cudaModuleMapTriplet->module12()),
+      cutsOf(cudaModuleMapTriplet->module23()),
       cudaModuleMapTriplet->cuda_diff_dydx_min(),
       cudaModuleMapTriplet->cuda_diff_dydx_max(),
       cudaModuleMapTriplet->cuda_diff_dzdr_min(),
@@ -365,255 +343,240 @@ std::pair<Tensor<std::int64_t>, Tensor<float>> ModuleMapCuda::Impl::makeEdges(
   // ---------------------------------------------
   // count source hits per module doublet (sync 1)
   // ---------------------------------------------
-  const int nb_doublets = cudaModuleMapDoublet->size();
-  ACTS_DEBUG("nb doublets " << nb_doublets);
+  const int nDoublets = cudaModuleMapDoublet->size();
+  ACTS_DEBUG("nDoublets: " << nDoublets);
 
-  auto cuda_nb_src_hits_per_doublet = mem.make<int>(nb_doublets + 1);
+  auto cudaDoubletWorkOffsets = mem.make<int>(nDoublets + 1);
 
-  detail::count_source_hits_per_doublet<<<gridFor(nb_doublets), block_dim, 0,
+  detail::count_source_hits_per_doublet<<<gridFor(nDoublets), blockDim, 0,
                                           stream>>>(
-      cuda_nb_src_hits_per_doublet.get(), cudaModuleMapDoublet->cuda_module1(),
-      cuda_hit_indice, nb_doublets);
+      cudaDoubletWorkOffsets.get(), cudaModuleMapDoublet->cuda_module1(),
+      cudaHitOffsets, nDoublets);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
-  exclusiveSum(cuda_nb_src_hits_per_doublet.get(),
-               cuda_nb_src_hits_per_doublet.get(), nb_doublets + 1, mem);
+  exclusiveSum(cudaDoubletWorkOffsets.get(), cudaDoubletWorkOffsets.get(),
+               nDoublets + 1, mem);
 
-  int sum_nb_src_hits_per_doublet{};
-  mem.toHost(&sum_nb_src_hits_per_doublet,
-             &cuda_nb_src_hits_per_doublet.get()[nb_doublets], 1);
+  int nDoubletWork{};
+  mem.toHost(&nDoubletWork, &cudaDoubletWorkOffsets.get()[nDoublets], 1);
   mem.synchronize();
-  ACTS_DEBUG("sum_nb_hits_per_doublet: " << sum_nb_src_hits_per_doublet);
+  ACTS_DEBUG("nDoubletWork: " << nDoubletWork);
 
-  if (sum_nb_src_hits_per_doublet == 0) {
+  if (nDoubletWork == 0) {
     throw NoEdgesError{};
   }
 
   // ------------------------------------------------------------
   // count doublet edges and triplet work items together (sync 2)
   // ------------------------------------------------------------
-  auto cuda_src_work_to_doublet = mem.make<int>(sum_nb_src_hits_per_doublet);
+  auto cudaWorkToDoublet = mem.make<int>(nDoubletWork);
   constexpr int kThreadsPerDoublet = 32;
   detail::build_work_to_item<kThreadsPerDoublet>
-      <<<gridFor(static_cast<std::size_t>(nb_doublets) * kThreadsPerDoublet),
-         block_dim, 0, stream>>>(cuda_src_work_to_doublet.get(),
-                                 cuda_nb_src_hits_per_doublet.get(),
-                                 nb_doublets);
+      <<<gridFor(static_cast<std::size_t>(nDoublets) * kThreadsPerDoublet),
+         blockDim, 0, stream>>>(cudaWorkToDoublet.get(),
+                                cudaDoubletWorkOffsets.get(), nDoublets);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
-  auto cuda_edge_sum_per_src_hit =
-      mem.make<int>(sum_nb_src_hits_per_doublet + 1);
+  auto cudaWorkEdgeOffsets = mem.make<int>(nDoubletWork + 1);
   // Accepted hit pairs per source hit, filled by the count pass and reused by
   // the build pass
-  auto cuda_pair_masks = mem.make<std::uint64_t>(sum_nb_src_hits_per_doublet);
+  auto cudaPairMasks = mem.make<std::uint64_t>(nDoubletWork);
   detail::count_doublet_edges<float>
-      <<<gridFor(sum_nb_src_hits_per_doublet), block_dim, 0, stream>>>(
-          cuda_edge_sum_per_src_hit.get(), cuda_pair_masks.get(),
-          cuda_src_work_to_doublet.get(), cuda_nb_src_hits_per_doublet.get(),
+      <<<gridFor(nDoubletWork), blockDim, 0, stream>>>(
+          cudaWorkEdgeOffsets.get(), cudaPairMasks.get(),
+          cudaWorkToDoublet.get(), cudaDoubletWorkOffsets.get(),
           cudaModuleMapDoublet->cuda_module1(),
-          cudaModuleMapDoublet->cuda_module2(), hits, doublet_cuts,
-          cuda_hit_indice, detail::g_pi, cfg.epsilon,
-          sum_nb_src_hits_per_doublet);
+          cudaModuleMapDoublet->cuda_module2(), hits, doubletCuts,
+          cudaHitOffsets, detail::g_pi, cfg.epsilon, nDoubletWork);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
-  exclusiveSum(cuda_edge_sum_per_src_hit.get(), cuda_edge_sum_per_src_hit.get(),
-               sum_nb_src_hits_per_doublet + 1, mem);
+  exclusiveSum(cudaWorkEdgeOffsets.get(), cudaWorkEdgeOffsets.get(),
+               nDoubletWork + 1, mem);
 
-  auto cuda_active_src_flags = mem.make<int>(sum_nb_src_hits_per_doublet + 1);
-  auto cuda_active_src_offsets = mem.make<int>(sum_nb_src_hits_per_doublet + 1);
-  detail::mark_active_src_work<<<gridFor(sum_nb_src_hits_per_doublet),
-                                 block_dim, 0, stream>>>(
-      cuda_active_src_flags.get(), cuda_edge_sum_per_src_hit.get(),
-      sum_nb_src_hits_per_doublet);
+  auto cudaActiveWorkFlags = mem.make<int>(nDoubletWork + 1);
+  auto cudaActiveWorkOffsets = mem.make<int>(nDoubletWork + 1);
+  detail::mark_active_src_work<<<gridFor(nDoubletWork), blockDim, 0, stream>>>(
+      cudaActiveWorkFlags.get(), cudaWorkEdgeOffsets.get(), nDoubletWork);
   ACTS_CUDA_CHECK(cudaGetLastError());
-  exclusiveSum(cuda_active_src_flags.get(), cuda_active_src_offsets.get(),
-               sum_nb_src_hits_per_doublet + 1, mem);
+  exclusiveSum(cudaActiveWorkFlags.get(), cudaActiveWorkOffsets.get(),
+               nDoubletWork + 1, mem);
 
   // Edge offsets per module doublet. These only depend on the edge counts, so
   // the triplet work can be counted before the doublet edges are built.
-  auto cuda_edge_sum = mem.make<int>(nb_doublets + 1);
-  detail::doublet_edge_sum<<<gridFor(nb_doublets + 1), block_dim, 0, stream>>>(
-      cuda_edge_sum.get(), cuda_nb_src_hits_per_doublet.get(),
-      cuda_edge_sum_per_src_hit.get(), nb_doublets);
+  auto cudaDoubletEdgeOffsets = mem.make<int>(nDoublets + 1);
+  detail::doublet_edge_sum<<<gridFor(nDoublets + 1), blockDim, 0, stream>>>(
+      cudaDoubletEdgeOffsets.get(), cudaDoubletWorkOffsets.get(),
+      cudaWorkEdgeOffsets.get(), nDoublets);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
-  const int nb_triplets = cudaModuleMapTriplet->size();
-  auto cuda_src_hits_per_triplet = mem.make<int>(nb_triplets + 1);
-  detail::count_triplet_hits<<<gridFor(nb_triplets), block_dim, 0, stream>>>(
-      cuda_src_hits_per_triplet.get(),
-      cudaModuleMapTriplet->cuda_module12_map(),
-      cudaModuleMapTriplet->cuda_module23_map(), cuda_edge_sum.get(),
-      nb_triplets);
+  const int nTriplets = cudaModuleMapTriplet->size();
+  auto cudaTripletWorkOffsets = mem.make<int>(nTriplets + 1);
+  detail::count_triplet_hits<<<gridFor(nTriplets), blockDim, 0, stream>>>(
+      cudaTripletWorkOffsets.get(), cudaModuleMapTriplet->cuda_module12_map(),
+      cudaModuleMapTriplet->cuda_module23_map(), cudaDoubletEdgeOffsets.get(),
+      nTriplets);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
-  exclusiveSum(cuda_src_hits_per_triplet.get(), cuda_src_hits_per_triplet.get(),
-               nb_triplets + 1, mem);
+  exclusiveSum(cudaTripletWorkOffsets.get(), cudaTripletWorkOffsets.get(),
+               nTriplets + 1, mem);
 
-  int nb_doublet_edges{};
-  int nb_active_src{};
-  int nb_src_hits_per_triplet_sum{};
-  mem.toHost(&nb_doublet_edges,
-             &cuda_edge_sum_per_src_hit.get()[sum_nb_src_hits_per_doublet], 1);
-  mem.toHost(&nb_active_src,
-             &cuda_active_src_offsets.get()[sum_nb_src_hits_per_doublet], 1);
-  mem.toHost(&nb_src_hits_per_triplet_sum,
-             &cuda_src_hits_per_triplet.get()[nb_triplets], 1);
+  int nDoubletEdges{};
+  int nActiveWork{};
+  int nTripletWork{};
+  mem.toHost(&nDoubletEdges, &cudaWorkEdgeOffsets.get()[nDoubletWork], 1);
+  mem.toHost(&nActiveWork, &cudaActiveWorkOffsets.get()[nDoubletWork], 1);
+  mem.toHost(&nTripletWork, &cudaTripletWorkOffsets.get()[nTriplets], 1);
   mem.synchronize();
-  ACTS_DEBUG("nb_doublet_edges: " << nb_doublet_edges);
-  ACTS_DEBUG("nb_active_src: " << nb_active_src);
-  ACTS_DEBUG("nb_src_hits_per_triplet_sum: " << nb_src_hits_per_triplet_sum);
+  ACTS_DEBUG("nDoubletEdges: " << nDoubletEdges);
+  ACTS_DEBUG("nActiveWork: " << nActiveWork);
+  ACTS_DEBUG("nTripletWork: " << nTripletWork);
 
-  if (nb_doublet_edges == 0 || nb_src_hits_per_triplet_sum == 0) {
+  if (nDoubletEdges == 0 || nTripletWork == 0) {
     throw NoEdgesError{};
   }
 
   // ------------------
   // build doublet edges
   // ------------------
-  ACTS_DEBUG("Allocate " << (2ul * nb_doublet_edges * sizeof(int)) * 1.0e-6
+  ACTS_DEBUG("Allocate " << (2ul * nDoubletEdges * sizeof(int)) * 1.0e-6
                          << " MB for edges");
-  auto cuda_reduced_M1_hits = mem.make<int>(nb_doublet_edges);
-  auto cuda_reduced_M2_hits = mem.make<int>(nb_doublet_edges);
+  auto cudaEdgeSrc = mem.make<int>(nDoubletEdges);
+  auto cudaEdgeTgt = mem.make<int>(nDoubletEdges);
 
-  // nb_doublet_edges > 0 implies nb_active_src > 0
-  auto cuda_active_src_work = mem.make<int>(nb_active_src);
-  detail::compact_active_doublets<<<gridFor(sum_nb_src_hits_per_doublet),
-                                    block_dim, 0, stream>>>(
-      cuda_active_src_work.get(), cuda_active_src_flags.get(),
-      cuda_active_src_offsets.get(), sum_nb_src_hits_per_doublet);
+  // nDoubletEdges > 0 implies nActiveWork > 0
+  auto cudaActiveWork = mem.make<int>(nActiveWork);
+  detail::
+      compact_active_doublets<<<gridFor(nDoubletWork), blockDim, 0, stream>>>(
+          cudaActiveWork.get(), cudaActiveWorkFlags.get(),
+          cudaActiveWorkOffsets.get(), nDoubletWork);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
   detail::build_doublet_edges_active<float>
-      <<<gridFor(nb_active_src), block_dim, 0, stream>>>(
-          cuda_reduced_M1_hits.get(), cuda_reduced_M2_hits.get(), nb_active_src,
-          cuda_pair_masks.get(), cuda_active_src_work.get(),
-          cuda_src_work_to_doublet.get(), cuda_nb_src_hits_per_doublet.get(),
-          cuda_hit_indice, cuda_edge_sum_per_src_hit.get(),
-          cudaModuleMapDoublet->cuda_module1(),
-          cudaModuleMapDoublet->cuda_module2(), hits, doublet_cuts,
-          detail::g_pi, cfg.epsilon);
+      <<<gridFor(nActiveWork), blockDim, 0, stream>>>(
+          cudaEdgeSrc.get(), cudaEdgeTgt.get(), nActiveWork,
+          cudaPairMasks.get(), cudaActiveWork.get(), cudaWorkToDoublet.get(),
+          cudaDoubletWorkOffsets.get(), cudaHitOffsets,
+          cudaWorkEdgeOffsets.get(), cudaModuleMapDoublet->cuda_module1(),
+          cudaModuleMapDoublet->cuda_module2(), hits, doubletCuts, detail::g_pi,
+          cfg.epsilon);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
   ACTS_VERBOSE("First 10 doublet edges:\n"
-               << debugPrintEdges(nb_doublet_edges, cuda_reduced_M1_hits.get(),
-                                  cuda_reduced_M2_hits.get(), mem));
+               << debugPrintEdges(nDoubletEdges, cudaEdgeSrc.get(),
+                                  cudaEdgeTgt.get(), mem));
 
   // -----------------------------
   // build doublets geometric cuts
   // -----------------------------
-  auto cuda_geo = mem.make<float4>(nb_doublet_edges);
-  auto cuda_edge_slope = mem.make<float4>(nb_doublet_edges);
+  auto cudaEdgeGeometry = mem.make<float4>(nDoubletEdges);
+  auto cudaEdgeSlopes = mem.make<float4>(nDoubletEdges);
 
-  detail::hits_geometric_cuts_packed<<<gridFor(nb_doublet_edges), block_dim, 0,
+  detail::hits_geometric_cuts_packed<<<gridFor(nDoubletEdges), blockDim, 0,
                                        stream>>>(
-      cuda_geo.get(), cuda_edge_slope.get(), cuda_reduced_M1_hits.get(),
-      cuda_reduced_M2_hits.get(), hits, detail::g_pi, cfg.epsilon,
-      nb_doublet_edges);
+      cudaEdgeGeometry.get(), cudaEdgeSlopes.get(), cudaEdgeSrc.get(),
+      cudaEdgeTgt.get(), hits, detail::g_pi, cfg.epsilon, nDoubletEdges);
   ACTS_CUDA_CHECK(cudaGetLastError());
   if (cfg.debugSynchronize) {
     mem.synchronize();
   }
 
-  auto cuda_mask = mem.make<bool>(nb_doublet_edges + 1);
-  mem.memset(cuda_mask.get(), (nb_doublet_edges + 1), 0);
+  auto cudaEdgeMask = mem.make<bool>(nDoubletEdges + 1);
+  mem.memset(cudaEdgeMask.get(), (nDoubletEdges + 1), 0);
 
   // -------------------------
   // loop over module triplets
   // -------------------------
-  auto cuda_work_to_triplet = mem.make<int>(nb_src_hits_per_triplet_sum);
+  auto cudaWorkToTriplet = mem.make<int>(nTripletWork);
   constexpr int kThreadsPerTriplet = 8;
   detail::build_work_to_item<kThreadsPerTriplet>
-      <<<gridFor(static_cast<std::size_t>(nb_triplets) * kThreadsPerTriplet),
-         block_dim, 0, stream>>>(cuda_work_to_triplet.get(),
-                                 cuda_src_hits_per_triplet.get(), nb_triplets);
+      <<<gridFor(static_cast<std::size_t>(nTriplets) * kThreadsPerTriplet),
+         blockDim, 0, stream>>>(cudaWorkToTriplet.get(),
+                                cudaTripletWorkOffsets.get(), nTriplets);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
   // Pairs whose cuts cannot be decided from the float geometry are queued by
   // the triplet kernel and resolved by triplet_pair_cuts_fallback
-  auto cuda_fallback_pairs =
+  auto cudaFallbackPairs =
       mem.make<detail::TripletFallbackPair>(detail::kTripletFallbackCapacity);
-  auto cuda_fallback_count = mem.make<int>(1);
-  mem.memset(cuda_fallback_count.get(), 1, 0);
+  auto cudaFallbackCount = mem.make<int>(1);
+  mem.memset(cudaFallbackCount.get(), 1, 0);
 
-  auto launch_triplet_cuts = [&](auto defer_fallback) {
-    constexpr bool kDefer = decltype(defer_fallback)::value;
+  auto launchTripletCuts = [&](auto deferFallback) {
+    constexpr bool kDefer = decltype(deferFallback)::value;
     detail::triplet_pair_cuts_fused_m23<float, kDefer>
-        <<<gridFor(nb_src_hits_per_triplet_sum), block_dim, 0, stream>>>(
-            cuda_mask.get(), nb_src_hits_per_triplet_sum,
-            cuda_src_hits_per_triplet.get(), cuda_work_to_triplet.get(),
-            cudaModuleMapTriplet->cuda_module12_map(),
-            cudaModuleMapTriplet->cuda_module23_map(), cuda_geo.get(),
-            cuda_edge_slope.get(), triplet_cuts, cuda_reduced_M1_hits.get(),
-            cuda_reduced_M2_hits.get(), cuda_edge_sum.get(),
-            cuda_nb_src_hits_per_doublet.get(),
-            cudaModuleMapDoublet->cuda_module1(), cuda_hit_indice,
-            cuda_edge_sum_per_src_hit.get(), hits, detail::g_pi, cfg.epsilon,
-            cuda_fallback_pairs.get(), cuda_fallback_count.get(),
+        <<<gridFor(nTripletWork), blockDim, 0, stream>>>(
+            cudaEdgeMask.get(), nTripletWork, cudaTripletWorkOffsets.get(),
+            cudaWorkToTriplet.get(), cudaModuleMapTriplet->cuda_module12_map(),
+            cudaModuleMapTriplet->cuda_module23_map(), cudaEdgeGeometry.get(),
+            cudaEdgeSlopes.get(), tripletCuts, cudaEdgeSrc.get(),
+            cudaEdgeTgt.get(), cudaDoubletEdgeOffsets.get(),
+            cudaDoubletWorkOffsets.get(), cudaModuleMapDoublet->cuda_module1(),
+            cudaHitOffsets, cudaWorkEdgeOffsets.get(), hits, detail::g_pi,
+            cfg.epsilon, cudaFallbackPairs.get(), cudaFallbackCount.get(),
             detail::kTripletFallbackCapacity);
     ACTS_CUDA_CHECK(cudaGetLastError());
   };
 
-  launch_triplet_cuts(std::true_type{});
+  launchTripletCuts(std::true_type{});
 
   constexpr int kFallbackBlocks = 64;
   constexpr int kFallbackThreads = 256;
   detail::triplet_pair_cuts_fallback<float>
       <<<kFallbackBlocks, kFallbackThreads, 0, stream>>>(
-          cuda_mask.get(), cuda_fallback_pairs.get(), cuda_fallback_count.get(),
-          detail::kTripletFallbackCapacity, cuda_geo.get(), triplet_cuts,
-          cuda_reduced_M1_hits.get(), cuda_reduced_M2_hits.get(), hits,
-          detail::g_pi, cfg.epsilon);
+          cudaEdgeMask.get(), cudaFallbackPairs.get(), cudaFallbackCount.get(),
+          detail::kTripletFallbackCapacity, cudaEdgeGeometry.get(), tripletCuts,
+          cudaEdgeSrc.get(), cudaEdgeTgt.get(), hits, detail::g_pi,
+          cfg.epsilon);
   ACTS_CUDA_CHECK(cudaGetLastError());
 
   //------------------------
   // edges reduction (sync 3)
   //------------------------
-  auto cuda_mask_sum = mem.make<int>(nb_doublet_edges + 1);
-  auto scan_mask = [&]() {
+  auto cudaEdgeMaskScan = mem.make<int>(nDoubletEdges + 1);
+  auto scanMask = [&]() {
     exclusiveSum(
-        thrust::make_transform_iterator(cuda_mask.get(), CastBoolToInt{}),
-        cuda_mask_sum.get(), nb_doublet_edges + 1, mem);
+        thrust::make_transform_iterator(cudaEdgeMask.get(), CastBoolToInt{}),
+        cudaEdgeMaskScan.get(), nDoubletEdges + 1, mem);
   };
-  scan_mask();
+  scanMask();
 
-  int nb_graph_edges{};
-  int nb_fallback_pairs{};
-  mem.toHost(&nb_graph_edges, &cuda_mask_sum.get()[nb_doublet_edges], 1);
-  mem.toHost(&nb_fallback_pairs, cuda_fallback_count.get(), 1);
+  int nGraphEdges{};
+  int nFallbackPairs{};
+  mem.toHost(&nGraphEdges, &cudaEdgeMaskScan.get()[nDoubletEdges], 1);
+  mem.toHost(&nFallbackPairs, cudaFallbackCount.get(), 1);
   mem.synchronize();
-  ACTS_DEBUG("nb_fallback_pairs: " << nb_fallback_pairs);
+  ACTS_DEBUG("nFallbackPairs: " << nFallbackPairs);
 
-  if (nb_fallback_pairs > detail::kTripletFallbackCapacity) {
+  if (nFallbackPairs > detail::kTripletFallbackCapacity) {
     // Some queued pairs were dropped. All tags set so far are correct (they
     // are only set for pairs that pass), so rerunning the triplet cuts with
     // inline fallback completes the mask.
     ACTS_WARNING("Triplet fallback queue overflow ("
-                 << nb_fallback_pairs << " > "
-                 << detail::kTripletFallbackCapacity
+                 << nFallbackPairs << " > " << detail::kTripletFallbackCapacity
                  << "), rerunning triplet cuts with inline fallback");
-    launch_triplet_cuts(std::false_type{});
-    scan_mask();
-    mem.toHost(&nb_graph_edges, &cuda_mask_sum.get()[nb_doublet_edges], 1);
+    launchTripletCuts(std::false_type{});
+    scanMask();
+    mem.toHost(&nGraphEdges, &cudaEdgeMaskScan.get()[nDoubletEdges], 1);
     mem.synchronize();
   }
 
-  ACTS_DEBUG("nb_graph_edges: " << nb_graph_edges);
-  if (nb_graph_edges == 0) {
+  ACTS_DEBUG("nGraphEdges: " << nGraphEdges);
+  if (nGraphEdges == 0) {
     throw NoEdgesError{};
   }
 
   // Compact the surviving edges straight into the output tensors and compute
   // the edge features in the same pass
-  const auto nEdges = static_cast<std::size_t>(nb_graph_edges);
+  const auto nEdges = static_cast<std::size_t>(nGraphEdges);
   auto edgeIndex = Tensor<std::int64_t>::Create({2, nEdges}, execContext);
   auto edgeFeatures = Tensor<float>::Create(
       {nEdges, static_cast<std::size_t>(detail::g_nEdgeFeatures)}, execContext);
 
-  detail::compactEdgesAndMakeFeatures<<<gridFor(nb_doublet_edges), block_dim, 0,
+  detail::compactEdgesAndMakeFeatures<<<gridFor(nDoubletEdges), blockDim, 0,
                                         stream>>>(
-      nb_doublet_edges, cuda_mask.get(), cuda_mask_sum.get(),
-      cuda_reduced_M1_hits.get(), cuda_reduced_M2_hits.get(), nEdges,
-      nNodeFeatures, cudaNodeFeatures, edgeIndex.data(), edgeFeatures.data());
+      nDoubletEdges, cudaEdgeMask.get(), cudaEdgeMaskScan.get(),
+      cudaEdgeSrc.get(), cudaEdgeTgt.get(), nEdges, nNodeFeatures,
+      cudaNodeFeatures, edgeIndex.data(), edgeFeatures.data());
   ACTS_CUDA_CHECK(cudaGetLastError());
 
   ACTS_VERBOSE("First 10 graph edges:\n"

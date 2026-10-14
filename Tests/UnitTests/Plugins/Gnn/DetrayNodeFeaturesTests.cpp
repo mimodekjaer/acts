@@ -10,7 +10,7 @@
 
 #include "Acts/Definitions/Algebra.hpp"
 #include "Acts/Utilities/VectorHelpers.hpp"
-#include "ActsPlugins/Gnn/DetrayModuleIdTable.cuh"
+#include "ActsPlugins/Gnn/DetrayModuleIdTable.hpp"
 
 #include <cstdint>
 #include <numbers>

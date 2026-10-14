@@ -78,9 +78,8 @@ void junctionRemovalCudaAsync(std::size_t nEdges, std::size_t nNodes,
                               const std::int64_t *dstNodes,
                               std::int64_t *srcNodesOut,
                               std::int64_t *dstNodesOut, int *numEdgesOut,
-                              cudaStream_t stream,
-                              std::pmr::memory_resource *mr) {
-  DeviceMemory mem(stream, mr);
+                              DeviceMemory &mem) {
+  const cudaStream_t stream = mem.stream();
   if (nEdges == 0) {
     mem.memset(numEdgesOut, 1, 0);
     return;

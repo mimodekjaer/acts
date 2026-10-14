@@ -8,25 +8,24 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
-#include <memory_resource>
-
-#include <cuda_runtime_api.h>
 
 namespace ActsPlugins::detail {
+
+class DeviceMemory;
 
 /// Remove all but the highest-scoring edge at each junction (several
 /// incoming or several outgoing edges at a node; ties go to the smallest edge
 /// index), without host synchronization. The kept edges are written in their
 /// original order to srcNodesOut / dstNodesOut (capacity nEdges each), their
-/// number to numEdgesOut (device memory). Temporary device memory is taken
-/// from @p mr, or is stream-ordered if it is null.
+/// number to numEdgesOut (device memory). All work is enqueued on the stream
+/// of @p mem, temporary device memory is taken from its resource.
 void junctionRemovalCudaAsync(std::size_t nEdges, std::size_t nNodes,
                               const float *scores, const std::int64_t *srcNodes,
                               const std::int64_t *dstNodes,
                               std::int64_t *srcNodesOut,
                               std::int64_t *dstNodesOut, int *numEdgesOut,
-                              cudaStream_t stream,
-                              std::pmr::memory_resource *mr = nullptr);
+                              DeviceMemory &mem);
 
 }  // namespace ActsPlugins::detail

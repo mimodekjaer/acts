@@ -119,9 +119,16 @@ TensorPtr cudaCreateTensorMemory(std::size_t nbytes,
   }
   // Stream-ordered memory, freed in order with the work on the stream
   const auto stream = *ctx.stream;
-  CudaStreamOrderedMemoryResource mr(stream);
-  return TensorPtr(mr.allocate(nbytes), [stream, nbytes](void *p) {
-    CudaStreamOrderedMemoryResource(stream).deallocate(p, nbytes);
+  void *ptr{};
+  if (nbytes > 0) {
+    ACTS_CUDA_CHECK(cudaMallocAsync(&ptr, nbytes, stream));
+  }
+  return TensorPtr(ptr, [stream](void *p) {
+    // Must not throw (called from destructors); an error is sticky and is
+    // reported by the next checked CUDA call
+    if (p != nullptr) {
+      static_cast<void>(cudaFreeAsync(p, stream));
+    }
   });
 }
 

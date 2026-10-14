@@ -620,20 +620,29 @@ __global__ void remapEdgesKernel(std::size_t numEdges, int *src, int *dst,
   dst[edge] = oldToNew[dst[edge]];
 }
 
-std::vector<Edge> createOrientedEdgesCuda(
+/// The oriented edges on the device, their host copy, and the connected
+/// components of the graph they form
+struct OrientedGraph {
+  DeviceOrientedEdges device;
+  /// Valid edges, oriented from the inner to the outer node
+  std::vector<Edge> edges;
+  DeviceArray<int> cudaLabels;
+  std::vector<int> labels;
+  int numComponents = 0;
+};
+
+OrientedGraph createOrientedEdgesCuda(
     const ActsPlugins::Tensor<std::int64_t> &edgeTensor,
     const ActsPlugins::Tensor<float> &scoreTensor,
     const ActsPlugins::Tensor<float> &featureTensor,
-    std::size_t radialFeatureIndex, DeviceMemory &mem,
-    DeviceOrientedEdges &deviceGraph,
-    DeviceArray<int> *cudaInitialLabels = nullptr,
-    int *initialNumComponents = nullptr,
-    std::vector<int> *initialLabels = nullptr) {
+    std::size_t radialFeatureIndex, DeviceMemory &mem) {
   const cudaStream_t stream = mem.stream();
   const auto numNodes = featureTensor.shape().at(0);
   const auto numFeatures = featureTensor.shape().at(1);
   const auto numEdges = edgeTensor.shape().at(1);
 
+  OrientedGraph graph;
+  DeviceOrientedEdges &deviceGraph = graph.device;
   deviceGraph.numEdges = numEdges;
   deviceGraph.numNodes = numNodes;
   deviceGraph.src = mem.make<int>(numEdges);
@@ -655,26 +664,14 @@ std::vector<Edge> createOrientedEdgesCuda(
       deviceGraph.valid.get(), deviceGraph.activeNodes.get());
   ACTS_CUDA_CHECK(cudaGetLastError());
 
-  if (cudaInitialLabels != nullptr || initialLabels != nullptr ||
-      initialNumComponents != nullptr) {
-    auto cudaLabelsBuffer = mem.make<int>(numNodes);
-    int *cudaLabels = cudaLabelsBuffer.get();
-    int numComponents = ActsPlugins::detail::connectedComponentsCuda(
-        numEdges, deviceGraph.src.get(), deviceGraph.dst.get(), numNodes,
-        cudaLabels, mem);
-    if (initialNumComponents != nullptr) {
-      *initialNumComponents = numComponents;
-    }
-    if (initialLabels != nullptr) {
-      initialLabels->assign(numNodes, -1);
-      ACTS_CUDA_CHECK(cudaMemcpyAsync(initialLabels->data(), cudaLabels,
-                                      numNodes * sizeof(int),
-                                      cudaMemcpyDeviceToHost, stream));
-    }
-    if (cudaInitialLabels != nullptr) {
-      *cudaInitialLabels = std::move(cudaLabelsBuffer);
-    }
-  }
+  graph.cudaLabels = mem.make<int>(numNodes);
+  graph.numComponents = ActsPlugins::detail::connectedComponentsCuda(
+      numEdges, deviceGraph.src.get(), deviceGraph.dst.get(), numNodes,
+      graph.cudaLabels.get(), mem);
+  graph.labels.resize(numNodes);
+  ACTS_CUDA_CHECK(cudaMemcpyAsync(graph.labels.data(), graph.cudaLabels.get(),
+                                  numNodes * sizeof(int),
+                                  cudaMemcpyDeviceToHost, stream));
 
   std::vector<int> src(numEdges);
   std::vector<int> dst(numEdges);
@@ -692,14 +689,13 @@ std::vector<Edge> createOrientedEdgesCuda(
 
   ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));
 
-  std::vector<Edge> edges;
-  edges.reserve(numEdges);
+  graph.edges.reserve(numEdges);
   for (std::size_t edge = 0; edge < numEdges; ++edge) {
     if (valid.at(edge) != 0) {
-      edges.push_back({src.at(edge), dst.at(edge)});
+      graph.edges.push_back({src.at(edge), dst.at(edge)});
     }
   }
-  return edges;
+  return graph;
 }
 
 DeviceCompactEdges compactDeviceEdges(const int *src, const int *dst,
@@ -1286,14 +1282,11 @@ std::vector<std::vector<int>> DWalkTrackBuilding::operator()(
 
   DeviceMemory mem(execContext);
   const cudaStream_t stream = mem.stream();
-  std::vector<int> initialLabels;
-  DeviceOrientedEdges deviceGraph;
-  DeviceArray<int> cudaInitialLabels;
-  int initialNumComponents = 0;
-  auto edges = createOrientedEdgesCuda(
-      tensors.edgeIndex, *tensors.edgeScores, tensors.nodeFeatures,
-      m_cfg.radialFeatureIndex, mem, deviceGraph, &cudaInitialLabels,
-      &initialNumComponents, &initialLabels);
+  auto [deviceGraph, edges, cudaInitialLabels, initialLabels,
+        initialNumComponents] =
+      createOrientedEdgesCuda(tensors.edgeIndex, *tensors.edgeScores,
+                              tensors.nodeFeatures, m_cfg.radialFeatureIndex,
+                              mem);
   if (edges.empty()) {
     deviceGraph.reset();
     ACTS_CUDA_CHECK(cudaStreamSynchronize(stream));

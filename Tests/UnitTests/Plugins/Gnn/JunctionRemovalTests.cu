@@ -58,7 +58,7 @@ void testJunctionRemoval(const Vi &srcNodes, const Vi &dstNodes,
   std::int64_t *cudaDstNodesOut = cudaOut.get() + nEdges;
   junctionRemovalCudaAsync(nEdges, nNodes, cudaScores, cudaSrcNodes,
                            cudaDstNodes, cudaSrcNodesOut, cudaDstNodesOut,
-                           cudaNumEdgesOut.get(), stream);
+                           cudaNumEdgesOut.get(), mem);
   int nEdgesOutInt{};
   ACTS_CUDA_CHECK(cudaMemcpyAsync(&nEdgesOutInt, cudaNumEdgesOut.get(),
                                   sizeof(int), cudaMemcpyDeviceToHost, stream));

@@ -32,6 +32,12 @@ class TensorRTEdgeClassifier final : public EdgeClassificationBase {
 
     /// Number of parallel execution contexts for inference
     std::size_t numExecutionContexts = 1;
+
+    /// Names of the input and output tensors of the engine
+    std::string nodeFeaturesName = "node_features";
+    std::string edgeIndexName = "edge_list";
+    std::string edgeFeaturesName = "edge_attr";
+    std::string outputName = "output";
   };
 
   /// Constructor

@@ -713,8 +713,13 @@ if(ACTS_SETUP_DETRAY)
     set_option_if(DETRAY_BUILD_TUTORIALS ACTS_BUILD_EXAMPLES)
     set_option_if(DETRAY_SVG_DISPLAY ACTS_BUILD_PLUGIN_ACTSVG)
 
-    # Enable dependencies of ACTS Detray plugin unit tests
-    set_option_if(DETRAY_BUILD_TEST_UTILS ACTS_BUILD_EXAMPLES_UNITTESTS)
+    # Enable dependencies of the ACTS Detray plugin and GNN plugin unit tests
+    set_option_if(
+        DETRAY_BUILD_TEST_UTILS
+        ACTS_BUILD_EXAMPLES_UNITTESTS
+        OR
+        (ACTS_GNN_ENABLE_DETRAY AND ACTS_BUILD_UNITTESTS)
+    )
 
     if(ACTS_BUILD_TRACCC)
         # Some detray validation tools are used in optional traccc libraries

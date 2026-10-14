@@ -120,24 +120,24 @@ class TensorRTEdgeClassifier::Impl {
     }
 
     m_maxNodes = m_engine
-                     ->getProfileShape("node_features", 0,
+                     ->getProfileShape(m_cfg.nodeFeaturesName.c_str(), 0,
                                        nvinfer1::OptProfileSelector::kMAX)
                      .d[0];
     ACTS_INFO("Maximum number of nodes: " << m_maxNodes);
 
     auto maxEdgesA = m_engine
-                         ->getProfileShape("edge_list", 0,
+                         ->getProfileShape(m_cfg.edgeIndexName.c_str(), 0,
                                            nvinfer1::OptProfileSelector::kMAX)
                          .d[1];
     auto maxEdgesB = m_engine
-                         ->getProfileShape("edge_attr", 0,
+                         ->getProfileShape(m_cfg.edgeFeaturesName.c_str(), 0,
                                            nvinfer1::OptProfileSelector::kMAX)
                          .d[0];
 
     if (maxEdgesA != maxEdgesB) {
       throw std::invalid_argument(
-          "Inconsistent max edges definition in engine for 'edge_list' and "
-          "'edge_attr'");
+          "Inconsistent max edges definition in engine for '" +
+          m_cfg.edgeIndexName + "' and '" + m_cfg.edgeFeaturesName + "'");
     }
 
     m_maxEdges = maxEdgesA;
@@ -187,28 +187,31 @@ class TensorRTEdgeClassifier::Impl {
     }
 
     context->setInputShape(
-        "node_features",
+        m_cfg.nodeFeaturesName.c_str(),
         nvinfer1::Dims2{static_cast<long>(tensors.nodeFeatures.shape()[0]),
                         static_cast<long>(tensors.nodeFeatures.shape()[1])});
-    context->setTensorAddress("node_features", tensors.nodeFeatures.data());
+    context->setTensorAddress(m_cfg.nodeFeaturesName.c_str(),
+                              tensors.nodeFeatures.data());
 
     context->setInputShape(
-        "edge_list",
+        m_cfg.edgeIndexName.c_str(),
         nvinfer1::Dims2{static_cast<long>(tensors.edgeIndex.shape()[0]),
                         static_cast<long>(tensors.edgeIndex.shape()[1])});
-    context->setTensorAddress("edge_list", tensors.edgeIndex.data());
+    context->setTensorAddress(m_cfg.edgeIndexName.c_str(),
+                              tensors.edgeIndex.data());
 
     if (tensors.edgeFeatures.has_value()) {
       context->setInputShape(
-          "edge_attr",
+          m_cfg.edgeFeaturesName.c_str(),
           nvinfer1::Dims2{static_cast<long>(tensors.edgeFeatures->shape()[0]),
                           static_cast<long>(tensors.edgeFeatures->shape()[1])});
-      context->setTensorAddress("edge_attr", tensors.edgeFeatures->data());
+      context->setTensorAddress(m_cfg.edgeFeaturesName.c_str(),
+                                tensors.edgeFeatures->data());
     }
 
     auto scores =
         Tensor<float>::Create({tensors.edgeIndex.shape()[1], 1ul}, execContext);
-    context->setTensorAddress("output", scores.data());
+    context->setTensorAddress(m_cfg.outputName.c_str(), scores.data());
 
     t2 = std::chrono::high_resolution_clock::now();
 
