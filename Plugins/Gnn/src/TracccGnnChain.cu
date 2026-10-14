@@ -90,15 +90,51 @@ __global__ void gatherRows(std::size_t n, std::size_t nCols, const int *rows,
 }
 
 /// Marks the labels that are kept as track candidates
-__global__ void markCandidates(const int *bounds, const int *numLabels,
-                               unsigned int minSize, unsigned int maxSize,
-                               unsigned int *keep) {
+__global__ void markCandidates(
+    const int *bounds, const int *sortedSpacePoints, const int *numLabels,
+    traccc::edm::spacepoint_collection::const_view spacePointsView,
+    unsigned int minSize, unsigned int maxSize, unsigned int minMeasurements,
+    unsigned int *keep) {
   const std::size_t l = blockIdx.x * blockDim.x + threadIdx.x;
   if (l >= static_cast<std::size_t>(*numLabels)) {
     return;
   }
   const auto size = static_cast<unsigned int>(bounds[l + 1] - bounds[l]);
-  keep[l] = (size >= minSize && size <= maxSize) ? 1u : 0u;
+  bool pass = size >= minSize && size <= maxSize;
+  if (pass && minMeasurements > size) {
+    const spacepoint_device_t spacePoints(spacePointsView);
+    unsigned int nMeasurements = 0;
+    for (int k = bounds[l]; k < bounds[l + 1]; ++k) {
+      nMeasurements +=
+          spacePoints.at(static_cast<unsigned int>(sortedSpacePoints[k]))
+                      .measurement_index_2() ==
+                  traccc::edm::spacepoint_collection::device::
+                      INVALID_MEASUREMENT_INDEX
+              ? 1u
+              : 2u;
+    }
+    pass = nMeasurements >= minMeasurements;
+  }
+  keep[l] = pass ? 1u : 0u;
+}
+
+/// Copies a space point collection into another one from @p offset on
+__global__ void appendSpacePoints(
+    traccc::edm::spacepoint_collection::const_view fromView,
+    traccc::edm::spacepoint_collection::view toView, unsigned int offset) {
+  const spacepoint_device_t from(fromView);
+  const unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= from.size()) {
+    return;
+  }
+  traccc::edm::spacepoint_collection::device to(toView);
+  const auto s = from.at(i);
+  auto t = to.at(offset + i);
+  t.measurement_index_1() = s.measurement_index_1();
+  t.measurement_index_2() = s.measurement_index_2();
+  t.global() = s.global();
+  t.z_variance() = s.z_variance();
+  t.radius_variance() = s.radius_variance();
 }
 
 /// Squared distance from the origin, which increases along the trajectory of
@@ -190,12 +226,14 @@ TracccGnnChain::TracccGnnChain(const Config &cfg,
                                const traccc::memory_resource &mr,
                                const vecmem::copy &copy,
                                const traccc::cuda::stream_wrapper &stream,
-                               std::unique_ptr<const Logger> logger)
+                               std::unique_ptr<const Logger> logger,
+                               vecmem::memory_resource *temporaryMr)
     : traccc::messaging(std::move(logger)),
       traccc::device::algorithm_base(mr, copy),
       traccc::cuda::algorithm_base(stream),
       m_cfg(cfg),
       m_moduleIds(moduleIds.data()),
+      m_temporaryMr(temporaryMr != nullptr ? temporaryMr : &mr.main),
       m_paramEstimation(cfg.paramEstimation, mr, copy, stream,
                         this->logger().cloneWithSuffix("ParamEstimation")),
       m_fitting(cfg.fitting, mr, copy, stream,
@@ -236,6 +274,41 @@ TracccGnnChain::output_type TracccGnnChain::operator()(
 TracccGnnChain::output_type TracccGnnChain::operator()(
     const traccc::detector_buffer &detector,
     const traccc::magnetic_field &field,
+    const traccc::edm::measurement_collection::const_view &measurements,
+    const std::vector<traccc::edm::spacepoint_collection::const_view>
+        &spacePointCollections,
+    GnnTiming *timing) const {
+  if (spacePointCollections.size() == 1) {
+    return run(detector, field, measurements, spacePointCollections.front(),
+               timing);
+  }
+  const auto cudaStream = static_cast<cudaStream_t>(stream().cudaStream());
+  std::vector<unsigned int> sizes;
+  unsigned int total = 0;
+  for (const auto &view : spacePointCollections) {
+    sizes.push_back(copy().get_size(view));
+    total += sizes.back();
+  }
+  traccc::edm::spacepoint_collection::buffer spacePoints(total, *m_temporaryMr);
+  copy().setup(spacePoints)->ignore();
+  unsigned int offset = 0;
+  for (std::size_t c = 0; c < spacePointCollections.size(); ++c) {
+    if (sizes[c] > 0) {
+      appendSpacePoints<<<nBlocks(sizes[c]), kBlock, 0, cudaStream>>>(
+          spacePointCollections[c], spacePoints, offset);
+      ACTS_CUDA_CHECK(cudaGetLastError());
+    }
+    offset += sizes[c];
+  }
+  output_type result = run(detector, field, measurements, spacePoints, timing);
+  // The concatenated space points are freed here
+  stream().synchronize();
+  return result;
+}
+
+TracccGnnChain::output_type TracccGnnChain::operator()(
+    const traccc::detector_buffer &detector,
+    const traccc::magnetic_field &field,
     const traccc::edm::measurement_collection::host &measurements,
     const traccc::edm::spacepoint_collection::host &spacePoints,
     GnnTiming *timing) const {
@@ -265,8 +338,8 @@ TracccGnnChain::output_type TracccGnnChain::run(
     const traccc::edm::spacepoint_collection::const_view &spacePoints,
     GnnTiming *timing) const {
   const auto cudaStream = static_cast<cudaStream_t>(stream().cudaStream());
-  detail::DeviceMemory mem(cudaStream, &mr().main);
-  const ExecutionContext ctx{Device::Cuda(), cudaStream, &mr().main};
+  detail::DeviceMemory mem(cudaStream, m_temporaryMr);
+  const ExecutionContext ctx{Device::Cuda(), cudaStream, m_temporaryMr};
 
   output_type result;
   result.candidates.measurements = measurements;
@@ -458,8 +531,10 @@ traccc::edm::seed_collection::buffer TracccGnnChain::buildCandidates(
   auto candidateIndex = mem.make<unsigned int>(numNodes + 1);
   mem.memset(keep.get(), numNodes + 1, 0);
   markCandidates<<<nBlocks(numNodes), kBlock, 0, cudaStream>>>(
-      bounds.get(), numLabels, static_cast<unsigned int>(m_cfg.minSpacePoints),
-      static_cast<unsigned int>(m_cfg.maxSpacePoints), keep.get());
+      bounds.get(), sortedSpacePoints.get(), numLabels, spacePoints,
+      static_cast<unsigned int>(m_cfg.minSpacePoints),
+      static_cast<unsigned int>(m_cfg.maxSpacePoints),
+      static_cast<unsigned int>(m_cfg.minMeasurements), keep.get());
   ACTS_CUDA_CHECK(cudaGetLastError());
   thrust::exclusive_scan(mem.policy(), keep.get(), keep.get() + numNodes + 1,
                          candidateIndex.get());
@@ -480,7 +555,7 @@ traccc::edm::seed_collection::buffer TracccGnnChain::buildCandidates(
     return {};
   }
 
-  traccc::edm::seed_collection::buffer seeds(nCandidates, mr().main);
+  traccc::edm::seed_collection::buffer seeds(nCandidates, *m_temporaryMr);
   copy().setup(seeds)->ignore();
   // At most two measurements per space point
   result.candidates.tracks = {

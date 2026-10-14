@@ -144,6 +144,9 @@ class TracccGnnChain
     /// Maximum number of space points of a track candidate (at most 64),
     /// larger ones are dropped
     std::size_t maxSpacePoints = 64;
+    /// Minimum number of measurements of a track candidate (a strip space
+    /// point has two)
+    std::size_t minMeasurements = 0;
 
     /// Parameter estimation from the first, middle and last space point
     traccc::track_params_estimation_config paramEstimation;
@@ -162,10 +165,15 @@ class TracccGnnChain
   /// @param copy vecmem copy object for @p stream
   /// @param stream CUDA stream of the chain
   /// @param logger logger
+  /// @param temporaryMr resource for the memory used only during a call
+  ///        (default mr.main). It may be released while work on the stream
+  ///        still uses it, so it must be stream-ordered or wait for the
+  ///        stream before reusing memory.
   TracccGnnChain(const Config &cfg, const DetrayModuleIdTable &moduleIds,
                  const traccc::memory_resource &mr, const vecmem::copy &copy,
                  const traccc::cuda::stream_wrapper &stream,
-                 std::unique_ptr<const Acts::Logger> logger);
+                 std::unique_ptr<const Acts::Logger> logger,
+                 vecmem::memory_resource *temporaryMr = nullptr);
 
   /// Run the chain on the measurements and space points of an event
   /// @param detector traccc detector buffer
@@ -193,6 +201,23 @@ class TracccGnnChain
       const traccc::edm::measurement_collection::const_view &measurements,
       const traccc::edm::spacepoint_collection::const_view &spacePoints,
       GnnTiming &timing) const;
+
+  /// Run the chain on several space point collections in device memory, e.g.
+  /// pixel and strip space points, whose measurement indices refer to the
+  /// same measurement collection. They are concatenated on the device.
+  /// @param detector traccc detector buffer
+  /// @param field magnetic field for the parameter estimation and the fit
+  /// @param measurements measurements in device memory
+  /// @param spacePointCollections space points in device memory
+  /// @param timing optional timing of the GNN stages
+  /// @return candidates and fitted tracks
+  output_type operator()(
+      const traccc::detector_buffer &detector,
+      const traccc::magnetic_field &field,
+      const traccc::edm::measurement_collection::const_view &measurements,
+      const std::vector<traccc::edm::spacepoint_collection::const_view>
+          &spacePointCollections,
+      GnnTiming *timing = nullptr) const;
 
   /// Run the chain on measurements and space points in host memory, e.g.
   /// from the CPU reconstruction. They are copied to the device first.
@@ -261,6 +286,8 @@ class TracccGnnChain
   Config m_cfg;
   /// Device lookup from detray surface index to module id
   const std::uint64_t *m_moduleIds;
+  /// Memory used only during a call
+  vecmem::memory_resource *m_temporaryMr;
   traccc::cuda::seed_parameter_estimation_algorithm m_paramEstimation;
   traccc::cuda::kalman_fitting_algorithm m_fitting;
   traccc::cuda::combinatorial_kalman_filter_algorithm m_finding;
