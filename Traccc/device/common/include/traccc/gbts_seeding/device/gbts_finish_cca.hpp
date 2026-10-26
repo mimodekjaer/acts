@@ -43,9 +43,11 @@ struct gbts_finish_cca_payload {
 /// @brief Write the parent marks and terminus flags of the settled edges.
 ///
 /// Run once after the sweeps of gbts_run_cca_iteration. Every settled edge
-/// marks its neighbours as having a parent and gets its terminus flag from
-/// its level. An edge whose longest path exceeds max_seed_candidate_length
-/// edges is not a root and marks nobody, which truncates the path.
+/// marks its neighbours one level below it as having a parent and gets its
+/// terminus flag from its level. A neighbour further below belongs to a
+/// longer path elsewhere and stays a root of its own. An edge whose longest
+/// path exceeds max_seed_candidate_length edges is not a root and marks
+/// nobody, which truncates the path.
 ///
 /// @param[in] thread_id Thread identifier for the kernel launch
 /// @param[in] payload   The global memory payload

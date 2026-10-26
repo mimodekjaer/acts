@@ -161,6 +161,26 @@ track_gbts_seeding::track_gbts_seeding() : interface("GBTS Options") {
           ->default_value(gbts_config.gbts_fit_segments_params.add_hit),
       "base quality to add for each hit on seed");
   m_desc.add_options()(
+      "use_reach_bonus",
+      po::bool_switch(&gbts_config.gbts_fit_segments_params.use_reach_bonus),
+      "add a score bonus for seeds reaching the outer detector");
+  m_desc.add_options()(
+      "use_tight_bid",
+      po::bool_switch(&gbts_config.gbts_convert_seeds_params.use_tight_bid),
+      "short central seeds must own all but one of their hits");
+  m_desc.add_options()(
+      "deta_inflation",
+      po::value(&gbts_config.gbts_match_graph_edges_params.deta_inflation)
+          ->default_value(
+              gbts_config.gbts_match_graph_edges_params.deta_inflation),
+      "widening of cut_deta_max for long edges (0 = off)");
+  m_desc.add_options()(
+      "high_pT_correction",
+      po::value(&gbts_config.gbts_match_graph_edges_params.high_pT_correction)
+          ->default_value(
+              gbts_config.gbts_match_graph_edges_params.high_pT_correction),
+      "tightening of cut_deta_max per high-pT curvature threshold (0 = off)");
+  m_desc.add_options()(
       "inv_max_curvature",
       po::value(&gbts_config.gbts_fit_segments_params.inv_max_curvature)
           ->default_value(

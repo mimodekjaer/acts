@@ -134,13 +134,15 @@ struct gbts_match_graph_edges_params {
   float cut_dcurv_max = 0.001f;
   // |eta_1-eta_2| <= cut_deta_max.
   float cut_deta_max = 0.007f;
-  float deta_inflation = 0.003f;
-  // tuning to tighten eta cut for high pT edges
+  // Optional widening of the eta cut for long edges (see
+  // gbts_make_graph_edges_params). Zero, as the CPU, disables it.
+  float deta_inflation = 0.0f;
+  // Optional tightening of the eta cut for high pT edges:
+  // deta_max *= 1.0f-high_pT_correction*((curv < less_scattering_curv) + (curv
+  // < much_less_scattering_curv)). Zero, as the CPU, disables it.
   float less_scattering_curv = 1e-4f;
   float much_less_scattering_curv = 3e-5f;
-  // deta_max *= 1.0f-high_pT_correction*((curv < less_scattering_curv) + (curv
-  // < much_less_scattering_curv))
-  float high_pT_correction = 0.2f;
+  float high_pT_correction = 0.0f;
   // cut on dphi/dphi_max + dcurv/dcurv_max + deta/deta_max
   float cut_ratio_sum_max = 1.3f;
 };
@@ -198,7 +200,11 @@ struct gbts_fit_segments_params {
   float inv_max_curvature = 900.0f;
   // factor to tighen inv_max_curvature when cutting after the fit is complete
   float final_curv_cut_tighten = 1.5f;
-  // detector r and z bounds, used in seed quality calculation
+  // Optional score bonus for seeds reaching the outer detector, add_hit times
+  // the outer hit's r / rmax (or |z| / zmax at high |tau|). Off: the CPU
+  // ranks by the fit alone.
+  bool use_reach_bonus = false;
+  // detector r and z bounds of the reach bonus
   float rmax = 350.0f;
   float zmax = 3000.0f;
 
@@ -214,12 +220,13 @@ struct gbts_convert_seeds_params {
   float force_dropout_max_curv_m = 0.03f;
   // dcurv = dkappa between two triplets, outlier if > dropout_dcurv_m
   float dropout_dcurv_m = 0.007f;
-  // Fraction of shared hits above which a seed loses a bid (~1/2). Tuning.
+  // A seed is rejected when the hits taken by better seeds exceed this
+  // fraction of its hits, as on the CPU.
   float best_hit_frac = 0.49f;
-  // Region switch for "tight" bidding:
-  // cot(theta) = sinh(eta) = tight_bid_cot_threshold
-  //   -> sinh(0.88) ~ 1.0, so tracks with |eta| < 0.88 get tighter
-  //   hit-sharing cuts.
+  // Optional "tight" bidding: a seed of fewer than 5 hits with
+  // cot(theta) = sinh(eta) below tight_bid_cot_threshold (sinh(0.88) ~ 1.0,
+  // so |eta| < 0.88) must own all but one of its hits.
+  bool use_tight_bid = false;
   float tight_bid_cot_threshold = 1.0f;
 };
 

@@ -109,12 +109,14 @@ TRACCC_HOST_DEVICE inline void gbts_fill_path_store(
     d_path_store[path_idx] = int2{static_cast<int>(cur_edge), parent_path_idx};
     d_seed_proposals[path_idx] = int2{-1, -1};
 
-    // Segment fit of the path, leaf to root. A single edge is never a seed.
+    // Segment fit of the path, leaf to root. A single edge is never a seed,
+    // and a path any hit of which the fit rejects is no seed either.
     if (parent_path_idx < 0) {
       continue;
     }
     unsigned char length = 1;
     bool toggle = false;
+    bool fit_failed = false;
     details::edgeState state1;
     details::edgeState state2;
     const uint2 leaf_nodes = d_output_edge_nodes[chain[depth - 1u]];
@@ -127,17 +129,18 @@ TRACCC_HOST_DEVICE inline void gbts_fill_path_store(
       if (toggle) {
         if (!details::gbts_kalman_update(&state1, &state2, node2, fit_params,
                                          payload.max_z0)) {
-          state1 = state2;
+          fit_failed = true;
           break;
         }
       } else if (!details::gbts_kalman_update(&state2, &state1, node2,
                                               fit_params, payload.max_z0)) {
+        fit_failed = true;
         break;
       }
       toggle = !toggle;
       length++;
     }
-    if (length < payload.minLevel) {
+    if (fit_failed || length < payload.minLevel) {
       continue;
     }
     // If the seed in an odd length set the state1 to be the final state
@@ -151,13 +154,15 @@ TRACCC_HOST_DEVICE inline void gbts_fill_path_store(
         1.0f) {
       continue;
     }
-    // prefer seeds that reach to the outer edge of the detector for better
-    // resolution at high pT
-    if (math::fabs(state1.m_Y[1]) > fit_params.zmax / fit_params.rmax) {
-      state1.m_J += fit_params.add_hit * math::fabs(node1.z) / fit_params.zmax;
-    } else {
-      const float r2_max = (node1.x) * (node1.x) + (node1.y) * (node1.y);
-      state1.m_J += fit_params.add_hit * math::sqrt(r2_max) / fit_params.rmax;
+    // optionally prefer seeds that reach to the outer edge of the detector
+    if (fit_params.use_reach_bonus) {
+      if (math::fabs(state1.m_Y[1]) > fit_params.zmax / fit_params.rmax) {
+        state1.m_J +=
+            fit_params.add_hit * math::fabs(node1.z) / fit_params.zmax;
+      } else {
+        const float r2_max = (node1.x) * (node1.x) + (node1.y) * (node1.y);
+        state1.m_J += fit_params.add_hit * math::sqrt(r2_max) / fit_params.rmax;
+      }
     }
     const int qual = static_cast<int>(fit_params.qual_scale * state1.m_J);
     d_seed_proposals[path_idx] = int2{qual, static_cast<int>(path_idx)};

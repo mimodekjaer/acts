@@ -48,7 +48,12 @@ TRACCC_HOST_DEVICE inline void gbts_finish_cca(
     }
     const unsigned int nNei = d_output_num_neighbours[globalIndex];
     for (unsigned int k = 0u; k < nNei; ++k) {
-      d_has_parent[d_output_graph[k * nei_stride + globalIndex]] = 1u;
+      const unsigned int child = d_output_graph[k * nei_stride + globalIndex];
+      // Only a child one level down continues the path: a child further down
+      // belongs to a longer path elsewhere and is a root of its own.
+      if (d_levels[child] + 1u == level) {
+        d_has_parent[child] = 1u;
+      }
     }
     d_outgoing_paths[globalIndex].y =
         static_cast<int>(level >= payload.minLevel) - 1;

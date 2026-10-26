@@ -89,6 +89,7 @@ TRACCC_HOST_DEVICE inline void gbts_convert_seeds(
   const float best_hit_frac = payload.gbts_convert_seeds_params.best_hit_frac;
   const float tight_bid_cot_threshold =
       payload.gbts_convert_seeds_params.tight_bid_cot_threshold;
+  const bool use_tight_bid = payload.gbts_convert_seeds_params.use_tight_bid;
   const bool use_dropout = payload.gbts_convert_seeds_params.use_dropout;
 
   const unsigned int globalIdx = thread_id.getGlobalThreadIdX();
@@ -124,7 +125,9 @@ TRACCC_HOST_DEVICE inline void gbts_convert_seeds(
     best_for_hit +=
         (prop_idx == (d_hit_bids[seed.nodes[seed.size - 1]] & 0xFFFFFFFFLL));
 
-    if (best_for_hit < best_hit_frac * static_cast<float>(seed.size)) {
+    // taken by better seeds
+    if (static_cast<float>(seed.size - best_for_hit) >
+        best_hit_frac * static_cast<float>(seed.size)) {
       continue;
     }
     char diff_code = 0;
@@ -139,7 +142,7 @@ TRACCC_HOST_DEVICE inline void gbts_convert_seeds(
       const traccc::float2 curv_cot_2 = detail::gbts_estimate_seed_params(sps);
       sps[0] = d_sp_params[seed.nodes[seed.size - 2]];
       const traccc::float2 curv_cot_3 = detail::gbts_estimate_seed_params(sps);
-      if ((best_for_hit < seed.size - 1) &
+      if (use_tight_bid & (best_for_hit < seed.size - 1) &
           (fabsf(curv_cot_1.y + curv_cot_2.y +
                  curv_cot_3.y) <  // Checking against the average
                                   // cot(theta) of the three tracklets
